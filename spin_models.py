@@ -7,7 +7,7 @@ import utils
 
 
 class Ising():
-    def __init__(self, lattice_shape, couplings='ferro', temp_list=np.geomspace(0.1, 10, 20)):
+    def __init__(self, lattice_shape, couplings='ferro', temp_list=np.geomspace(0.1, 10, 30)):
         self.n_dims = len(lattice_shape)
         self.lattice_shape = tuple(lattice_shape)
         self.coupling_dims = lattice_shape + (self.n_dims,)
@@ -112,10 +112,10 @@ class Ising():
             if sweep_id % exchange_interval == 0:
                 temp_id = np.random.choice(self.n_replicas - 1)
                 temp_1, temp_2 = self.temp_list[temp_id], self.temp_list[temp_id + 1]
-                index_1, index_2 = (np.argwhere(self.temp_ids == temp_idx)[0, 0] for temp_idx in [temp_id, temp_id+1])
-                energy_1, energy_2 = (self.energies[temp_idx] for temp_idx in [temp_id, temp_id+1])
+                energy_1, energy_2 = self.energies[temp_id], self.energies[temp_id+1]
+                replica_id_1, replica_id_2 = self.replica_ids[temp_id], self.replica_ids[temp_id + 1]
                 
                 if (energy_2 - energy_1) * (1 / temp_1 - 1 / temp_2) >= np.log(rand()):
-                    self.temp_ids[index_1], self.temp_ids[index_2] = self.temp_ids[index_2], self.temp_ids[index_1]
+                    self.temp_ids[replica_id_1], self.temp_ids[replica_id_2] = self.temp_ids[replica_id_2], self.temp_ids[replica_id_1]
                     self.replica_ids = (self.temp_ids == np.arange(self.n_replicas)[..., np.newaxis]).argmax(1)
                     
