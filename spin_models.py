@@ -93,18 +93,6 @@ class Ising():
 
         self.update()
 
-    # def simulated_annealing(self, T_high, T_low, n_sweeps, space='linear'):
-    #     beta_low, beta_high = 1 / T_high, 1 / T_low
-    #     if space == 'linear':
-    #         temp_list = 1 / np.linspace(beta_low, beta_high, n_sweeps)
-    #     elif space == 'log':
-    #         temp_list = 1 / np.geomspace(beta_low, beta_high, n_sweeps)
-    #     else:
-    #         raise ValueError("space argument has to be either 'linear' or 'log'")
-
-    #     for temp in temp_list:
-    #         self.sweep(temp)
-
     def parallel_tempering(self, n_sweeps, cluster_update=False, exchange_interval=1):
         for sweep_id in range(n_sweeps):
             self.update_spins(cluster_update=cluster_update)
@@ -118,4 +106,16 @@ class Ising():
                 if (energy_2 - energy_1) * (1 / temp_1 - 1 / temp_2) >= np.log(rand()):
                     self.temp_ids[replica_id_1], self.temp_ids[replica_id_2] = self.temp_ids[replica_id_2], self.temp_ids[replica_id_1]
                     self.replica_ids = (self.temp_ids == np.arange(self.n_replicas)[..., np.newaxis]).argmax(1)
+
+    # def simulated_annealing(self, T_high, T_low, n_sweeps, space='linear'):
+    #     beta_low, beta_high = 1 / T_high, 1 / T_low
+    #     if space == 'linear':
+    #         temp_list = 1 / np.linspace(beta_low, beta_high, n_sweeps)
+    #     elif space == 'log':
+    #         temp_list = 1 / np.geomspace(beta_low, beta_high, n_sweeps)
+    #     else:
+    #         raise ValueError("space argument has to be either 'linear' or 'log'")
+
+    #     for temp in temp_list:
+    #         self.sweep(temp)
                     

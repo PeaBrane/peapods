@@ -45,16 +45,6 @@ def sweep(spins, couplings_doubled, neighbors, temp_list):
     return spins.reshape(n_replicas, *lattice_shape)
 
 
-# def get_local_field(spins_transposed, couplings_doubled, n_replicas, n_dims, lattice_shape, coordinate):
-#     neighbors = np.array(coordinate)[..., np.newaxis] + np.hstack([np.eye(n_dims), -np.eye(n_dims)]).astype('int64')
-#     neighbors = np.mod(neighbors, np.array(lattice_shape)[..., np.newaxis])
-#     neighbors = np.ravel_multi_index(neighbors, lattice_shape)
-#     neighbors = (neighbors * n_replicas) + np.arange(n_replicas)[..., np.newaxis]  # [n_replicas, neighbors]
-
-#     local_field = (spins_transposed.take(neighbors) * couplings_doubled[coordinate]).sum(1)
-#     return local_field
-
-
 def get_energy(spins, couplings):
     n_dims = len(spins.shape) - 1
 
