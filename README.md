@@ -1,14 +1,17 @@
 # PeaPods: A python library for simulating spin systems
 
-The goal of this project is to build a comprehensive framework in Python for
-simulating spin systems with modern efficient Monte-Carlo methods. The 
-implementation aims to balance between performance (for both development 
-and usage) and simplicity. 
+The goal of this project is to build a complete framework in Python for simulating spin systems with modern efficient Monte-Carlo methods. The implementation aims to balance between performance (for both development and usage) and simplicity. 
 
-Currently, only Ising ferromagnets and spin-glasses are supported, but development
-for other spin classes (Potts, clock, and O(N) models) are planned, including
-their quantum counterparts.
+Currently, only Ising ferromagnets and spin-glasses are supported, but development for other spin classes (Potts, clock, and O(N) models) are planned, including their quantum counterparts.
 
-This is an open-source project, so everyone is welcomed to contribute! Please 
-contact me at yrpei@ucsd.edu if you wish to be a part of this project.
+## Dependencies (numba)
 
+The required dependencies should come with any standard Python installations. However, it is highly recommended that you install Numba for efficient simulation. Simply create a new python environment and do:
+
+`pip install numba`
+
+## Contribution
+
+This is an open-source project, so everyone is welcomed to contribute! 
+
+Please open an issue if you spotted a bug or suggest any feature enhancements. Submit a pull request if appropriate. Alternatively, contact me at yrpei@ucsd.edu if you wish to be a contributor to this project.

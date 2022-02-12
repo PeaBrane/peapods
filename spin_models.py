@@ -7,13 +7,13 @@ import utils
 
 
 class Ising():
-    def __init__(self, lattice_shape, couplings='ferro', temp_list=np.geomspace(0.1, 10, 30)):
+    def __init__(self, lattice_shape, couplings='ferro', temperatures=np.geomspace(0.1, 10, 30)):
         self.n_dims = len(lattice_shape)
         self.lattice_shape = tuple(lattice_shape)
         self.coupling_dims = lattice_shape + (self.n_dims,)
 
-        self.n_replicas = len(temp_list)
-        self.temp_list = temp_list
+        self.n_replicas = len(temperatures)
+        self.temp_list = temperatures.copy()
         self.temp_ids = np.arange(self.n_replicas)
         self.replica_ids = np.arange(self.n_replicas)
 
