@@ -1,9 +1,32 @@
+from tempfile import TemporaryDirectory
 import time
 import numpy as np
 from numpy.random import rand, randn
 import itertools
 
 import utils
+
+
+class Statistics():
+    def __init__(self, reduce_dims=None, power=1):
+        self.reduce_dims = reduce_dims
+        self.power = power
+        self.count = 0
+        self.aggregate = 0
+
+    def update(self, new_input):
+        self.count += 1
+
+        if self.reduce_dims is not None:
+            new_input = new_input.mean(self.reduce_dims)
+        if self.power != 1:
+            new_input = new_input ** self.power
+
+        self.aggregate += new_input
+
+    @property
+    def average(self):
+        return self.aggregate / self.count
 
 
 class Ising():
@@ -33,50 +56,43 @@ class Ising():
         self.reset()
 
     def reset(self):
+        self.n_sweeps = 0
+
         self.temp_ids = np.arange(self.n_replicas)
         self.replica_ids = np.arange(self.n_replicas)
 
-        self.n_sweeps = 0
         self.spins = -1 + 2 * rand(self.n_replicas, *self.lattice_shape).round()
         self.energies, self.interactions = utils.get_energy(self.spins, self.couplings)
- 
-        self.mags_aggregate = 0
-        self.energies_aggregate = 0
-        self.spins_aggregate = np.zeros_like(self.spins)
-        self.correlations_aggregate = np.zeros_like(self.spins)
 
-        self.mags_average = np.zeros(self.n_replicas)
-        self.energies_average = np.zeros(self.n_replicas)
+        self.mags_stat = Statistics(reduce_dims=tuple(range(-self.n_dims, 0)))
+        self.mags2_stat, self.mags4_stat = \
+            Statistics(reduce_dims=tuple(range(-self.n_dims, 0)), power=2), Statistics(reduce_dims=tuple(range(-self.n_dims, 0)), power=4)
 
-        self.mags_aggregate_2 = 0
-        self.mags_aggregate_4 = 0
+        self.energies_stat = Statistics()
+        self.energies2_stat = Statistics(power=2)
 
     def update(self):
         self.n_sweeps += 1
-        self.mags = self.spins[self.temp_ids].mean(tuple(range(1, self.n_dims+1)))
-        self.energies, self.interactions = utils.get_energy(self.spins[self.temp_ids], self.couplings)
-        
-        self.spins_aggregate += self.spins
-        self.mags_aggregate += self.mags
-        self.energies_aggregate += self.energies
-        self.correlations_aggregate += self.spins * \
-            np.expand_dims(np.moveaxis(self.spins, 0, -1)[tuple([0]*self.n_dims)], tuple(range(1, self.n_dims+1)))
 
-        self.spins_average = self.spins_aggregate / self.n_sweeps
-        self.mags_average = self.mags_aggregate / self.n_sweeps
-        self.energies_average = self.energies_aggregate / self.n_sweeps
-        self.correlations_average = self.correlations_aggregate / self.n_sweeps - \
-            self.spins_average * np.expand_dims(np.moveaxis(self.spins_average, 0, -1)[tuple([0]*self.n_dims)], tuple(range(1, self.n_dims+1)))
+        spins = self.spins[self.temp_ids]
+        self.energies, self.interactions = utils.get_energy(spins, self.couplings)
         
-        self.mags_aggregate_2 += self.mags**2
-        self.mags_aggregate_4 += self.mags**4
+        self.mags_stat.update(spins)
+        self.mags2_stat.update(spins)
+        self.mags4_stat.update(spins)
+
+        self.energies_stat.update(self.energies)
+        self.energies2_stat.update(self.energies)
+
         if self.n_sweeps != 0 and self.n_sweeps % 10 == 0:
-            self.binder_cumulant = 1 - (self.mags_aggregate_4 / self.n_sweeps) / (3 * (self.mags_aggregate_2 / self.n_sweeps)**2)
+            self.binder_cumulant = 1 - (self.mags4_stat.average) / (3 * self.mags2_stat.average**2)
+            self.heat_capacity = (self.energies2_stat.average - self.energies_stat.average**2) / self.temp_list**2
 
     def update_spins(self, n_sweeps=1, cluster_update=False): 
         for _ in range(n_sweeps):
             self.spins = utils.sweep(self.spins, self.couplings_doubled, self.neighbors, self.temp_list[self.replica_ids])
             self.update()
+
             if cluster_update:
                 self.cluster_update()
 
@@ -84,7 +100,7 @@ class Ising():
         spins = self.spins.reshape([self.n_replicas, -1])
 
         for (replica_id, temp, interaction) in zip(self.replica_ids, self.temp_list, self.interactions):
-            interaction = (1 - np.exp(-2 * interaction / temp)) >= rand(self.n_dims, *self.lattice_shape)
+            interaction = (1 - np.exp(-2 * interaction / temp)) >= rand(*self.lattice_shape, self.n_dims)
             clusters = utils.get_clusters(interaction)
             cluster_id = clusters[np.random.choice(clusters.size)]
             
@@ -119,3 +135,10 @@ class Ising():
     #     for temp in temp_list:
     #         self.sweep(temp)
                     
+
+class IsingOverlap(Ising):
+    def __init__(self, lattice_shape, couplings='ferro', temperatures=np.geomspace(0.1, 10, 30)):
+        super().__init__(lattice_shape, couplings, temperatures)
+
+    def reset(self):
+        super().reset()

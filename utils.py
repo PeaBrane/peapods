@@ -1,3 +1,4 @@
+import time
 from math import prod
 import numpy as np
 from scipy.sparse import csr_matrix, csgraph
@@ -46,20 +47,27 @@ def sweep(spins, couplings_doubled, neighbors, temp_list):
 
 
 def get_energy(spins, couplings):
-    n_dims = len(spins.shape) - 1
+    """returns the energy and interactions given the current spin and couplings configurations
 
-    spins_rolled = np.stack([np.roll(spins, -1, i) for i in range(1, n_dims+1)], axis=1)  # [n_replicas, n_dims, (shape)]
-    interactions = spins[:, np.newaxis, ...] * spins_rolled * np.moveaxis(couplings, -1, 0)  # [n_replicas, n_dims, (shape)]
-    energies = interactions.sum(tuple(range(1, n_dims+2))) / spins[0].size
+    Args:
+        spins: shaped [..., *lattice_shape]
+        couplings: shaped [*lattice_shape, n_dims]
+    """
+
+    n_dims = couplings.ndim - 1
+
+    spins_rolled = np.stack([np.roll(spins, -1, i) for i in range(-n_dims, 0)], axis=-1)  # [..., *lattice_shape, n_dims]
+    interactions = spins[..., np.newaxis] * spins_rolled * couplings  # [..., *lattice_shape, n_dims]
+    energies = interactions.sum(tuple(range(-(n_dims + 1), 0))) / prod(spins.shape[-(n_dims+1):])
 
     return energies, interactions
 
 
 def get_clusters(interaction):
-    n_spins = interaction[0].size
-    spin_ids = np.arange(n_spins).reshape(interaction[0].shape)
+    n_spins = prod(interaction.shape[:-1])
+    spin_ids = np.arange(n_spins).reshape(interaction.shape[:-1])
 
-    rows = [interact.flatten().nonzero()[0] for interact in interaction]
+    rows = [interact.flatten().nonzero()[0] for interact in np.moveaxis(interaction, -1, 0)]
     columns = [np.roll(spin_ids, -1, dim).take(row) for (dim, row) in enumerate(rows)]
     rows, columns = np.hstack(rows), np.hstack(columns)
 
