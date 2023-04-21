@@ -1,8 +1,8 @@
-import time
 from math import prod
-import numpy as np
-from scipy.sparse import csr_matrix, csgraph
+
 import numba
+import numpy as np
+from scipy.sparse import csgraph, csr_matrix
 
 
 def get_neighbors(lattice_shape):
@@ -50,15 +50,15 @@ def get_energy(spins, couplings):
     """returns the energy and interactions given the current spin and couplings configurations
 
     Args:
-        spins: shaped [..., *lattice_shape]
-        couplings: shaped [*lattice_shape, n_dims]
+        spins: shaped (..., *lattice_shape)
+        couplings: shaped (*lattice_shape, n_dims)
     """
-
     n_dims = couplings.ndim - 1
 
-    spins_rolled = np.stack([np.roll(spins, -1, i) for i in range(-n_dims, 0)], axis=-1)  # [..., *lattice_shape, n_dims]
-    interactions = spins[..., np.newaxis] * spins_rolled * couplings  # [..., *lattice_shape, n_dims]
-    energies = interactions.sum(tuple(range(-(n_dims + 1), 0))) / prod(spins.shape[-(n_dims+1):])
+    spins_rolled = np.stack([np.roll(spins, -1, i) 
+                             for i in range(-n_dims, 0)], axis=-1)  # (..., *lattice_shape, n_dims)
+    interactions = spins[..., np.newaxis] * spins_rolled * couplings  # (..., *lattice_shape, n_dims)    
+    energies = interactions.sum(tuple(range(-n_dims - 1, 0))) / prod(spins.shape[-n_dims:])
 
     return energies, interactions
 
