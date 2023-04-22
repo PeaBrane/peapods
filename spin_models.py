@@ -80,57 +80,52 @@ class Ising():
         self.replica_ids = np.arange(self.n_replicas)
 
         self.spins = -1 + 2 * rand(self.n_replicas, *self.lattice_shape).round()
+        self.mags = self.spins.mean(tuple(range(-self.n_dims, 0)))
         self.energies, self.interactions = utils.get_energy(self.spins, self.couplings)
         self.csds = np.zeros((self.n_replicas, prod(self.lattice_shape)))
 
-        self.mags_stat = Statistics(reduce_dims=tuple(range(-self.n_dims, 0)))
-        self.mags2_stat = Statistics(reduce_dims=tuple(range(-self.n_dims, 0)), power=2)
-        self.mags4_stat = Statistics(reduce_dims=tuple(range(-self.n_dims, 0)), power=4)
-
-        self.energies_stat = Statistics()
-        self.energies2_stat = Statistics(power=2)
+        self.mags_stat, self.mags2_stat, self.mags4_stat = [Statistics(power=power) for power in [1, 2, 4]]
+        self.energies_stat, self.energies2_stat = [Statistics(power=power) for power in [1, 2]]
         
         self.csds_stat = Statistics(normalize_dims=(-1,))
 
     def update(self):
         self.n_sweeps += 1
-
-        spins = self.spins[self.temp_ids]
-        self.energies, self.interactions = utils.get_energy(spins, self.couplings)
         
-        self.mags_stat.update(spins)
-        self.mags2_stat.update(spins)
-        self.mags4_stat.update(spins)
-
-        self.energies_stat.update(self.energies)
-        self.energies2_stat.update(self.energies)
+        self.energies, self.interactions = utils.get_energy(self.spins, self.couplings)
+        self.mags = self.spins.mean(tuple(range(-self.n_dims, 0)))[self.replica_ids]
         
-        self.csds_stat.update(self.csds)
+        self.mags_stat.update(self.mags)
+        self.mags2_stat.update(self.mags)
+        self.mags4_stat.update(self.mags)
+
+        self.energies_stat.update(self.energies[self.replica_ids])
+        self.energies2_stat.update(self.energies[self.replica_ids])
+        
+        self.csds_stat.update(self.csds[self.replica_ids])
 
         if self.n_sweeps != 0 and self.n_sweeps % 2**3 == 0:
             self.binder_cumulant = 1 - (self.mags4_stat.average) / (3 * self.mags2_stat.average**2)
             self.heat_capacity = (self.energies2_stat.average - self.energies_stat.average**2) / self.temp_list**2
 
     def sweep(self, mode='metropolis'):
-        self.spins = sweeps.sweep(self.spins, self.couplings_doubled, self.neighbors, self.temp_list[self.replica_ids], mode=mode)
+        self.spins = sweeps.sweep(self.spins, self.couplings_doubled, self.neighbors, self.temp_list[self.temp_ids], mode=mode)
     
     def cluster_update(self, record=True):
         spins = self.spins.reshape([self.n_replicas, -1])
 
-        for i, (replica_id, temp, interaction) in enumerate(zip(self.replica_ids, self.temp_list, self.interactions)):            
+        for replica_id, (temp, interaction) in enumerate(zip(self.temp_list[self.temp_ids], self.interactions)):            
             cluster_labels = get_clusters(interaction, temp)
             cluster_id = cluster_labels[np.random.choice(cluster_labels.size)]
             
             if record:
                 csd = np.bincount(np.bincount(cluster_labels) - 1)
-                self.csds[i, :len(csd)] = csd
+                self.csds[replica_id, :len(csd)] = csd
             
-            spins[replica_id][cluster_labels == cluster_id] = -spins[replica_id][cluster_labels == cluster_id]
+            spins[replica_id, cluster_labels == cluster_id] = -spins[replica_id, cluster_labels == cluster_id]
             self.spins = spins.reshape(self.n_replicas, *self.lattice_shape)
 
     def parallel_tempering(self):
-        """TODO: check this is correct
-        """
         temp_id = np.random.choice(self.n_replicas - 1)
         temp_1, temp_2 = self.temp_list[temp_id], self.temp_list[temp_id + 1]
         energy_1, energy_2 = self.energies[temp_id], self.energies[temp_id + 1]
