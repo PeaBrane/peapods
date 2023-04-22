@@ -1,6 +1,7 @@
-# PeaPods: A python library for simulating spin systems
+# PeaPods: pythonic and efficient simulation of spin systems
 
-The goal of this project is to build a Python library for simulating spin systems with modern efficient Monte-Carlo methods. The implementation aims to balance between performance and simplicity. 
+The goal of this project is to build a Python library for simulating spin systems with modern efficient Monte-Carlo methods. 
+The implementation aims to balance between performance and simplicity. 
 
 ## Description
 
