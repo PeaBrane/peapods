@@ -12,6 +12,11 @@ The following algoritms are currently supported:
 - [Cluster updates (only Wolff)](https://en.wikipedia.org/wiki/Wolff_algorithm)
 - [Parallel tempering](https://en.wikipedia.org/wiki/Parallel_tempering)
 
+The following algorithms are planned:
+
+- Cluster updates for frustrated spin systems (e.g. [KBD algorithm](https://en.wikipedia.org/wiki/KBD_algorithm#:~:text=The%20KBD%20algorithm%20is%20an,algorithm%20more%20efficient%20in%20comparison.))
+- Replica cluster moves
+
 ## Dependencies (numba)
 
 The required dependencies should come with any standard Python installations. However, it is highly recommended that you install Numba for efficient simulation. Simply create a new python environment and do:
