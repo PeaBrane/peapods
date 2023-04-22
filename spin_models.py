@@ -3,6 +3,7 @@ from math import prod
 import numpy as np
 from numpy.random import rand, randn
 from tqdm import tqdm
+import joblib
 
 from clusters import get_clusters
 import sweeps
@@ -107,6 +108,12 @@ class Ising():
         if self.n_sweeps != 0 and self.n_sweeps % 2**3 == 0:
             self.binder_cumulant = 1 - (self.mags4_stat.average) / (3 * self.mags2_stat.average**2)
             self.heat_capacity = (self.energies2_stat.average - self.energies_stat.average**2) / self.temp_list**2
+            
+    def get_energies(self):
+        return self.energies_stat.average
+    
+    def get_csds(self):
+        return self.csds_stat.average
 
     def sweep(self, mode='metropolis'):
         self.spins = sweeps.sweep(self.spins, self.couplings_doubled, self.neighbors, self.temp_list[self.temp_ids], mode=mode)
@@ -140,7 +147,7 @@ class Ising():
                mode='metropolis',
                cluster_update_interval=None, 
                pt_interval=None):
-        for sweep_id in tqdm(range(n_sweeps), f"sampling with {cluster_update_interval=} and {pt_interval=}"):
+        for sweep_id in range(n_sweeps):
             self.sweep(mode=mode)
             self.update()
             
@@ -150,4 +157,25 @@ class Ising():
             
             if (pt_interval is not None) and (sweep_id % pt_interval == 0):
                 self.parallel_tempering()
-                    
+
+
+class IsingEnsemble():
+    def __init__(self,
+                 lattice_shape,
+                 n_ensemble=2,
+                 **kwargs):
+        self.n_ensemble = n_ensemble
+        self.ising_ensemble = [Ising(lattice_shape, **kwargs) for _ in range(n_ensemble)]
+        
+    def sample(self, n_sweeps, **kwargs):
+        def run_sample(ising):
+            ising.sample(n_sweeps, **kwargs)
+            return ising
+        
+        self.ising_ensemble = joblib.Parallel(n_jobs=self.n_ensemble) \
+            (joblib.delayed(run_sample)(ising) for ising in self.ising_ensemble)
+        
+    def get_energies(self):
+        energies_ensemble = np.array([ising.get_energies() for ising in self.ising_ensemble])
+        return energies_ensemble.mean(0)
+    
