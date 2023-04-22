@@ -119,12 +119,16 @@ class Ising():
         self.spins = sweeps.sweep(self.spins, self.couplings_doubled, self.neighbors, self.temp_list[self.temp_ids], mode=mode)
     
     def cluster_update(self, record=True):
+        """
+        Performs a cluster update of the spins.
+        """
         spins = self.spins.reshape([self.n_replicas, -1])
 
         for replica_id, (temp, interaction) in enumerate(zip(self.temp_list[self.temp_ids], self.interactions)):            
             cluster_labels = get_clusters(interaction, temp)
             cluster_id = cluster_labels[np.random.choice(cluster_labels.size)]
             
+            # records the cluster size distribution
             if record:
                 csd = np.bincount(np.bincount(cluster_labels) - 1)
                 self.csds[replica_id, :len(csd)] = csd
@@ -133,6 +137,9 @@ class Ising():
             self.spins = spins.reshape(self.n_replicas, *self.lattice_shape)
 
     def parallel_tempering(self):
+        """
+        Exchanges the spins of two randomly selected adjacent temperatures.
+        """
         temp_id = np.random.choice(self.n_replicas - 1)
         temp_1, temp_2 = self.temp_list[temp_id], self.temp_list[temp_id + 1]
         energy_1, energy_2 = self.energies[temp_id], self.energies[temp_id + 1]

@@ -3,7 +3,26 @@ import numpy as np
 from scipy.special import logit
 
 
-def sweep(spins, couplings_doubled, neighbors, temp_list, mode='metropolis'):
+def sweep(spins: np.ndarray, 
+          couplings_doubled: np.ndarray, 
+          neighbors: np.ndarray, 
+          temp_list: np.ndarray, 
+          mode='metropolis'):
+    """Perform a single-spin-flip sweep over the lattice.
+    TODO: generalize for arbitrary preceding dimensions
+
+    Args:
+        spins (np.ndarray): the Ising spins, shaped (..., *lattice_shape)
+        couplings_doubled (np.ndarray): the couplings connected to each spin, 
+            shaped (*lattice_shape, 2 * n_dims), assuming square lattice
+        neighbors (np.ndarray): the neighbors adjacent to each spin,
+            shaped (*lattice_shape, 2 * n_dims)
+        temp_list (np.ndarray): the temperature list
+        mode (str, optional): the update rule. Defaults to 'metropolis'.
+
+    Returns:
+        np.ndarray: the updated spins
+    """
     n_replicas = spins.shape[0]
     lattice_shape = spins.shape[1:]
 
