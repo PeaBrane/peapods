@@ -4,6 +4,8 @@ import numpy as np
 from numpy.random import rand, randn
 from tqdm import tqdm
 
+from clusters import get_clusters
+import sweeps
 import utils
 
 
@@ -24,7 +26,7 @@ class Statistics():
         if self.reduce_dims is not None:
             new_input = new_input.mean(self.reduce_dims)
         if self.power != 1:
-            new_input = new_input ** self.power
+            new_input = new_input**self.power
 
         self.aggregate += new_input
 
@@ -105,19 +107,18 @@ class Ising():
         
         self.csds_stat.update(self.csds)
 
-        if self.n_sweeps != 0 and self.n_sweeps % 10 == 0:
+        if self.n_sweeps != 0 and self.n_sweeps % 2**3 == 0:
             self.binder_cumulant = 1 - (self.mags4_stat.average) / (3 * self.mags2_stat.average**2)
             self.heat_capacity = (self.energies2_stat.average - self.energies_stat.average**2) / self.temp_list**2
 
-    def sweep(self):
-        self.spins = utils.sweep(self.spins, self.couplings_doubled, self.neighbors, self.temp_list[self.replica_ids])
+    def sweep(self, mode='metropolis'):
+        self.spins = sweeps.sweep(self.spins, self.couplings_doubled, self.neighbors, self.temp_list[self.replica_ids], mode=mode)
     
     def cluster_update(self, record=True):
         spins = self.spins.reshape([self.n_replicas, -1])
 
-        for i, (replica_id, temp, interaction) in enumerate(zip(self.replica_ids, self.temp_list, self.interactions)):
-            interaction = (1 - np.exp(-2 * interaction / temp)) >= rand(*self.lattice_shape, self.n_dims)
-            cluster_labels = utils.get_clusters(interaction)
+        for i, (replica_id, temp, interaction) in enumerate(zip(self.replica_ids, self.temp_list, self.interactions)):            
+            cluster_labels = get_clusters(interaction, temp)
             cluster_id = cluster_labels[np.random.choice(cluster_labels.size)]
             
             if record:
@@ -128,21 +129,24 @@ class Ising():
             self.spins = spins.reshape(self.n_replicas, *self.lattice_shape)
 
     def parallel_tempering(self):
+        """TODO: check this is correct
+        """
         temp_id = np.random.choice(self.n_replicas - 1)
         temp_1, temp_2 = self.temp_list[temp_id], self.temp_list[temp_id + 1]
-        energy_1, energy_2 = self.energies[temp_id], self.energies[temp_id+1]
-        replica_id_1, replica_id_2 = self.replica_ids[temp_id], self.replica_ids[temp_id + 1]
+        energy_1, energy_2 = self.energies[temp_id], self.energies[temp_id + 1]
         
         if (energy_2 - energy_1) * (1 / temp_1 - 1 / temp_2) >= np.log(rand()):
-            self.temp_ids[replica_id_1], self.temp_ids[replica_id_2] = self.temp_ids[replica_id_2], self.temp_ids[replica_id_1]
-            self.replica_ids = (self.temp_ids == np.arange(self.n_replicas)[..., np.newaxis]).argmax(1)
+            temp_id_0 = temp_id - 1 if temp_id != 0 else None
+            self.replica_ids[temp_id:temp_id+2] = self.replica_ids[temp_id+1:temp_id_0:-1]
+            self.temp_ids = np.argsort(self.replica_ids)
     
     def sample(self, 
                n_sweeps, 
+               mode='metropolis',
                cluster_update_interval=None, 
                pt_interval=None):
         for sweep_id in tqdm(range(n_sweeps), f"sampling with {cluster_update_interval=} and {pt_interval=}"):
-            self.sweep()
+            self.sweep(mode=mode)
             self.update()
             
             if (cluster_update_interval is not None) and (sweep_id % cluster_update_interval == 0):

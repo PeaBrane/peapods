@@ -2,7 +2,15 @@
 
 The goal of this project is to build a Python library for simulating spin systems with modern efficient Monte-Carlo methods. The implementation aims to balance between performance and simplicity. 
 
-Currently, only Ising ferromagnets and spin-glasses are supported, but development for other spin classes (Potts, clock, and O(N) models) are planned, including their quantum counterparts.
+## Description
+
+Currently, this project is at the very early stages, and only supports simulating Ising ferromagnets. Development for other spin classes (Potts, clock, and O(N) models) are planned, including their disordered and quantum counterparts.
+
+The following algoritms are currently supported:
+
+- Single-spin flips
+- [Cluster updates (only Wolff)](https://en.wikipedia.org/wiki/Wolff_algorithm)
+- [Parallel tempering](https://en.wikipedia.org/wiki/Parallel_tempering)
 
 ## Dependencies (numba)
 
