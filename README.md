@@ -4,7 +4,10 @@ The goal of this project is to build a Python library for simulating spin system
 
 ## Description
 
-Currently, this project is at the very early stages, and only supports simulating Ising ferromagnets. Development for other spin classes (Potts, clock, and O(N) models) are planned, including their disordered and quantum counterparts.
+Currently, this project is at the very early stages, 
+and only supports simulating Ising ferromagnets and spin glasses. 
+Development for other spin classes (Potts, clock, and O(N) models) are planned, 
+including their disordered and quantum counterparts.
 
 The following algoritms are currently supported:
 
@@ -14,12 +17,15 @@ The following algoritms are currently supported:
 
 The following algorithms are planned:
 
-- Cluster updates for frustrated spin systems (e.g. [KBD algorithm](https://en.wikipedia.org/wiki/KBD_algorithm#:~:text=The%20KBD%20algorithm%20is%20an,algorithm%20more%20efficient%20in%20comparison.))
-- Replica cluster moves
+- Cluster updates for frustrated spin systems 
+(e.g. [KBD algorithm](https://en.wikipedia.org/wiki/KBD_algorithm#:~:text=The%20KBD%20algorithm%20is%20an,algorithm%20more%20efficient%20in%20comparison.))
+- [Replica cluster moves](https://en.wikipedia.org/wiki/Replica_cluster_move#:~:text=Replica%20cluster%20move%20in%20condensed,replicas%20instead%20of%20just%20one.)
 
 ## Dependencies (numba)
 
-The required dependencies should come with any standard Python installations. However, it is highly recommended that you install Numba for efficient simulation. Simply create a new python environment and do:
+The required dependencies should come with any standard Python installations. 
+However, it is highly recommended that you install Numba for efficient simulation. 
+Simply create a new python environment and do:
 
 `pip install numba`
 
@@ -27,4 +33,6 @@ The required dependencies should come with any standard Python installations. Ho
 
 This is an open-source project, so everyone is welcomed to contribute! 
 
-Please open an issue if you spotted a bug or suggest any feature enhancements. Submit a pull request if appropriate. Alternatively, contact me at yanrpei@gmail.com if you wish to be a contributor to this project.
+Please open an issue if you spotted a bug or suggest any feature enhancements. 
+Submit a pull request if appropriate. 
+Alternatively, contact me at yanrpei@gmail.com if you wish to be a contributor to this project.
