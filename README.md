@@ -22,6 +22,25 @@ The following algorithms are planned:
 (e.g. [KBD algorithm](https://en.wikipedia.org/wiki/KBD_algorithm#:~:text=The%20KBD%20algorithm%20is%20an,algorithm%20more%20efficient%20in%20comparison.))
 - [Replica cluster moves](https://en.wikipedia.org/wiki/Replica_cluster_move#:~:text=Replica%20cluster%20move%20in%20condensed,replicas%20instead%20of%20just%20one.)
 
+## Quickstart
+
+It is very easy to get started with simulating an (ensemble of) spin models.
+For example, if we want to simulate an ensemble of 16 independent Ising ferromagnets
+shaped 20 x 20, we can do the following:
+
+```python
+from spin_models import IsingEnsemble
+
+ising_ensemble = IsingEnsemble(lattice_shape=(20, 20), n_ensemble=16)
+ising_ensemble.sample(n_sweeps=2**14)
+```
+
+Note that code will try to start 16 parallel workers for simulation,
+where each worker will maintain its own set of Ising models at different temperatures,
+and simulate them for 2^14 sweeps.
+
+For a more complete example, check out this [tutorial](tutorial.ipynb).
+
 ## Dependencies (numba)
 
 The required dependencies should come with any standard Python installations. 

@@ -13,10 +13,8 @@ import utils
 class Statistics():
     def __init__(self, 
                  reduce_dims=None, 
-                 normalize_dims=None, 
                  power=1):
         self.reduce_dims = reduce_dims
-        self.normalize_dims = normalize_dims
         self.power = power
         self.count = 0
         self.aggregate = 0
@@ -34,8 +32,6 @@ class Statistics():
     @property
     def average(self):
         average = self.aggregate / self.count
-        if self.normalize_dims is not None:
-            average = average / average.sum(self.normalize_dims, keepdims=True)
         return average
     
     def reset_states(self):
@@ -52,7 +48,7 @@ class Ising():
         self.coupling_dims = lattice_shape + (self.n_dims,)
 
         self.n_replicas = len(temperatures)
-        self.temp_list = temperatures.copy()
+        self.temperatures = temperatures.copy()
         self.temp_ids = np.arange(self.n_replicas)
         self.replica_ids = np.arange(self.n_replicas)
         
@@ -88,9 +84,9 @@ class Ising():
         self.mags_stat, self.mags2_stat, self.mags4_stat = [Statistics(power=power) for power in [1, 2, 4]]
         self.energies_stat, self.energies2_stat = [Statistics(power=power) for power in [1, 2]]
         
-        self.csds_stat = Statistics(normalize_dims=(-1,))
+        self.csds_stat = Statistics()
 
-    def update(self):
+    def update(self, csd_update=False):
         self.n_sweeps += 1
         
         self.energies, self.interactions = utils.get_energy(self.spins, self.couplings)
@@ -103,20 +99,23 @@ class Ising():
         self.energies_stat.update(self.energies[self.replica_ids])
         self.energies2_stat.update(self.energies[self.replica_ids])
         
-        self.csds_stat.update(self.csds[self.replica_ids])
+        if csd_update:
+            self.csds_stat.update(self.csds[self.replica_ids])
 
         if self.n_sweeps != 0 and self.n_sweeps % 2**3 == 0:
             self.binder_cumulant = 1 - (self.mags4_stat.average) / (3 * self.mags2_stat.average**2)
-            self.heat_capacity = (self.energies2_stat.average - self.energies_stat.average**2) / self.temp_list**2
+            self.heat_capacity = (self.energies2_stat.average - self.energies_stat.average**2) / self.temperatures**2
             
     def get_energies(self):
         return self.energies_stat.average
     
     def get_csds(self):
-        return self.csds_stat.average
+        csds = self.csds_stat.average
+        return csds / csds.sum(-1, keepdims=True)
 
     def sweep(self, mode='metropolis'):
-        self.spins = sweeps.sweep(self.spins, self.couplings_doubled, self.neighbors, self.temp_list[self.temp_ids], mode=mode)
+        self.spins = sweeps.sweep(self.spins, self.couplings_doubled, self.neighbors, 
+                                  self.temperatures[self.temp_ids], mode=mode)
     
     def cluster_update(self, record=True):
         """
@@ -124,7 +123,7 @@ class Ising():
         """
         spins = self.spins.reshape([self.n_replicas, -1])
 
-        for replica_id, (temp, interaction) in enumerate(zip(self.temp_list[self.temp_ids], self.interactions)):            
+        for replica_id, (temp, interaction) in enumerate(zip(self.temperatures[self.temp_ids], self.interactions)):            
             cluster_labels = get_clusters(interaction, temp)
             cluster_id = cluster_labels[np.random.choice(cluster_labels.size)]
             
@@ -134,19 +133,20 @@ class Ising():
                 self.csds[replica_id, :len(csd)] = csd
             
             spins[replica_id, cluster_labels == cluster_id] = -spins[replica_id, cluster_labels == cluster_id]
-            self.spins = spins.reshape(self.n_replicas, *self.lattice_shape)
+            
+        self.spins = spins.reshape(self.n_replicas, *self.lattice_shape)
 
     def parallel_tempering(self):
         """
         Exchanges the spins of two randomly selected adjacent temperatures.
         """
         temp_id = np.random.choice(self.n_replicas - 1)
-        temp_1, temp_2 = self.temp_list[temp_id], self.temp_list[temp_id + 1]
+        temp_1, temp_2 = self.temperatures[temp_id], self.temperatures[temp_id + 1]
         energy_1, energy_2 = self.energies[temp_id], self.energies[temp_id + 1]
         
-        if (energy_2 - energy_1) * (1 / temp_1 - 1 / temp_2) >= np.log(rand()):
-            temp_id_0 = temp_id - 1 if temp_id != 0 else None
-            self.replica_ids[temp_id:temp_id+2] = self.replica_ids[temp_id+1:temp_id_0:-1]
+        if (energy_2 - energy_1) * (1 / temp_1 - 1 / temp_2) >= np.log(rand()):            
+            self.replica_ids[temp_id], self.replica_ids[temp_id+1] = \
+                self.replica_ids[temp_id+1], self.replica_ids[temp_id]
             self.temp_ids = np.argsort(self.replica_ids)
     
     def sample(self, 
@@ -160,7 +160,7 @@ class Ising():
             
             if (cluster_update_interval is not None) and (sweep_id % cluster_update_interval == 0):
                 self.cluster_update()
-                self.update()
+                self.update(csd_update=True)
             
             if (pt_interval is not None) and (sweep_id % pt_interval == 0):
                 self.parallel_tempering()
@@ -182,7 +182,12 @@ class IsingEnsemble():
         self.ising_ensemble = joblib.Parallel(n_jobs=self.n_ensemble) \
             (joblib.delayed(run_sample)(ising) for ising in self.ising_ensemble)
         
-    def get_energies(self):
+    def get_energies(self):        
         energies_ensemble = np.array([ising.get_energies() for ising in self.ising_ensemble])
         return energies_ensemble.mean(0)
+    
+    def get_csds(self):        
+        csds_ensemble = np.array([ising.get_csds() for ising in self.ising_ensemble])
+        csds = csds_ensemble.mean(0)
+        return csds / csds.sum(-1, keepdims=True)
     

@@ -32,9 +32,11 @@ def get_energy(spins, couplings):
     """
     n_dims = couplings.ndim - 1
 
-    spins_rolled = np.stack([np.roll(spins, -1, i) 
-                             for i in range(-n_dims, 0)], axis=-1)  # (..., *lattice_shape, n_dims)
-    interactions = spins[..., np.newaxis] * spins_rolled * couplings  # (..., *lattice_shape, n_dims)    
+    # (..., *lattice_shape, n_dims)  
+    spins_rolled = np.stack([np.roll(spins, -1, i) for i in range(-n_dims, 0)], axis=-1)
+    interactions = spins[..., np.newaxis] * spins_rolled * couplings
+    
+    # (...)
     energies = interactions.sum(tuple(range(-n_dims - 1, 0))) / prod(spins.shape[-n_dims:])
 
     return energies, interactions
