@@ -6,7 +6,7 @@ from scipy.special import logit
 def sweep(spins: np.ndarray, 
           couplings_doubled: np.ndarray, 
           neighbors: np.ndarray, 
-          temp_list: np.ndarray, 
+          temperatures: np.ndarray, 
           mode='metropolis'):
     """Perform a single-spin-flip sweep over the lattice.
     TODO: generalize for arbitrary preceding dimensions
@@ -17,7 +17,7 @@ def sweep(spins: np.ndarray,
             shaped (*lattice_shape, 2 * n_dims), assuming square lattice
         neighbors (np.ndarray): the neighbors adjacent to each spin,
             shaped (*lattice_shape, 2 * n_dims)
-        temp_list (np.ndarray): the temperature list
+        temperatures (np.ndarray): the temperature list
         mode (str, optional): the update rule. Defaults to 'metropolis'.
 
     Returns:
@@ -32,10 +32,10 @@ def sweep(spins: np.ndarray,
     
     match mode:
         case 'metropolis':
-            rand_block = np.log(np.random.rand(num_spins, n_replicas)) * temp_list
+            rand_block = np.log(np.random.rand(num_spins, n_replicas)) * temperatures
             rand_block = rand_block.T / 2
         case 'gibbs':
-            rand_block = logit(np.random.rand(num_spins, n_replicas)) * temp_list
+            rand_block = logit(np.random.rand(num_spins, n_replicas)) * temperatures
             rand_block = rand_block.T / 2
         case _:
             raise ValueError("Invalid sampling mode.")

@@ -8,34 +8,7 @@ import joblib
 from clusters import get_clusters
 import sweeps
 import utils
-
-
-class Statistics():
-    def __init__(self, 
-                 reduce_dims=None, 
-                 power=1):
-        self.reduce_dims = reduce_dims
-        self.power = power
-        self.count = 0
-        self.aggregate = 0
-
-    def update(self, new_input):
-        self.count += 1
-
-        if self.reduce_dims is not None:
-            new_input = new_input.mean(self.reduce_dims)
-        if self.power != 1:
-            new_input = new_input**self.power
-
-        self.aggregate += new_input
-
-    @property
-    def average(self):
-        average = self.aggregate / self.count
-        return average
-    
-    def reset_states(self):
-        self.count, self.aggregate = 0, 0
+from utils import Statistics
 
 
 class Ising():
@@ -117,7 +90,7 @@ class Ising():
         self.spins = sweeps.sweep(self.spins, self.couplings_doubled, self.neighbors, 
                                   self.temperatures[self.temp_ids], mode=mode)
     
-    def cluster_update(self, record=True):
+    def cluster_update(self, update=True, record=True):
         """
         Performs a cluster update of the spins.
         """
@@ -132,7 +105,9 @@ class Ising():
                 csd = np.bincount(np.bincount(cluster_labels) - 1)
                 self.csds[replica_id, :len(csd)] = csd
             
-            spins[replica_id, cluster_labels == cluster_id] = -spins[replica_id, cluster_labels == cluster_id]
+            # flips the spin clusters
+            if update:
+                spins[replica_id, cluster_labels == cluster_id] = -spins[replica_id, cluster_labels == cluster_id]
             
         self.spins = spins.reshape(self.n_replicas, *self.lattice_shape)
 

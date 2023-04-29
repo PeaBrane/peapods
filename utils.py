@@ -40,3 +40,31 @@ def get_energy(spins, couplings):
     energies = interactions.sum(tuple(range(-n_dims - 1, 0))) / prod(spins.shape[-n_dims:])
 
     return energies, interactions
+
+
+class Statistics():
+    def __init__(self, 
+                 reduce_dims=None, 
+                 power=1):
+        self.reduce_dims = reduce_dims
+        self.power = power
+        
+        self.count, self.aggregate = 0, 0
+
+    def update(self, new_input):
+        self.count += 1
+
+        if self.reduce_dims is not None:
+            new_input = new_input.mean(self.reduce_dims)
+        if self.power != 1:
+            new_input = new_input**self.power
+
+        self.aggregate += new_input
+
+    @property
+    def average(self):
+        average = self.aggregate / self.count
+        return average
+    
+    def reset_states(self):
+        self.count, self.aggregate = 0, 0
