@@ -6,8 +6,12 @@ from scipy.sparse import csgraph, csr_matrix
 
 
 def sw_interaction(interaction, temp):
-    interaction = (1 - np.exp(-2 * interaction / temp)) >= rand(*interaction.shape)
-    return interaction
+    """
+    Returns a boolean interaction array denoting the openess of
+    bonds under the SW algorithm:
+    https://en.wikipedia.org/wiki/Swendsen%E2%80%93Wang_algorithm
+    """
+    return (1 - np.exp(-2 * interaction / temp)) >= rand(*interaction.shape)
 
 
 def get_clusters(interaction, temp, mode='sw'):
