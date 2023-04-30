@@ -1,7 +1,11 @@
 # PeaPods: pythonic and efficient simulation of spin systems
 
 The goal of this project is to build a Python library for simulating spin systems with modern efficient Monte-Carlo methods. 
-The implementation aims to balance between performance and simplicity. 
+The implementation aims to balance between performance and simplicity.
+
+<p align="center">
+  <img src="./docs/csd.png" alt="CSD">
+</p>
 
 ## Description
 
@@ -44,10 +48,11 @@ For a more complete example, check out this [tutorial](tutorial.ipynb).
 ## Dependencies (numba)
 
 The required dependencies should come with any standard Python installations. 
-However, it is highly recommended that you install Numba for efficient simulation. 
-Simply create a new python environment and do:
+However, it is highly recommended that you install Numba for efficient simulation:
 
 `pip install numba`
+
+The complete list of dependencies is found in [requirements.txt](requirements.txt)
 
 ## Contribution
 

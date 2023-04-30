@@ -15,7 +15,7 @@ class Ising():
     def __init__(self, 
                  lattice_shape, 
                  couplings='ferro', 
-                 temperatures=np.geomspace(0.1, 10, 30)):
+                 temperatures=np.geomspace(0.1, 10, 32)):
         self.n_dims = len(lattice_shape)
         self.lattice_shape = tuple(lattice_shape)
         self.coupling_dims = lattice_shape + (self.n_dims,)
