@@ -20,7 +20,7 @@ def get_neighbors(lattice_shape):
         neighbor = np.ravel_multi_index(inds_new, lattice_shape)
         neighbors.append(neighbor)
 
-    return np.vstack(neighbors).T
+    return np.stack(neighbors, -1).astype(np.int32)
 
 
 def get_energy(spins, couplings):

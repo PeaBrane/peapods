@@ -35,6 +35,7 @@ class Ising():
             case _:
                 raise ValueError("Invalid mode for couplings.")
 
+        self.couplings = self.couplings.astype(np.float32)
         couplings = [coupling for coupling in np.moveaxis(self.couplings, -1, 0)]
         couplings_clone = [np.roll(self.couplings[..., i], 1, i) for i in range(self.n_dims)]
         self.couplings_doubled = np.stack(couplings + couplings_clone, axis=-1)
@@ -49,7 +50,7 @@ class Ising():
         self.temp_ids = np.arange(self.n_replicas)
         self.replica_ids = np.arange(self.n_replicas)
 
-        self.spins = -1 + 2 * rand(self.n_replicas, *self.lattice_shape).round()
+        self.spins = -1 + 2 * rand(self.n_replicas, *self.lattice_shape).round().astype(np.float32)
         self.mags = self.spins.mean(tuple(range(-self.n_dims, 0)))
         self.energies, self.interactions = utils.get_energy(self.spins, self.couplings)
         self.csds = np.zeros((self.n_replicas, prod(self.lattice_shape)))
@@ -119,7 +120,7 @@ class Ising():
         temp_1, temp_2 = self.temperatures[temp_id], self.temperatures[temp_id + 1]
         energy_1, energy_2 = self.energies[temp_id], self.energies[temp_id + 1]
         
-        if (energy_2 - energy_1) * (1 / temp_1 - 1 / temp_2) >= np.log(rand()):            
+        if (energy_2 - energy_1) * (1 / temp_1 - 1 / temp_2) >= np.log(rand()):
             self.replica_ids[temp_id], self.replica_ids[temp_id+1] = \
                 self.replica_ids[temp_id+1], self.replica_ids[temp_id]
             self.temp_ids = np.argsort(self.replica_ids)
