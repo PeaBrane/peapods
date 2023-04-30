@@ -96,6 +96,7 @@ class Ising():
         Performs a cluster update of the spins.
         """
         spins = self.spins.reshape([self.n_replicas, -1])
+        self.csds.fill(0)
 
         for replica_id, (temp, interaction) in enumerate(zip(self.temperatures[self.temp_ids], self.interactions)):            
             cluster_labels = get_clusters(interaction, temp)
