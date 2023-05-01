@@ -29,7 +29,10 @@ temperatures = np.geomspace(0.1, 10, 32)
 ising = IsingEnsemble(lattice_shape=(32, 32),
                       n_ensemble=32,
                       temperatures=temperatures)
-ising.sample(n_sweeps=2**22, cluster_update_interval=2**3, pt_interval=1)
+ising.sample(n_sweeps=2**22,
+             warmup_ratio=0.1,
+             cluster_update_interval=2**3,
+             pt_interval=2**3)
 
 # plot csds
 csds = ising.get_csds()[17:27:2].T
