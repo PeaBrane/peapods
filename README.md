@@ -24,7 +24,10 @@ The following algorithms are planned:
 
 - Cluster updates for frustrated spin systems 
 (e.g. [KBD algorithm](https://en.wikipedia.org/wiki/KBD_algorithm#:~:text=The%20KBD%20algorithm%20is%20an,algorithm%20more%20efficient%20in%20comparison.))
-- [Replica cluster moves](https://en.wikipedia.org/wiki/Replica_cluster_move#:~:text=Replica%20cluster%20move%20in%20condensed,replicas%20instead%20of%20just%20one.)
+- [Replica cluster moves](https://en.wikipedia.org/wiki/Replica_cluster_move#:~:text=Replica%20cluster%20move%20in%20condensed,replicas%20instead%20of%20just%20one.) 
+(e.g. [Houdayer move](https://arxiv.org/abs/cond-mat/0101116), 
+[Jorg move](https://arxiv.org/abs/cond-mat/0410328)
+)
 
 ## Quickstart
 
