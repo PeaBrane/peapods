@@ -3,6 +3,11 @@ from math import prod
 import numpy as np
 
 
+def swap(arr, ind1, ind2):
+    arr[ind1], arr[ind2] = arr[ind2], arr[ind1]
+    return arr
+
+
 def get_neighbors(lattice_shape):
     inds = np.arange(prod(lattice_shape))
     inds = list(np.unravel_index(inds, lattice_shape))
