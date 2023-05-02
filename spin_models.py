@@ -120,8 +120,8 @@ class Ising():
             
         self.spins = spins.reshape(self.n_temps, *self.lattice_shape)
         
-    def cmr_update(self, update=True, record=True):
-        raise NotImplementedError("CMR updates require two replicas.")
+    def replica_cluster_update(self, update=True, record=True, cluster_mode='cmr'):
+        raise NotImplementedError("Replica cluster update requires two replicas.")
 
     def parallel_tempering(self):
         """
@@ -156,8 +156,8 @@ class Ising():
                     case 'sw':
                         self.sw_update(record=record)
                         self.update(record=record, csd_update=True)
-                    case 'cmr':
-                        self.cmr_update(record=record)
+                    case 'cmr' | 'houd':
+                        self.replica_cluster_update(record=record, cluster_mode=cluster_mode)
                         self.update(record=record, csd_update=True)
             
             if (pt_interval is not None) and (sweep_id % pt_interval == 0):
@@ -190,7 +190,7 @@ class IsingReplicas(Ising):
             csds = csds / csds.sum(-1, keepdim=True)
         return csds
     
-    def cmr_update(self, update=True, record=True):
+    def replica_cluster_update(self, update=True, record=True, cluster_mode='cmr'):
         """
         TODO: implement cluster update routine
         """
@@ -202,7 +202,7 @@ class IsingReplicas(Ising):
                                        interactions_pairs[1::2]], axis=1)
         
         for temp_id, (interaction, temp) in enumerate(zip(interactions_pairs, self.temperatures[::2])):
-            clusters, _ = get_clusters(interaction, temp, mode='cmr')
+            clusters, _ = get_clusters(interaction, temp, cluster_mode=cluster_mode)
                 
             # records the cluster size distribution
             if record:                    

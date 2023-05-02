@@ -26,24 +26,32 @@ def site_clusters(sites):
     return clusters
 
 
-def get_clusters(interaction, temp, mode='sw'):
-    match mode:
+def get_clusters(interaction, temp, cluster_mode='sw'):
+    match cluster_mode:
         case 'sw':
-            bonds = (1 - np.exp(-2 * interaction / temp)) >= rand(*interaction.shape)
+            p = np.exp(-2 * interaction / temp)
+            bonds = ((1 - p) >= rand(*p.shape))
             return bond_clusters(bonds)
         
         case 'cmr':
-            rand_block = rand(*interaction.shape)
-            interaction_positive, interaction_abs = (interaction > 0), np.abs(interaction[0])
+            p = np.exp(-2 * np.abs(interaction[0]) / temp)
+            rand_block = rand(2, *p.shape)
+            interaction_positive = (interaction > 0)
             
             interaction_double = np.logical_and(*interaction_positive)
             interaction_single = np.logical_xor(*interaction_positive)
             
-            bonds_blue = interaction_double & ((1 - np.exp(-4 * interaction_abs / temp)) >= rand_block[0])
-            bonds_red = interaction_single & ((1 - np.exp(-2 * interaction_abs / temp)) >= rand_block[1])
+            bonds_blue = interaction_double & ((1 - p**2) >= rand_block[0])
+            bonds_red = interaction_single & ((1 - p) >= rand_block[1])
             bonds_grey = np.logical_or(bonds_blue, bonds_red)
             
             return bond_clusters(bonds_blue), bond_clusters(bonds_grey)
             
-        case 'icm':
-            return site_clusters(interaction)
+        case 'houd':
+            interaction_positive = (interaction > 0)
+            interaction_consistent = ~np.logical_xor(*interaction_positive)
+            return bond_clusters(interaction_consistent), None
+        
+        case _:
+            raise ValueError("Invalid cluster mode.")
+            
