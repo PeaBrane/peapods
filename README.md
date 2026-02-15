@@ -17,7 +17,8 @@ including their disordered and quantum counterparts.
 The following algoritms are currently supported:
 
 - Single-spin flips
-- [Cluster updates (only Wolff)](https://en.wikipedia.org/wiki/Wolff_algorithm)
+- [Swendsen-Wang cluster updates](https://en.wikipedia.org/wiki/Swendsen%E2%80%93Wang_algorithm)
+- [Wolff cluster updates](https://en.wikipedia.org/wiki/Wolff_algorithm)
 - [Parallel tempering](https://en.wikipedia.org/wiki/Parallel_tempering)
 
 The following algorithms are planned:
