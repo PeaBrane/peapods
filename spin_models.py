@@ -6,7 +6,7 @@ from numpy.random import rand, randn
 
 import sweeps
 import utils
-from clusters import get_clusters
+from clusters import _bond_clusters_uf, _get_forward_neighbors, get_clusters
 from utils import Statistics, swap
 
 
@@ -41,6 +41,7 @@ class Ising:
         self.couplings_doubled = np.stack(couplings + couplings_clone, axis=-1)
 
         self.neighbors = utils.get_neighbors(lattice_shape)
+        self.forward_neighbors = _get_forward_neighbors(lattice_shape)
 
         self.reset()
 
@@ -57,25 +58,28 @@ class Ising:
         self.energies, self.interactions = utils.get_energy(self.spins, self.couplings)
         self.csds = np.zeros((self.n_temps, prod(self.lattice_shape)))
 
-        self.mags_stat, self.mags2_stat, self.mags4_stat = [
-            Statistics(power=power) for power in [1, 2, 4]
-        ]
-        self.energies_stat, self.energies2_stat = [
-            Statistics(power=power) for power in [1, 2]
-        ]
+        self.mags_stat = Statistics()
+        self.mags2_stat = Statistics()
+        self.mags4_stat = Statistics()
+        self.energies_stat = Statistics()
+        self.energies2_stat = Statistics(power=2)
 
         self.csds_stat = Statistics()
 
-    def update(self, record=True, csd_update=False):
+    def update(self, record=True, csd_update=False, compute_interactions=False):
         self.n_swept += 1
-        self.energies, self.interactions = utils.get_energy(self.spins, self.couplings)
+        energies, interactions = utils.get_energy(self.spins, self.couplings)
+        self.energies = energies
+        if compute_interactions:
+            self.interactions = interactions
 
         if record:
             self.mags = self.spins.mean(tuple(range(-self.n_dims, 0)))[self.system_ids]
 
+            mags2 = self.mags**2
             self.mags_stat.update(self.mags)
-            self.mags2_stat.update(self.mags)
-            self.mags4_stat.update(self.mags)
+            self.mags2_stat.update(mags2)
+            self.mags4_stat.update(mags2**2)
 
             self.energies_stat.update(self.energies[self.system_ids])
             self.energies2_stat.update(self.energies[self.system_ids])
@@ -110,7 +114,9 @@ class Ising:
         )
 
     def record_clusters(self, clusters, temp_id):
-        csd = np.bincount(np.bincount(clusters) - 1)
+        cluster_sizes = np.bincount(clusters)
+        cluster_sizes = cluster_sizes[cluster_sizes > 0]
+        csd = np.bincount(cluster_sizes - 1)
         self.csds[temp_id, : len(csd)] = csd
 
     def sw_update(self, update=True, record=True):
@@ -120,10 +126,15 @@ class Ising:
         self.csds.fill(0)
         spins = self.spins.reshape(self.n_temps, -1)
 
-        for temp_id, (interaction, temp) in enumerate(
-            zip(self.interactions[self.system_ids], self.temperatures)
-        ):
-            clusters = get_clusters(interaction, temp)
+        # vectorized bond activation across all temperatures
+        interactions = self.interactions[self.system_ids]
+        temps = self.temperatures.reshape(-1, *([1] * (self.n_dims + 1)))
+        p = np.exp(-2 * interactions / temps)
+        all_bonds = (1 - p) >= rand(*p.shape)
+
+        for temp_id in range(self.n_temps):
+            bonds_flat = all_bonds[temp_id].reshape(-1, self.n_dims)
+            clusters = _bond_clusters_uf(bonds_flat, self.forward_neighbors)
 
             # flips the spin clusters
             system_id = self.system_ids[temp_id]
@@ -132,7 +143,6 @@ class Ising:
             if update:
                 spins[system_id, flip_mask] = -spins[system_id, flip_mask]
 
-            # records the cluster size distribution
             if record:
                 self.record_clusters(clusters, temp_id)
 
@@ -167,22 +177,24 @@ class Ising:
 
         for sweep_id in range(n_sweeps):
             record = sweep_id >= warmup_sweeps
-
             self.sweep(mode=sweep_mode)
-            self.update(record=record)
 
-            if (cluster_update_interval is not None) and (
+            do_cluster = (cluster_update_interval is not None) and (
                 sweep_id % cluster_update_interval == 0
-            ):
+            )
+
+            if do_cluster:
+                self.update(record=record, compute_interactions=True)
                 match cluster_mode:
                     case "sw":
                         self.sw_update(record=record)
-                        self.update(record=record, csd_update=True)
                     case "cmr" | "houd":
                         self.replica_cluster_update(
                             record=record, cluster_mode=cluster_mode
                         )
-                        self.update(record=record, csd_update=True)
+                self.update(record=record, csd_update=True)
+            else:
+                self.update(record=record)
 
             if (pt_interval is not None) and (sweep_id % pt_interval == 0):
                 self.parallel_tempering()

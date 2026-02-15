@@ -1,24 +1,11 @@
-from pathlib import Path
 import sys
-
-sys.path.insert(0, str(Path.cwd().parent))
-
-import importlib
+from pathlib import Path
 
 import numpy as np
 from matplotlib import pyplot as plt
 
-import utils
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-importlib.reload(utils)
-
-import sweeps
-
-importlib.reload(sweeps)
-
-import spin_models
-
-importlib.reload(spin_models)
 from spin_models import IsingEnsemble
 
 # set colors to blue
@@ -32,7 +19,7 @@ plt.rcParams["axes.titlecolor"] = "#0366d6"
 temperatures = np.geomspace(0.1, 10, 32)
 ising = IsingEnsemble(lattice_shape=(32, 32), n_ensemble=32, temperatures=temperatures)
 ising.sample(
-    n_sweeps=2**24, warmup_ratio=0.1, cluster_update_interval=2**3, pt_interval=2**3
+    n_sweeps=2**12, warmup_ratio=0.1, cluster_update_interval=2**3, pt_interval=2**3
 )
 
 # plot csds
@@ -45,4 +32,6 @@ plt.yscale("log")
 plt.ylim(1e-7, 1)
 plt.legend([f"$T = {temp:.3f}$" for temp in temperatures[17:27:2]])
 plt.title("cluster size distributions of a 32 x 32 Ising ferromagnet")
-plt.savefig("csd.png", dpi=300, bbox_inches="tight", pad_inches=0, transparent=True)
+out_path = Path(__file__).resolve().parent / "csd.png"
+plt.savefig(out_path, dpi=300, bbox_inches="tight", pad_inches=0, transparent=True)
+print(f"Saved to {out_path}")
