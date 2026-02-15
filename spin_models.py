@@ -6,7 +6,7 @@ from numpy.random import rand, randn
 
 import sweeps
 import utils
-from clusters import _bond_clusters_uf, _get_forward_neighbors, get_clusters
+from clusters import _bond_clusters_uf, _get_forward_neighbors, get_clusters, wolff_grow
 from utils import Statistics, swap
 
 
@@ -136,15 +136,40 @@ class Ising:
             bonds_flat = all_bonds[temp_id].reshape(-1, self.n_dims)
             clusters = _bond_clusters_uf(bonds_flat, self.forward_neighbors)
 
-            # flips the spin clusters
+            # flip each cluster independently with probability 1/2
             system_id = self.system_ids[temp_id]
-            cluster_id = clusters[np.random.choice(clusters.size)]
-            flip_mask = clusters == cluster_id
             if update:
+                unique_labels = np.unique(clusters)
+                flip_labels = unique_labels[rand(len(unique_labels)) < 0.5]
+                flip_mask = np.isin(clusters, flip_labels)
                 spins[system_id, flip_mask] = -spins[system_id, flip_mask]
 
             if record:
                 self.record_clusters(clusters, temp_id)
+
+        self.spins = spins.reshape(self.n_temps, *self.lattice_shape)
+
+    def wolff_update(self, update=True):
+        """
+        Performs a Wolff single-cluster update. Grows one cluster from a random
+        seed per temperature — no need to find all clusters.
+        """
+        spins = self.spins.reshape(self.n_temps, -1)
+        n_spins = spins.shape[1]
+        couplings_flat = self.couplings_doubled.reshape(n_spins, -1)
+        neighbors_flat = self.neighbors.reshape(n_spins, -1)
+
+        for temp_id in range(self.n_temps):
+            system_id = self.system_ids[temp_id]
+            temp = self.temperatures[temp_id]
+            seed = np.random.randint(n_spins)
+
+            flip_mask = wolff_grow(
+                spins[system_id], couplings_flat, neighbors_flat, temp, seed
+            )
+
+            if update:
+                spins[system_id, flip_mask] = -spins[system_id, flip_mask]
 
         self.spins = spins.reshape(self.n_temps, *self.lattice_shape)
 
@@ -184,15 +209,20 @@ class Ising:
             )
 
             if do_cluster:
-                self.update(record=record, compute_interactions=True)
                 match cluster_mode:
+                    case "wolff":
+                        self.wolff_update()
+                        self.update(record=record)
                     case "sw":
+                        self.update(record=record, compute_interactions=True)
                         self.sw_update(record=record)
+                        self.update(record=record, csd_update=True)
                     case "cmr" | "houd":
+                        self.update(record=record, compute_interactions=True)
                         self.replica_cluster_update(
                             record=record, cluster_mode=cluster_mode
                         )
-                self.update(record=record, csd_update=True)
+                        self.update(record=record, csd_update=True)
             else:
                 self.update(record=record)
 

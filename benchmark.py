@@ -66,6 +66,17 @@ def run_benchmarks():
     )
 
     bench(
+        "metropolis + Wolff cluster",
+        lambda m: m.sample(
+            N_SWEEPS,
+            sweep_mode="metropolis",
+            cluster_update_interval=1,
+            cluster_mode="wolff",
+            warmup_ratio=0.0,
+        ),
+    )
+
+    bench(
         "metropolis + PT",
         lambda m: m.sample(
             N_SWEEPS,

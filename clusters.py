@@ -95,6 +95,51 @@ def site_clusters(sites):
     return clusters
 
 
+@numba.njit
+def wolff_grow(spins, couplings_doubled, neighbors, temp, seed):
+    """Grow a single Wolff cluster from a seed spin via BFS.
+
+    Args:
+        spins: (n_spins,) flat spin array for one replica
+        couplings_doubled: (n_spins, 2*n_dims) couplings for all neighbors
+        neighbors: (n_spins, 2*n_dims) neighbor indices
+        temp: temperature scalar
+        seed: seed spin index
+
+    Returns:
+        in_cluster: (n_spins,) boolean mask of cluster members
+    """
+    n_spins = spins.shape[0]
+    n_neighbors = neighbors.shape[1]
+
+    in_cluster = np.zeros(n_spins, dtype=numba.boolean)
+    stack = np.empty(n_spins, dtype=np.int32)
+
+    in_cluster[seed] = True
+    stack[0] = seed
+    stack_size = 1
+
+    while stack_size > 0:
+        stack_size -= 1
+        spin_id = stack[stack_size]
+
+        for i in range(n_neighbors):
+            neighbor = neighbors[spin_id, i]
+            if in_cluster[neighbor]:
+                continue
+            interaction = (
+                spins[spin_id] * spins[neighbor] * couplings_doubled[spin_id, i]
+            )
+            if interaction <= 0.0:
+                continue
+            if np.random.random() < 1.0 - np.exp(-2.0 * interaction / temp):
+                in_cluster[neighbor] = True
+                stack[stack_size] = neighbor
+                stack_size += 1
+
+    return in_cluster
+
+
 def get_clusters(interaction, temp, cluster_mode="sw"):
     match cluster_mode:
         case "sw":
