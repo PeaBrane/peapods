@@ -2,13 +2,12 @@ import time
 
 import numpy as np
 
-from spin_models import Ising
+from peapods import Ising
 
 
 LATTICE_SHAPE = (32, 32)
 N_TEMPS = 16
 N_SWEEPS = 1000
-N_WARMUP_SWEEPS = 100
 
 
 def make_model():
@@ -19,10 +18,6 @@ def make_model():
 def bench(name, run_fn):
     model = make_model()
 
-    # warmup (triggers numba JIT compilation on first call)
-    model.sample(N_WARMUP_SWEEPS, sweep_mode="metropolis", warmup_ratio=0.0)
-
-    model.reset()
     t0 = time.perf_counter()
     run_fn(model)
     elapsed = time.perf_counter() - t0
@@ -38,20 +33,12 @@ def run_benchmarks():
 
     bench(
         "metropolis",
-        lambda m: m.sample(
-            N_SWEEPS,
-            sweep_mode="metropolis",
-            warmup_ratio=0.0,
-        ),
+        lambda m: m.sample(N_SWEEPS, sweep_mode="metropolis", warmup_ratio=0.0),
     )
 
     bench(
         "gibbs",
-        lambda m: m.sample(
-            N_SWEEPS,
-            sweep_mode="gibbs",
-            warmup_ratio=0.0,
-        ),
+        lambda m: m.sample(N_SWEEPS, sweep_mode="gibbs", warmup_ratio=0.0),
     )
 
     bench(
@@ -79,10 +66,7 @@ def run_benchmarks():
     bench(
         "metropolis + PT",
         lambda m: m.sample(
-            N_SWEEPS,
-            sweep_mode="metropolis",
-            pt_interval=1,
-            warmup_ratio=0.0,
+            N_SWEEPS, sweep_mode="metropolis", pt_interval=1, warmup_ratio=0.0
         ),
     )
 
