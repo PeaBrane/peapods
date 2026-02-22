@@ -1,69 +1,70 @@
 # PeaPods
 
-The goal of this project is to build a Python library for simulating spin systems with modern efficient Monte-Carlo methods.
+A Python library for simulating Ising spin systems with modern Monte Carlo methods.
 The core simulation loop is written in Rust (via PyO3) for performance, with a thin Python wrapper for ease of use.
 
 <div style="text-align:center">
   <img src="./docs/csd.png" alt="CSD" style="width:70%"/>
 </div>
 
-## Description
+## Features
 
-Currently, this project is at the very early stages,
-and only supports simulating Ising ferromagnets and spin glasses.
-Development for other spin classes (Potts, clock, and O(N) models) are planned,
-including their disordered and quantum counterparts.
+- Ising ferromagnets and spin glasses on arbitrary-dimensional hypercubic lattices
+- Arbitrary, bimodal (±J), or Gaussian coupling distributions
+- Multiple replicas with overlap statistics for spin glass order parameters
 
 The following algorithms are currently supported:
 
-- Single-spin flips (Metropolis and Gibbs sampling)
+- Single-spin flips ([Metropolis](https://en.wikipedia.org/wiki/Metropolis%E2%80%93Hastings_algorithm) and [Gibbs sampling](https://en.wikipedia.org/wiki/Gibbs_sampling))
 - [Swendsen-Wang cluster updates](https://en.wikipedia.org/wiki/Swendsen%E2%80%93Wang_algorithm)
 - [Wolff cluster updates](https://en.wikipedia.org/wiki/Wolff_algorithm)
 - [Parallel tempering](https://en.wikipedia.org/wiki/Parallel_tempering)
 - [Houdayer isoenergetic cluster move](https://arxiv.org/abs/cond-mat/0101116) (replica cluster move for spin glasses)
 
-The following algorithms are planned:
+Planned:
 
-- Cluster updates for frustrated spin systems
-(e.g. [KBD algorithm](https://en.wikipedia.org/wiki/KBD_algorithm))
-- [Jorg move](https://arxiv.org/abs/cond-mat/0410328)
-(Houdayer + SW-style bond breaking within clusters for smaller sub-clusters)
+- Cluster updates for frustrated systems (e.g. [KBD algorithm](https://en.wikipedia.org/wiki/KBD_algorithm))
+- [Jorg move](https://arxiv.org/abs/cond-mat/0410328) (Houdayer + SW-style bond breaking within clusters)
 
 ## Quickstart
 
-It is very easy to get started with simulating an (ensemble of) spin models.
-For example, if we want to simulate an ensemble of 16 independent Ising ferromagnets
-shaped 20 x 20, we can do the following:
-
 ```python
+import numpy as np
 from peapods import Ising
 
-model = Ising((20, 20), temperatures=np.linspace(1.5, 3.0, 32), n_replicas=2)
-model.sample(n_sweeps=5000, sweep_mode="metropolis", cluster_update_interval=1, pt_interval=1)
+# 2D ferromagnet with cluster updates and parallel tempering
+model = Ising((32, 32), temperatures=np.linspace(1.5, 3.0, 32), n_replicas=2)
+model.sample(n_sweeps=5000, sweep_mode="metropolis",
+             cluster_update_interval=1, pt_interval=1)
+print(model.binder_cumulant)
+
+# 3D spin glass with Houdayer ICM
+sg = Ising((8, 8, 8), couplings="bimodal",
+           temperatures=np.linspace(0.8, 1.4, 24), n_replicas=4)
+sg.sample(n_sweeps=10000, sweep_mode="metropolis",
+          pt_interval=1, houdayer_interval=1)
+print(sg.sg_binder)
 ```
 
 For a more complete example, check out [example.py](example.py).
 
-## Building
-
-The Rust backend must be compiled before use. You need [maturin](https://www.maturin.rs/) and a Rust toolchain:
+## Installation
 
 ```bash
-cd peapods_core
+pip install peapods
+```
+
+Pre-built wheels are available for Linux (x86_64, aarch64), macOS (Intel, Apple Silicon), and Windows (x86_64).
+
+## Building from source
+
+Requires a Rust toolchain and [maturin](https://www.maturin.rs/):
+
+```bash
 maturin develop --release
 ```
 
 ## Dependencies
 
-- Rust toolchain (for building the core)
-- maturin
 - numpy
 - matplotlib (for plotting)
-
-## Contribution
-
-This is an open-source project, so everyone is welcomed to contribute!
-
-Please open an issue if you spotted a bug or suggest any feature enhancements.
-Submit a pull request if appropriate.
-Alternatively, contact me at yanrpei@gmail.com if you wish to be a contributor to this project.
