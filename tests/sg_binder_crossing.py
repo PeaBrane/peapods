@@ -16,27 +16,24 @@ N_DISORDER = 25
 
 
 def run():
-    results = {L: np.zeros(len(TEMPS)) for L in SIZES}
+    results = {}
 
     for L in SIZES:
-        for sample in range(N_DISORDER):
-            model = Ising(
-                (L, L, L),
-                couplings="bimodal",
-                temperatures=TEMPS,
-                n_replicas=2,
-            )
-            model.sample(
-                N_SWEEPS,
-                sweep_mode="metropolis",
-                pt_interval=1,
-                houdayer_interval=1,
-                warmup_ratio=0.25,
-            )
-            results[L] += model.sg_binder
-            print(f"L={L}, sample {sample + 1}/{N_DISORDER} done")
-
-        results[L] /= N_DISORDER
+        model = Ising(
+            (L, L, L),
+            couplings="bimodal",
+            temperatures=TEMPS,
+            n_replicas=2,
+            n_disorder=N_DISORDER,
+        )
+        model.sample(
+            N_SWEEPS,
+            sweep_mode="metropolis",
+            pt_interval=1,
+            houdayer_interval=1,
+            warmup_ratio=0.25,
+        )
+        results[L] = model.sg_binder
         binder_at_tc = np.interp(T_C, TEMPS, results[L])
         print(f"L={L:>2d}  sg_binder at T_c: {binder_at_tc:.4f}")
 
