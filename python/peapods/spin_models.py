@@ -1,4 +1,3 @@
-import joblib
 import numpy as np
 from numpy.random import rand, randn
 from peapods._core import IsingSimulation
@@ -71,13 +70,8 @@ class IsingEnsemble:
         ]
 
     def sample(self, n_sweeps, **kwargs):
-        def run_sample(ising):
+        for ising in self.ising_ensemble:
             ising.sample(n_sweeps, **kwargs)
-            return ising
-
-        self.ising_ensemble = joblib.Parallel(n_jobs=self.n_ensemble)(
-            joblib.delayed(run_sample)(ising) for ising in self.ising_ensemble
-        )
 
     def get_energies(self):
         energies_ensemble = np.array(

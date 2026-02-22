@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "peapods"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = ["numpy", "joblib"]
+dependencies = ["numpy"]
 
 [tool.maturin]
 python-source = "python"
