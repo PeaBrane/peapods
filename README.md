@@ -14,21 +14,20 @@ and only supports simulating Ising ferromagnets and spin glasses.
 Development for other spin classes (Potts, clock, and O(N) models) are planned,
 including their disordered and quantum counterparts.
 
-The following algoritms are currently supported:
+The following algorithms are currently supported:
 
 - Single-spin flips (Metropolis and Gibbs sampling)
 - [Swendsen-Wang cluster updates](https://en.wikipedia.org/wiki/Swendsen%E2%80%93Wang_algorithm)
 - [Wolff cluster updates](https://en.wikipedia.org/wiki/Wolff_algorithm)
 - [Parallel tempering](https://en.wikipedia.org/wiki/Parallel_tempering)
+- [Houdayer isoenergetic cluster move](https://arxiv.org/abs/cond-mat/0101116) (replica cluster move for spin glasses)
 
 The following algorithms are planned:
 
 - Cluster updates for frustrated spin systems
-(e.g. [KBD algorithm](https://en.wikipedia.org/wiki/KBD_algorithm#:~:text=The%20KBD%20algorithm%20is%20an,algorithm%20more%20efficient%20in%20comparison.))
-- [Replica cluster moves](https://en.wikipedia.org/wiki/Replica_cluster_move#:~:text=Replica%20cluster%20move%20in%20condensed,replicas%20instead%20of%20just%20one.)
-(e.g. [Houdayer move](https://arxiv.org/abs/cond-mat/0101116),
-[Jorg move](https://arxiv.org/abs/cond-mat/0410328)
-)
+(e.g. [KBD algorithm](https://en.wikipedia.org/wiki/KBD_algorithm))
+- [Jorg move](https://arxiv.org/abs/cond-mat/0410328)
+(Houdayer + SW-style bond breaking within clusters for smaller sub-clusters)
 
 ## Quickstart
 
@@ -37,17 +36,13 @@ For example, if we want to simulate an ensemble of 16 independent Ising ferromag
 shaped 20 x 20, we can do the following:
 
 ```python
-from spin_models import IsingEnsemble
+from peapods import Ising
 
-ising_ensemble = IsingEnsemble(lattice_shape=(20, 20), n_ensemble=16)
-ising_ensemble.sample(n_sweeps=2**14)
+model = Ising((20, 20), temperatures=np.linspace(1.5, 3.0, 32), n_replicas=2)
+model.sample(n_sweeps=5000, sweep_mode="metropolis", cluster_update_interval=1, pt_interval=1)
 ```
 
-Note that code will try to start 16 parallel workers for simulation,
-where each worker will maintain its own set of Ising models at different temperatures,
-and simulate them for 2^14 sweeps.
-
-For a more complete example, check out this [tutorial](tutorial.ipynb).
+For a more complete example, check out [example.py](example.py).
 
 ## Building
 
@@ -63,7 +58,7 @@ maturin develop --release
 - Rust toolchain (for building the core)
 - maturin
 - numpy
-- joblib (for `IsingEnsemble`)
+- matplotlib (for plotting)
 
 ## Contribution
 

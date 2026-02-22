@@ -4,7 +4,7 @@ from matplotlib import pyplot as plt
 from peapods import Ising
 
 temperatures = np.geomspace(0.1, 10, 32)
-ising = Ising(lattice_shape=(32, 32), temperatures=temperatures)
+ising = Ising(lattice_shape=(32, 32), temperatures=temperatures, n_replicas=2)
 results = ising.sample(
     n_sweeps=2**12, warmup_ratio=0.25, cluster_update_interval=2**3, pt_interval=2**3
 )

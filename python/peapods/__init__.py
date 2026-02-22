@@ -1,3 +1,3 @@
-from peapods.spin_models import Ising, IsingEnsemble
+from peapods.spin_models import Ising
 
-__all__ = ["Ising", "IsingEnsemble"]
+__all__ = ["Ising"]

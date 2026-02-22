@@ -1,8 +1,12 @@
+import sys
 import time
 
 import numpy as np
 
+sys.path.insert(0, "tests")
+
 from peapods import Ising
+from plot_utils import plot_bars
 
 
 LATTICE_SHAPE = (32, 32)
@@ -15,6 +19,9 @@ def make_model():
     return Ising(LATTICE_SHAPE, temperatures=temperatures)
 
 
+BENCH_RESULTS = {}
+
+
 def bench(name, run_fn):
     model = make_model()
 
@@ -23,6 +30,7 @@ def bench(name, run_fn):
     elapsed = time.perf_counter() - t0
 
     per_sweep = elapsed / N_SWEEPS * 1000
+    BENCH_RESULTS[name] = per_sweep
     print(f"  {name:<30s}  {elapsed:8.3f} s  ({per_sweep:.3f} ms/sweep)")
 
 
@@ -73,3 +81,10 @@ def run_benchmarks():
 
 if __name__ == "__main__":
     run_benchmarks()
+    plot_bars(
+        list(BENCH_RESULTS.keys()),
+        list(BENCH_RESULTS.values()),
+        xlabel="ms / sweep",
+        title=f"Benchmark ({LATTICE_SHAPE[0]}x{LATTICE_SHAPE[1]}, {N_TEMPS} temps, {N_SWEEPS} sweeps)",
+        out_path="tests/benchmark.png",
+    )
