@@ -75,7 +75,8 @@ impl IsingSimulation {
 
         // Compute initial energies and interactions
         let (energies, interactions) =
-            energy::compute_energies(&lattice, &spins, &couplings_vec, n_replicas);
+            energy::compute_energies(&lattice, &spins, &couplings_vec, n_replicas, true);
+        let interactions = interactions.unwrap();
 
         Ok(Self {
             lattice,
@@ -171,11 +172,12 @@ impl IsingSimulation {
                             &mut self.rngs,
                         );
                         // Recompute energies after wolff
-                        self.energies = energy::compute_energies_only(
+                        (self.energies, _) = energy::compute_energies(
                             &self.lattice,
                             &self.spins,
                             &self.couplings,
                             self.n_replicas,
+                            false,
                         );
                     }
                     "sw" => {
@@ -185,9 +187,10 @@ impl IsingSimulation {
                             &self.spins,
                             &self.couplings,
                             self.n_replicas,
+                            true,
                         );
                         self.energies = energies;
-                        self.interactions = interactions;
+                        self.interactions = interactions.unwrap();
 
                         clusters::sw_update(
                             &self.lattice,
@@ -199,11 +202,12 @@ impl IsingSimulation {
                         );
 
                         // Recompute energies after SW
-                        self.energies = energy::compute_energies_only(
+                        (self.energies, _) = energy::compute_energies(
                             &self.lattice,
                             &self.spins,
                             &self.couplings,
                             self.n_replicas,
+                            false,
                         );
                     }
                     _ => {
@@ -214,11 +218,12 @@ impl IsingSimulation {
                 }
             } else {
                 // Just recompute energies
-                self.energies = energy::compute_energies_only(
+                (self.energies, _) = energy::compute_energies(
                     &self.lattice,
                     &self.spins,
                     &self.couplings,
                     self.n_replicas,
+                    false,
                 );
             }
 
@@ -306,10 +311,15 @@ impl IsingSimulation {
 
         self.system_ids = (0..self.n_replicas).collect();
 
-        let (energies, interactions) =
-            energy::compute_energies(&self.lattice, &self.spins, &self.couplings, self.n_replicas);
+        let (energies, interactions) = energy::compute_energies(
+            &self.lattice,
+            &self.spins,
+            &self.couplings,
+            self.n_replicas,
+            true,
+        );
         self.energies = energies;
-        self.interactions = interactions;
+        self.interactions = interactions.unwrap();
     }
 }
 

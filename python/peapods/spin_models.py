@@ -12,17 +12,20 @@ class Ising:
         self.temperatures = temperatures.copy().astype(np.float32)
         self.n_temps = len(temperatures)
 
-        match couplings:
-            case "ferro":
-                coup = np.ones(lattice_shape + (self.n_dims,), dtype=np.float32)
-            case "bimodal":
-                coup = (-1 + 2 * rand(*lattice_shape, self.n_dims).round()).astype(
-                    np.float32
-                )
-            case "gaussian":
-                coup = randn(*lattice_shape, self.n_dims).astype(np.float32)
-            case _:
-                raise ValueError("Invalid mode for couplings.")
+        if isinstance(couplings, np.ndarray):
+            coup = couplings.astype(np.float32)
+        else:
+            match couplings:
+                case "ferro":
+                    coup = np.ones(lattice_shape + (self.n_dims,), dtype=np.float32)
+                case "bimodal":
+                    coup = (-1 + 2 * rand(*lattice_shape, self.n_dims).round()).astype(
+                        np.float32
+                    )
+                case "gaussian":
+                    coup = randn(*lattice_shape, self.n_dims).astype(np.float32)
+                case _:
+                    raise ValueError("Invalid mode for couplings.")
 
         self.couplings = coup
         self._sim = IsingSimulation(list(lattice_shape), coup, self.temperatures)
