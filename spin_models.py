@@ -185,7 +185,8 @@ class Ising:
         temp_1, temp_2 = self.temperatures[ids]
         energy_1, energy_2 = self.energies[self.system_ids[ids]]
 
-        if (energy_2 - energy_1) * (1 / temp_1 - 1 / temp_2) >= np.log(rand()):
+        n_spins = prod(self.lattice_shape)
+        if n_spins * (energy_2 - energy_1) * (1 / temp_1 - 1 / temp_2) >= np.log(rand()):
             self.system_ids = swap(self.system_ids, *ids)
             self.temp_ids = np.argsort(self.system_ids)
 
@@ -284,7 +285,10 @@ class IsingReplicas(Ising):
             ids = [2 * temp_id + replica_id, 2 * temp_id + 2 + replica_id]
             energy_1, energy_2 = self.energies[self.system_ids[ids]]
 
-            if (energy_2 - energy_1) * (1 / temp_1 - 1 / temp_2) >= np.log(rand()):
+            n_spins = prod(self.lattice_shape)
+            if n_spins * (energy_2 - energy_1) * (1 / temp_1 - 1 / temp_2) >= np.log(
+                rand()
+            ):
                 self.system_ids = swap(self.system_ids, *ids)
 
         self.temp_ids = np.argsort(self.system_ids)
