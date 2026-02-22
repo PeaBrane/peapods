@@ -5,12 +5,17 @@ from peapods._core import IsingSimulation
 
 class Ising:
     def __init__(
-        self, lattice_shape, couplings="ferro", temperatures=np.geomspace(0.1, 10, 32)
+        self,
+        lattice_shape,
+        couplings="ferro",
+        temperatures=np.geomspace(0.1, 10, 32),
+        n_replicas=1,
     ):
         self.lattice_shape = tuple(lattice_shape)
         self.n_dims = len(lattice_shape)
         self.temperatures = temperatures.copy().astype(np.float32)
         self.n_temps = len(temperatures)
+        self.n_replicas = n_replicas
 
         if isinstance(couplings, np.ndarray):
             coup = couplings.astype(np.float32)
@@ -28,7 +33,9 @@ class Ising:
                     raise ValueError("Invalid mode for couplings.")
 
         self.couplings = coup
-        self._sim = IsingSimulation(list(lattice_shape), coup, self.temperatures)
+        self._sim = IsingSimulation(
+            list(lattice_shape), coup, self.temperatures, n_replicas
+        )
 
     def reset(self):
         self._sim.reset()
@@ -40,6 +47,7 @@ class Ising:
         cluster_update_interval=None,
         cluster_mode="sw",
         pt_interval=None,
+        houdayer_interval=None,
         warmup_ratio=0.25,
     ):
         result = self._sim.sample(
@@ -48,6 +56,7 @@ class Ising:
             cluster_update_interval=cluster_update_interval,
             cluster_mode=cluster_mode if cluster_update_interval else None,
             pt_interval=pt_interval,
+            houdayer_interval=houdayer_interval,
             warmup_ratio=warmup_ratio,
         )
         self.mags = result["mags"]
@@ -61,23 +70,13 @@ class Ising:
             self.energies2_avg - self.energies_avg**2
         ) / self.temperatures**2
 
+        if "overlap2" in result:
+            self.overlap = result["overlap"]
+            self.overlap2 = result["overlap2"]
+            self.overlap4 = result["overlap4"]
+            self.sg_binder = 1 - self.overlap4 / (3 * self.overlap2**2)
+
+        return result
+
     def get_energies(self):
         return self.energies_avg
-
-
-class IsingEnsemble:
-    def __init__(self, lattice_shape, n_ensemble=2, **kwargs):
-        self.n_ensemble = n_ensemble
-        self.ising_ensemble = [
-            Ising(lattice_shape, **kwargs) for _ in range(n_ensemble)
-        ]
-
-    def sample(self, n_sweeps, **kwargs):
-        for ising in self.ising_ensemble:
-            ising.sample(n_sweeps, **kwargs)
-
-    def get_energies(self):
-        energies_ensemble = np.array(
-            [ising.get_energies() for ising in self.ising_ensemble]
-        )
-        return energies_ensemble.mean(0)

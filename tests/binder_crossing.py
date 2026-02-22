@@ -2,10 +2,10 @@
 
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 
 from peapods import Ising
+from plot_utils import plot_crossing
 
 T_C = 2.0 / np.log(1 + np.sqrt(2))  # exact: 2.26918...
 TEMPS = np.linspace(T_C - 0.3, T_C + 0.3, 32).astype(np.float32)
@@ -16,7 +16,7 @@ N_SWEEPS = 5000
 def run():
     results = {}
     for L in SIZES:
-        model = Ising((L, L), temperatures=TEMPS)
+        model = Ising((L, L), temperatures=TEMPS, n_replicas=2)
         model.sample(
             N_SWEEPS,
             sweep_mode="metropolis",
@@ -45,18 +45,14 @@ def run():
     assert spread < 0.05, f"spread {spread:.4f} too large, sizes not crossing"
     print("\nPASSED")
 
-    fig, ax = plt.subplots(figsize=(6, 4))
-    for L in SIZES:
-        ax.plot(TEMPS, results[L], label=f"L={L}")
-    ax.axvline(T_C, color="k", linestyle="--", alpha=0.5, label=f"$T_c$ = {T_C:.4f}")
-    ax.set_xlabel("Temperature")
-    ax.set_ylabel("Binder cumulant")
-    ax.legend()
-    ax.set_title("Binder cumulant crossing")
-
-    out = Path(__file__).parent / "binder_crossing.png"
-    fig.savefig(out, dpi=150, bbox_inches="tight")
-    print(f"saved plot to {out}")
+    plot_crossing(
+        TEMPS,
+        {f"L={L}": results[L] for L in SIZES},
+        T_C,
+        ylabel="Binder cumulant",
+        title="Binder cumulant crossing",
+        out_path=Path(__file__).parent / "binder_crossing.png",
+    )
 
 
 if __name__ == "__main__":

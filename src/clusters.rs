@@ -1,5 +1,6 @@
 use crate::lattice::Lattice;
 use crate::parallel::par_over_replicas;
+use rand::seq::SliceRandom;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 
@@ -186,4 +187,89 @@ pub fn wolff_update(
             }
         },
     );
+}
+
+/// Houdayer isoenergetic cluster move (ICM).
+///
+/// For each temperature, shuffle replicas into random pairs. For each pair,
+/// identify negative-overlap sites (where spins disagree), grow a Wolff-style
+/// cluster on that subgraph (prob=1), and exchange the cluster between replicas.
+/// Preserves each replica's energy → always accepted.
+pub fn houdayer_update(
+    lattice: &Lattice,
+    spins: &mut [i8],
+    system_ids: &[usize],
+    n_replicas: usize,
+    n_temps: usize,
+    rng: &mut Xoshiro256StarStar,
+) {
+    let n_spins = lattice.n_spins;
+    let n_dims = lattice.n_dims;
+
+    for t in 0..n_temps {
+        // Collect system IDs for all replicas at temperature t
+        let mut replica_systems: Vec<usize> = (0..n_replicas)
+            .map(|k| system_ids[k * n_temps + t])
+            .collect();
+        replica_systems.shuffle(rng);
+
+        // Pair consecutive replicas
+        for pair in replica_systems.chunks_exact(2) {
+            let sys_a = pair[0];
+            let sys_b = pair[1];
+            let base_a = sys_a * n_spins;
+            let base_b = sys_b * n_spins;
+
+            // Find a random negative-overlap seed site
+            let seed = {
+                let mut found = None;
+                // Try random samples first
+                for _ in 0..64 {
+                    let i = rng.gen_range(0..n_spins);
+                    if spins[base_a + i] != spins[base_b + i] {
+                        found = Some(i);
+                        break;
+                    }
+                }
+                // Fall back to linear scan
+                if found.is_none() {
+                    for i in 0..n_spins {
+                        if spins[base_a + i] != spins[base_b + i] {
+                            found = Some(i);
+                            break;
+                        }
+                    }
+                }
+                match found {
+                    Some(s) => s,
+                    None => continue, // all agree, skip this pair
+                }
+            };
+
+            // BFS: grow cluster on negative-overlap subgraph (prob=1)
+            let mut in_cluster = vec![false; n_spins];
+            let mut stack = Vec::with_capacity(n_spins);
+            in_cluster[seed] = true;
+            stack.push(seed);
+
+            while let Some(site) = stack.pop() {
+                for d in 0..n_dims {
+                    for &fwd in &[true, false] {
+                        let nb = lattice.neighbor(site, d, fwd);
+                        if !in_cluster[nb] && spins[base_a + nb] != spins[base_b + nb] {
+                            in_cluster[nb] = true;
+                            stack.push(nb);
+                        }
+                    }
+                }
+            }
+
+            // Exchange cluster sites between the two replicas
+            for (i, &in_c) in in_cluster.iter().enumerate() {
+                if in_c {
+                    spins.swap(base_a + i, base_b + i);
+                }
+            }
+        }
+    }
 }
