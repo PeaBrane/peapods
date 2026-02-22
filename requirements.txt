@@ -1,4 +1,3 @@
-tqdm
-numba
-scipy
+numpy
 joblib
+maturin
