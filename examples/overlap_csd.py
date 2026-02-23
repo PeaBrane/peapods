@@ -35,14 +35,11 @@ results = ising.sample(
 
 fig, ax = plt.subplots(figsize=(6, 4))
 for t, temp in enumerate(temperatures):
-    sizes = results["overlap_csd"][t]
-    if len(sizes) == 0:
-        continue
-    s_max = sizes.max()
-    bins = np.geomspace(1, s_max, 50)
-    ax.hist(
-        sizes, bins=bins, density=True, histtype="step", lw=1.5, label=f"T = {temp:.1f}"
-    )
+    csd = results["overlap_csd"][t]  # csd[s] = count of size-s clusters
+    sizes = np.arange(len(csd))
+    mask = csd > 0
+    total = csd[mask].sum()
+    ax.scatter(sizes[mask], csd[mask] / total, s=8, label=f"T = {temp:.1f}")
 
 ax.set_xscale("log")
 ax.set_yscale("log")

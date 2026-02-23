@@ -19,10 +19,10 @@ pub struct SweepResult {
     pub overlap2: Vec<f64>,
     /// ⟨q⁴⟩.
     pub overlap4: Vec<f64>,
-    /// Raw FK cluster sizes per temperature, concatenated across sweeps/replicas.
-    pub fk_csd: Vec<Vec<usize>>,
-    /// Raw overlap cluster sizes per temperature, concatenated across sweeps/pairs.
-    pub overlap_csd: Vec<Vec<usize>>,
+    /// FK cluster size histogram per temperature: `hist[s]` = count of size-`s` clusters.
+    pub fk_csd: Vec<Vec<u64>>,
+    /// Overlap cluster size histogram per temperature: `hist[s]` = count of size-`s` clusters.
+    pub overlap_csd: Vec<Vec<u64>>,
 }
 
 impl SweepResult {
@@ -34,6 +34,9 @@ impl SweepResult {
         let n_fk_csd = results[0].fk_csd.len();
         let n_ov_csd = results[0].overlap_csd.len();
 
+        let fk_len = results[0].fk_csd.first().map_or(0, |v| v.len());
+        let ov_len = results[0].overlap_csd.first().map_or(0, |v| v.len());
+
         let mut agg = SweepResult {
             mags: vec![0.0; n_temps],
             mags2: vec![0.0; n_temps],
@@ -43,8 +46,8 @@ impl SweepResult {
             overlap: vec![0.0; n_overlap],
             overlap2: vec![0.0; n_overlap],
             overlap4: vec![0.0; n_overlap],
-            fk_csd: (0..n_fk_csd).map(|_| Vec::new()).collect(),
-            overlap_csd: (0..n_ov_csd).map(|_| Vec::new()).collect(),
+            fk_csd: (0..n_fk_csd).map(|_| vec![0u64; fk_len]).collect(),
+            overlap_csd: (0..n_ov_csd).map(|_| vec![0u64; ov_len]).collect(),
         };
 
         for r in results {
@@ -73,10 +76,14 @@ impl SweepResult {
                 *a += v;
             }
             for (a, s) in agg.fk_csd.iter_mut().zip(r.fk_csd.iter()) {
-                a.extend(s);
+                for (ah, &sh) in a.iter_mut().zip(s.iter()) {
+                    *ah += sh;
+                }
             }
             for (a, s) in agg.overlap_csd.iter_mut().zip(r.overlap_csd.iter()) {
-                a.extend(s);
+                for (ah, &sh) in a.iter_mut().zip(s.iter()) {
+                    *ah += sh;
+                }
             }
         }
 

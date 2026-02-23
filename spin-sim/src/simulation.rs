@@ -161,11 +161,14 @@ pub fn run_sweep_loop(
 
     let n_pairs = n_replicas / 2;
 
-    let mut fk_csd_accum: Vec<Vec<usize>> = (0..n_temps).map(|_| Vec::new()).collect();
-    let mut sw_csd_buf: Vec<Vec<usize>> = (0..n_systems).map(|_| Vec::new()).collect();
+    let mut fk_csd_accum: Vec<Vec<u64>> = (0..n_temps).map(|_| vec![0u64; n_spins + 1]).collect();
+    let mut sw_csd_buf: Vec<Vec<u64>> = (0..n_systems).map(|_| vec![0u64; n_spins + 1]).collect();
 
-    let mut overlap_csd_accum: Vec<Vec<usize>> = (0..n_temps).map(|_| Vec::new()).collect();
-    let mut overlap_csd_buf: Vec<Vec<usize>> = (0..n_temps * n_pairs).map(|_| Vec::new()).collect();
+    let mut overlap_csd_accum: Vec<Vec<u64>> =
+        (0..n_temps).map(|_| vec![0u64; n_spins + 1]).collect();
+    let mut overlap_csd_buf: Vec<Vec<u64>> = (0..n_temps * n_pairs)
+        .map(|_| vec![0u64; n_spins + 1])
+        .collect();
 
     let mut mags_stat = Statistics::new(n_temps, 1);
     let mut mags2_stat = Statistics::new(n_temps, 1);
@@ -206,7 +209,7 @@ pub fn run_sweep_loop(
             let wolff = cluster_mode == "wolff";
             let csd_out = if collect_csd && record {
                 for buf in sw_csd_buf.iter_mut() {
-                    buf.clear();
+                    buf.fill(0);
                 }
                 Some(sw_csd_buf.as_mut_slice())
             } else {
@@ -225,8 +228,11 @@ pub fn run_sweep_loop(
             );
 
             if collect_csd && record {
-                for (slot, buf) in sw_csd_buf.iter_mut().enumerate() {
-                    fk_csd_accum[slot % n_temps].append(buf);
+                for (slot, buf) in sw_csd_buf.iter().enumerate() {
+                    let accum = &mut fk_csd_accum[slot % n_temps];
+                    for (a, &b) in accum.iter_mut().zip(buf.iter()) {
+                        *a += b;
+                    }
                 }
             }
 
@@ -310,7 +316,7 @@ pub fn run_sweep_loop(
             if sweep_id % interval == 0 && n_replicas >= 2 {
                 let ov_csd_out = if collect_csd && record {
                     for buf in overlap_csd_buf.iter_mut() {
-                        buf.clear();
+                        buf.fill(0);
                     }
                     Some(overlap_csd_buf.as_mut_slice())
                 } else {
@@ -333,8 +339,11 @@ pub fn run_sweep_loop(
                 );
 
                 if collect_csd && record {
-                    for (slot, buf) in overlap_csd_buf.iter_mut().enumerate() {
-                        overlap_csd_accum[slot / n_pairs].append(buf);
+                    for (slot, buf) in overlap_csd_buf.iter().enumerate() {
+                        let accum = &mut overlap_csd_accum[slot / n_pairs];
+                        for (a, &b) in accum.iter_mut().zip(buf.iter()) {
+                            *a += b;
+                        }
                     }
                 }
 
