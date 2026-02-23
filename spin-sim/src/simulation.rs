@@ -1,4 +1,5 @@
 use crate::lattice::Lattice;
+use crate::results::SweepResult;
 use crate::stats::Statistics;
 use crate::{clusters, energy, sweep, tempering};
 use rand::{Rng, SeedableRng};
@@ -113,31 +114,6 @@ impl Realization {
     }
 }
 
-/// Per-temperature observables averaged over measurement sweeps and replicas.
-///
-/// All vectors are indexed by temperature index and have length `n_temps`.
-/// Overlap vectors are empty when `n_replicas < 2`.
-pub struct SweepResult {
-    /// ⟨m⟩ — mean magnetization per spin.
-    pub mags: Vec<f64>,
-    /// ⟨m²⟩.
-    pub mags2: Vec<f64>,
-    /// ⟨m⁴⟩.
-    pub mags4: Vec<f64>,
-    /// ⟨E⟩ — mean energy per spin.
-    pub energies: Vec<f64>,
-    /// ⟨E²⟩.
-    pub energies2: Vec<f64>,
-    /// ⟨q⟩ — mean replica overlap.
-    pub overlap: Vec<f64>,
-    /// ⟨q²⟩.
-    pub overlap2: Vec<f64>,
-    /// ⟨q⁴⟩.
-    pub overlap4: Vec<f64>,
-    /// Raw FK cluster sizes per temperature, concatenated across sweeps/replicas.
-    pub fk_csd: Vec<Vec<usize>>,
-}
-
 /// Run the full Monte Carlo loop (warmup + measurement) for one [`Realization`].
 ///
 /// Each sweep consists of:
@@ -169,16 +145,26 @@ pub fn run_sweep_loop(
     let n_spins = lattice.n_spins;
     let n_systems = n_replicas * n_temps;
 
+    let (stochastic, restrict_to_negative) = match houdayer_mode {
+        "houdayer" => (false, true),
+        "jorg" => (true, true),
+        "cmr" => (true, false),
+        _ => unreachable!(),
+    };
+
+    let n_pairs = n_replicas / 2;
+
     let mut fk_csd_accum: Vec<Vec<usize>> = (0..n_temps).map(|_| Vec::new()).collect();
     let mut sw_csd_buf: Vec<Vec<usize>> = (0..n_systems).map(|_| Vec::new()).collect();
+
+    let mut overlap_csd_accum: Vec<Vec<usize>> = (0..n_temps).map(|_| Vec::new()).collect();
+    let mut overlap_csd_buf: Vec<Vec<usize>> = (0..n_temps * n_pairs).map(|_| Vec::new()).collect();
 
     let mut mags_stat = Statistics::new(n_temps, 1);
     let mut mags2_stat = Statistics::new(n_temps, 1);
     let mut mags4_stat = Statistics::new(n_temps, 1);
     let mut energies_stat = Statistics::new(n_temps, 1);
     let mut energies2_stat = Statistics::new(n_temps, 2);
-
-    let n_pairs = n_replicas / 2;
     let mut overlap_stat = Statistics::new(n_temps, 1);
     let mut overlap2_stat = Statistics::new(n_temps, 1);
     let mut overlap4_stat = Statistics::new(n_temps, 1);
@@ -305,6 +291,15 @@ pub fn run_sweep_loop(
 
         if let Some(interval) = houdayer_interval {
             if sweep_id % interval == 0 && n_replicas >= 2 {
+                let ov_csd_out = if collect_csd && record {
+                    for buf in overlap_csd_buf.iter_mut() {
+                        buf.clear();
+                    }
+                    Some(overlap_csd_buf.as_mut_slice())
+                } else {
+                    None
+                };
+
                 clusters::overlap_update(
                     lattice,
                     &mut real.spins,
@@ -314,9 +309,18 @@ pub fn run_sweep_loop(
                     n_replicas,
                     n_temps,
                     &mut real.pair_rngs,
-                    houdayer_mode == "jorg",
+                    stochastic,
+                    restrict_to_negative,
                     true,
+                    ov_csd_out,
                 );
+
+                if collect_csd && record {
+                    for (slot, buf) in overlap_csd_buf.iter_mut().enumerate() {
+                        overlap_csd_accum[slot / n_pairs].append(buf);
+                    }
+                }
+
                 (real.energies, _) = energy::compute_energies(
                     lattice,
                     &real.spins,
@@ -367,71 +371,6 @@ pub fn run_sweep_loop(
             vec![]
         },
         fk_csd: fk_csd_accum,
+        overlap_csd: overlap_csd_accum,
     }
-}
-
-/// Average [`SweepResult`]s across disorder realizations.
-pub fn aggregate_results(results: &[SweepResult]) -> SweepResult {
-    let n = results.len() as f64;
-    let n_temps = results[0].mags.len();
-    let n_overlap = results[0].overlap.len();
-    let n_csd = results[0].fk_csd.len();
-
-    let mut agg = SweepResult {
-        mags: vec![0.0; n_temps],
-        mags2: vec![0.0; n_temps],
-        mags4: vec![0.0; n_temps],
-        energies: vec![0.0; n_temps],
-        energies2: vec![0.0; n_temps],
-        overlap: vec![0.0; n_overlap],
-        overlap2: vec![0.0; n_overlap],
-        overlap4: vec![0.0; n_overlap],
-        fk_csd: (0..n_csd).map(|_| Vec::new()).collect(),
-    };
-
-    for r in results {
-        for (a, &v) in agg.mags.iter_mut().zip(r.mags.iter()) {
-            *a += v;
-        }
-        for (a, &v) in agg.mags2.iter_mut().zip(r.mags2.iter()) {
-            *a += v;
-        }
-        for (a, &v) in agg.mags4.iter_mut().zip(r.mags4.iter()) {
-            *a += v;
-        }
-        for (a, &v) in agg.energies.iter_mut().zip(r.energies.iter()) {
-            *a += v;
-        }
-        for (a, &v) in agg.energies2.iter_mut().zip(r.energies2.iter()) {
-            *a += v;
-        }
-        for (a, &v) in agg.overlap.iter_mut().zip(r.overlap.iter()) {
-            *a += v;
-        }
-        for (a, &v) in agg.overlap2.iter_mut().zip(r.overlap2.iter()) {
-            *a += v;
-        }
-        for (a, &v) in agg.overlap4.iter_mut().zip(r.overlap4.iter()) {
-            *a += v;
-        }
-        for (a, s) in agg.fk_csd.iter_mut().zip(r.fk_csd.iter()) {
-            a.extend(s);
-        }
-    }
-
-    for v in agg
-        .mags
-        .iter_mut()
-        .chain(agg.mags2.iter_mut())
-        .chain(agg.mags4.iter_mut())
-        .chain(agg.energies.iter_mut())
-        .chain(agg.energies2.iter_mut())
-        .chain(agg.overlap.iter_mut())
-        .chain(agg.overlap2.iter_mut())
-        .chain(agg.overlap4.iter_mut())
-    {
-        *v /= n;
-    }
-
-    agg
 }

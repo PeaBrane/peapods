@@ -7,7 +7,7 @@
 //! | Metropolis / Gibbs sweep | [`run_sweep_loop`] (`sweep_mode`) |
 //! | Wolff / Swendsen-Wang | [`run_sweep_loop`] (`cluster_mode`) |
 //! | Parallel tempering | [`run_sweep_loop`] (`pt_interval`) |
-//! | Houdayer / Jörg ICM | [`run_sweep_loop`] (`houdayer_interval`, `houdayer_mode`) |
+//! | Houdayer / Jörg / CMR | [`run_sweep_loop`] (`houdayer_interval`, `houdayer_mode`) |
 //!
 //! Replicas are parallelized over threads with [`rayon`].
 //!
@@ -40,6 +40,7 @@
 //! For a Python interface, see the [`peapods`](https://pypi.org/project/peapods/) package.
 
 pub mod lattice;
+pub mod results;
 pub mod simulation;
 
 mod clusters;
@@ -50,4 +51,5 @@ mod sweep;
 mod tempering;
 
 pub use lattice::Lattice;
-pub use simulation::{aggregate_results, run_sweep_loop, Realization, SweepResult};
+pub use results::SweepResult;
+pub use simulation::{run_sweep_loop, Realization};

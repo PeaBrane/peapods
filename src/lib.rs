@@ -4,7 +4,7 @@ use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArrayDyn, PyUntyp
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rayon::prelude::*;
-use spin_sim::{aggregate_results, run_sweep_loop, Lattice, Realization, SweepResult};
+use spin_sim::{run_sweep_loop, Lattice, Realization, SweepResult};
 
 #[pyclass]
 struct IsingSimulation {
@@ -119,10 +119,10 @@ impl IsingSimulation {
         }
         if houdayer_interval.is_some() {
             match houdayer_mode {
-                "houdayer" | "jorg" => {}
+                "houdayer" | "jorg" | "cmr" => {}
                 _ => {
                     return Err(pyo3::exceptions::PyValueError::new_err(
-                        "Invalid houdayer mode. Use 'houdayer' or 'jorg'.",
+                        "Invalid houdayer mode. Use 'houdayer', 'jorg', or 'cmr'.",
                     ))
                 }
             }
@@ -173,7 +173,7 @@ impl IsingSimulation {
         });
 
         pb.finish();
-        let agg = aggregate_results(&results);
+        let agg = SweepResult::aggregate(&results);
 
         let dict = PyDict::new(py);
         dict.set_item("mags", Array1::from(agg.mags).into_pyarray(py))?;
@@ -198,6 +198,18 @@ impl IsingSimulation {
                 })
                 .collect();
             dict.set_item("fk_csd", csd_py)?;
+        }
+
+        if agg.overlap_csd.iter().any(|s| !s.is_empty()) {
+            let csd_py: Vec<_> = agg
+                .overlap_csd
+                .into_iter()
+                .map(|sizes| {
+                    Array1::from(sizes.into_iter().map(|s| s as u64).collect::<Vec<_>>())
+                        .into_pyarray(py)
+                })
+                .collect();
+            dict.set_item("overlap_csd", csd_py)?;
         }
 
         Ok(dict)
