@@ -53,6 +53,7 @@ class Ising:
         cluster_mode="sw",
         pt_interval=None,
         houdayer_interval=None,
+        houdayer_mode="houdayer",
         warmup_ratio=0.25,
         collect_csd=False,
     ):
@@ -63,6 +64,7 @@ class Ising:
             cluster_mode=cluster_mode if cluster_update_interval else None,
             pt_interval=pt_interval,
             houdayer_interval=houdayer_interval,
+            houdayer_mode=houdayer_mode if houdayer_interval else None,
             warmup_ratio=warmup_ratio,
             collect_csd=collect_csd,
         )
@@ -83,8 +85,8 @@ class Ising:
             self.overlap4 = result["overlap4"]
             self.sg_binder = 1 - self.overlap4 / (3 * self.overlap2**2)
 
-        if "csd_sizes" in result:
-            self.csd_sizes = result["csd_sizes"]
+        if "fk_csd" in result:
+            self.fk_csd = result["fk_csd"]
 
         return result
 

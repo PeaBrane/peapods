@@ -23,7 +23,7 @@ bins = np.arange(1, n_spins + 2)
 temp_indices = range(17, 27, 2)
 
 for t in temp_indices:
-    sizes = ising.csd_sizes[t]
+    sizes = ising.fk_csd[t]
     if len(sizes) == 0:
         continue
     counts, _ = np.histogram(sizes, bins=bins)

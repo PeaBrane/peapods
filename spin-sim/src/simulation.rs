@@ -124,7 +124,7 @@ pub struct SweepResult {
     /// ⟨q⁴⟩.
     pub overlap4: Vec<f64>,
     /// Raw FK cluster sizes per temperature, concatenated across sweeps/replicas.
-    pub csd_sizes: Vec<Vec<usize>>,
+    pub fk_csd: Vec<Vec<usize>>,
 }
 
 /// Run the full Monte Carlo loop (warmup + measurement) for one [`Realization`].
@@ -151,13 +151,15 @@ pub fn run_sweep_loop(
     cluster_mode: &str,
     pt_interval: Option<usize>,
     houdayer_interval: Option<usize>,
+    houdayer_mode: &str,
     collect_csd: bool,
     on_sweep: &(dyn Fn() + Sync),
 ) -> SweepResult {
     let n_spins = lattice.n_spins;
     let n_systems = n_replicas * n_temps;
 
-    let mut csd_accum: Vec<Vec<usize>> = (0..n_temps).map(|_| Vec::new()).collect();
+    let mut fk_csd_accum: Vec<Vec<usize>> = (0..n_temps).map(|_| Vec::new()).collect();
+    let mut sw_csd_buf: Vec<Vec<usize>> = (0..n_systems).map(|_| Vec::new()).collect();
 
     let mut mags_stat = Statistics::new(n_temps, 1);
     let mut mags2_stat = Statistics::new(n_temps, 1);
@@ -226,6 +228,15 @@ pub fn run_sweep_loop(
                     real.energies = energies;
                     real.interactions = interactions.unwrap();
 
+                    let csd_out = if collect_csd && record {
+                        for buf in sw_csd_buf.iter_mut() {
+                            buf.clear();
+                        }
+                        Some(sw_csd_buf.as_mut_slice())
+                    } else {
+                        None
+                    };
+
                     clusters::sw_update(
                         lattice,
                         &mut real.spins,
@@ -233,7 +244,14 @@ pub fn run_sweep_loop(
                         &real.temperatures,
                         &real.system_ids,
                         &mut real.rngs,
+                        csd_out,
                     );
+
+                    if collect_csd && record {
+                        for (slot, buf) in sw_csd_buf.iter_mut().enumerate() {
+                            fk_csd_accum[slot % n_temps].append(buf);
+                        }
+                    }
 
                     (real.energies, _) = energy::compute_energies(
                         lattice,
@@ -307,36 +325,31 @@ pub fn run_sweep_loop(
                 overlap2_stat.update(&overlaps2);
                 overlap4_stat.update(&overlaps4);
             }
-
-            if collect_csd {
-                for r in 0..n_replicas {
-                    let offset = r * n_temps;
-                    for (t, accum) in csd_accum.iter_mut().enumerate() {
-                        let system_id = real.system_ids[offset + t];
-                        let sizes = clusters::fk_cluster_sizes(
-                            lattice,
-                            &real.spins,
-                            &real.couplings,
-                            real.temperatures[offset + t],
-                            system_id * n_spins,
-                            &mut real.rngs[system_id],
-                        );
-                        accum.extend(sizes);
-                    }
-                }
-            }
         }
 
         if let Some(interval) = houdayer_interval {
             if sweep_id % interval == 0 && n_replicas >= 2 {
-                clusters::houdayer_update(
-                    lattice,
-                    &mut real.spins,
-                    &real.system_ids,
-                    n_replicas,
-                    n_temps,
-                    &mut real.rngs[0],
-                );
+                match houdayer_mode {
+                    "houdayer" => clusters::houdayer_update(
+                        lattice,
+                        &mut real.spins,
+                        &real.system_ids,
+                        n_replicas,
+                        n_temps,
+                        &mut real.rngs[0],
+                    ),
+                    "jorg" => clusters::jorg_update(
+                        lattice,
+                        &mut real.spins,
+                        &real.couplings,
+                        &real.temperatures,
+                        &real.system_ids,
+                        n_replicas,
+                        n_temps,
+                        &mut real.rngs[0],
+                    ),
+                    _ => unreachable!(),
+                }
                 (real.energies, _) = energy::compute_energies(
                     lattice,
                     &real.spins,
@@ -386,7 +399,7 @@ pub fn run_sweep_loop(
         } else {
             vec![]
         },
-        csd_sizes: csd_accum,
+        fk_csd: fk_csd_accum,
     }
 }
 
@@ -395,7 +408,7 @@ pub fn aggregate_results(results: &[SweepResult]) -> SweepResult {
     let n = results.len() as f64;
     let n_temps = results[0].mags.len();
     let n_overlap = results[0].overlap.len();
-    let n_csd = results[0].csd_sizes.len();
+    let n_csd = results[0].fk_csd.len();
 
     let mut agg = SweepResult {
         mags: vec![0.0; n_temps],
@@ -406,7 +419,7 @@ pub fn aggregate_results(results: &[SweepResult]) -> SweepResult {
         overlap: vec![0.0; n_overlap],
         overlap2: vec![0.0; n_overlap],
         overlap4: vec![0.0; n_overlap],
-        csd_sizes: (0..n_csd).map(|_| Vec::new()).collect(),
+        fk_csd: (0..n_csd).map(|_| Vec::new()).collect(),
     };
 
     for r in results {
@@ -434,7 +447,7 @@ pub fn aggregate_results(results: &[SweepResult]) -> SweepResult {
         for (a, &v) in agg.overlap4.iter_mut().zip(r.overlap4.iter()) {
             *a += v;
         }
-        for (a, s) in agg.csd_sizes.iter_mut().zip(r.csd_sizes.iter()) {
+        for (a, s) in agg.fk_csd.iter_mut().zip(r.fk_csd.iter()) {
             a.extend(s);
         }
     }

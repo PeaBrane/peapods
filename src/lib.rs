@@ -76,7 +76,7 @@ impl IsingSimulation {
         })
     }
 
-    #[pyo3(signature = (n_sweeps, sweep_mode, cluster_update_interval=None, cluster_mode=None, pt_interval=None, houdayer_interval=None, warmup_ratio=None, collect_csd=None))]
+    #[pyo3(signature = (n_sweeps, sweep_mode, cluster_update_interval=None, cluster_mode=None, pt_interval=None, houdayer_interval=None, houdayer_mode=None, warmup_ratio=None, collect_csd=None))]
     #[allow(clippy::too_many_arguments)]
     fn sample<'py>(
         &mut self,
@@ -87,12 +87,14 @@ impl IsingSimulation {
         cluster_mode: Option<&str>,
         pt_interval: Option<usize>,
         houdayer_interval: Option<usize>,
+        houdayer_mode: Option<&str>,
         warmup_ratio: Option<f64>,
         collect_csd: Option<bool>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let warmup = warmup_ratio.unwrap_or(0.25);
         let warmup_sweeps = (n_sweeps as f64 * warmup).round() as usize;
         let cluster_mode = cluster_mode.unwrap_or("sw");
+        let houdayer_mode = houdayer_mode.unwrap_or("houdayer");
 
         match sweep_mode {
             "metropolis" | "gibbs" => {}
@@ -112,11 +114,22 @@ impl IsingSimulation {
                 }
             }
         }
+        if houdayer_interval.is_some() {
+            match houdayer_mode {
+                "houdayer" | "jorg" => {}
+                _ => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "Invalid houdayer mode. Use 'houdayer' or 'jorg'.",
+                    ))
+                }
+            }
+        }
 
         let n_replicas = self.n_replicas;
         let n_temps = self.n_temps;
         let sweep_mode = sweep_mode.to_string();
         let cluster_mode = cluster_mode.to_string();
+        let houdayer_mode = houdayer_mode.to_string();
         let collect_csd = collect_csd.unwrap_or(false);
 
         let pb = ProgressBar::new((self.n_realizations * n_sweeps) as u64);
@@ -148,6 +161,7 @@ impl IsingSimulation {
                         &cluster_mode,
                         pt_interval,
                         houdayer_interval,
+                        &houdayer_mode,
                         collect_csd,
                         &|| pb.inc(1),
                     )
@@ -171,16 +185,16 @@ impl IsingSimulation {
             dict.set_item("overlap4", Array1::from(agg.overlap4).into_pyarray(py))?;
         }
 
-        if agg.csd_sizes.iter().any(|s| !s.is_empty()) {
+        if agg.fk_csd.iter().any(|s| !s.is_empty()) {
             let csd_py: Vec<_> = agg
-                .csd_sizes
+                .fk_csd
                 .into_iter()
                 .map(|sizes| {
                     Array1::from(sizes.into_iter().map(|s| s as u64).collect::<Vec<_>>())
                         .into_pyarray(py)
                 })
                 .collect();
-            dict.set_item("csd_sizes", csd_py)?;
+            dict.set_item("fk_csd", csd_py)?;
         }
 
         Ok(dict)
