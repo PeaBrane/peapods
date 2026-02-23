@@ -4,17 +4,37 @@ use crate::{clusters, energy, sweep, tempering};
 use rand::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256StarStar;
 
+/// Mutable state for one disorder realization.
+///
+/// Holds the coupling array (fixed after construction), spin configurations for
+/// every replica at every temperature, and bookkeeping for parallel tempering.
+///
+/// With `n_replicas` replicas and `n_temps` temperatures there are
+/// `n_systems = n_replicas * n_temps` independent spin configurations.
+/// Spins are stored in a single flat `Vec` of length `n_systems * n_spins`,
+/// where system `i` occupies `spins[i*n_spins .. (i+1)*n_spins]`.
 pub struct Realization {
+    /// Forward couplings, length `n_spins * n_dims`.
     pub couplings: Vec<f32>,
+    /// All spin configurations, length `n_systems * n_spins` (+1/−1).
     pub spins: Vec<i8>,
+    /// Temperature assigned to each system slot, length `n_systems`.
     pub temperatures: Vec<f32>,
+    /// Parallel-tempering permutation: `system_ids[slot]` is the system index
+    /// currently occupying temperature slot `slot`.
     pub system_ids: Vec<usize>,
+    /// One PRNG per system.
     pub rngs: Vec<Xoshiro256StarStar>,
+    /// Cached total energy per system (E / N), length `n_systems`.
     pub energies: Vec<f32>,
+    /// Cached per-bond interactions (s_i * s_j * J_ij), length `n_systems * n_spins * n_dims`.
     pub interactions: Vec<f32>,
 }
 
 impl Realization {
+    /// Initialize a realization with random ±1 spins.
+    ///
+    /// Seeds replica RNGs deterministically as `base_seed, base_seed+1, …`.
     pub fn new(
         lattice: &Lattice,
         couplings: Vec<f32>,
@@ -57,6 +77,7 @@ impl Realization {
         }
     }
 
+    /// Re-randomize all spins and reset the tempering permutation.
     pub fn reset(&mut self, lattice: &Lattice, n_replicas: usize, n_temps: usize, base_seed: u64) {
         let n_spins = lattice.n_spins;
         let n_systems = n_replicas * n_temps;
@@ -81,17 +102,40 @@ impl Realization {
     }
 }
 
+/// Per-temperature observables averaged over measurement sweeps and replicas.
+///
+/// All vectors are indexed by temperature index and have length `n_temps`.
+/// Overlap vectors are empty when `n_replicas < 2`.
 pub struct SweepResult {
+    /// ⟨m⟩ — mean magnetization per spin.
     pub mags: Vec<f64>,
+    /// ⟨m²⟩.
     pub mags2: Vec<f64>,
+    /// ⟨m⁴⟩.
     pub mags4: Vec<f64>,
+    /// ⟨E⟩ — mean energy per spin.
     pub energies: Vec<f64>,
+    /// ⟨E²⟩.
     pub energies2: Vec<f64>,
+    /// ⟨q⟩ — mean replica overlap.
     pub overlap: Vec<f64>,
+    /// ⟨q²⟩.
     pub overlap2: Vec<f64>,
+    /// ⟨q⁴⟩.
     pub overlap4: Vec<f64>,
 }
 
+/// Run the full Monte Carlo loop (warmup + measurement) for one [`Realization`].
+///
+/// Each sweep consists of:
+/// 1. A full single-spin pass (`sweep_mode`: `"metropolis"` or `"gibbs"`)
+/// 2. An optional cluster update (`cluster_mode`: `"wolff"` or `"sw"`,
+///    every `cluster_update_interval` sweeps)
+/// 3. Measurement (after `warmup_sweeps`)
+/// 4. Optional Houdayer ICM (every `houdayer_interval` sweeps, requires `n_replicas ≥ 2`)
+/// 5. Optional parallel tempering (every `pt_interval` sweeps)
+///
+/// `on_sweep` is called once per sweep (useful for progress bars).
 #[allow(clippy::too_many_arguments)]
 pub fn run_sweep_loop(
     lattice: &Lattice,
@@ -322,6 +366,7 @@ pub fn run_sweep_loop(
     }
 }
 
+/// Average [`SweepResult`]s across disorder realizations.
 pub fn aggregate_results(results: &[SweepResult]) -> SweepResult {
     let n = results.len() as f64;
     let n_temps = results[0].mags.len();
