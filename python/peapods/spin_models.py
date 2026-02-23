@@ -54,6 +54,7 @@ class Ising:
         pt_interval=None,
         houdayer_interval=None,
         warmup_ratio=0.25,
+        collect_csd=False,
     ):
         result = self._sim.sample(
             n_sweeps,
@@ -63,6 +64,7 @@ class Ising:
             pt_interval=pt_interval,
             houdayer_interval=houdayer_interval,
             warmup_ratio=warmup_ratio,
+            collect_csd=collect_csd,
         )
         self.mags = result["mags"]
         self.mags2 = result["mags2"]
@@ -80,6 +82,9 @@ class Ising:
             self.overlap2 = result["overlap2"]
             self.overlap4 = result["overlap4"]
             self.sg_binder = 1 - self.overlap4 / (3 * self.overlap2**2)
+
+        if "csd_sizes" in result:
+            self.csd_sizes = result["csd_sizes"]
 
         return result
 
