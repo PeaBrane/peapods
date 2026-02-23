@@ -260,23 +260,6 @@ pub fn run_sweep_loop(
             }
         }
 
-        if let Some(interval) = pt_interval {
-            if sweep_id % interval == 0 {
-                for r in 0..n_replicas {
-                    let offset = r * n_temps;
-                    let sid_slice = &mut real.system_ids[offset..offset + n_temps];
-                    let temp_slice = &real.temperatures[offset..offset + n_temps];
-                    tempering::parallel_tempering(
-                        &real.energies,
-                        temp_slice,
-                        sid_slice,
-                        n_spins,
-                        &mut real.rngs[offset],
-                    );
-                }
-            }
-        }
-
         if let Some(interval) = houdayer_interval {
             if sweep_id % interval == 0 && n_replicas >= 2 {
                 clusters::houdayer_update(
@@ -294,6 +277,23 @@ pub fn run_sweep_loop(
                     n_systems,
                     false,
                 );
+            }
+        }
+
+        if let Some(interval) = pt_interval {
+            if sweep_id % interval == 0 {
+                for r in 0..n_replicas {
+                    let offset = r * n_temps;
+                    let sid_slice = &mut real.system_ids[offset..offset + n_temps];
+                    let temp_slice = &real.temperatures[offset..offset + n_temps];
+                    tempering::parallel_tempering(
+                        &real.energies,
+                        temp_slice,
+                        sid_slice,
+                        n_spins,
+                        &mut real.rngs[offset],
+                    );
+                }
             }
         }
     }
