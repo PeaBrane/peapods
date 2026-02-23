@@ -68,7 +68,7 @@ fn union(parent: &mut [u32], rank: &mut [u8], x: u32, y: u32) {
 //                 * couplings[i * n_dims + d];
 //       if inter <= 0.0 { return false; }
 //       rng.gen::<f32>() < 1.0 - (-4.0 * inter / temp).exp()
-//   });
+//   }, None);  // pass Some(&mut sizes) to collect CSD
 
 /// Grow a BFS cluster from `seed`. `should_add(site, neighbor, dim, forward)`
 /// decides whether to add each not-yet-visited neighbor.
@@ -99,11 +99,13 @@ fn bfs_cluster(
 
 /// Activate forward bonds via union-find. `should_bond(site, dim)` decides
 /// whether to activate the bond from `site` to its forward neighbor in `dim`.
-/// Returns `(parent, rank)` with parent NOT flattened.
+/// Returns `(parent, rank)`. When `csd` is `Some`, parent is flattened in-place
+/// and sorted cluster sizes (descending) are appended to the vec.
 #[inline]
 fn uf_bonds(
     lattice: &Lattice,
     mut should_bond: impl FnMut(usize, usize) -> bool,
+    csd: Option<&mut Vec<usize>>,
 ) -> (Vec<u32>, Vec<u8>) {
     let n_spins = lattice.n_spins;
     let mut parent: Vec<u32> = (0..n_spins as u32).collect();
@@ -116,6 +118,19 @@ fn uf_bonds(
                 union(&mut parent, &mut rank, i as u32, j as u32);
             }
         }
+    }
+
+    if let Some(sizes) = csd {
+        for i in 0..n_spins {
+            parent[i] = find(&mut parent, i as u32);
+        }
+        let mut counts = vec![0usize; n_spins];
+        for i in 0..n_spins {
+            counts[parent[i] as usize] += 1;
+        }
+        let mut cluster_sizes: Vec<usize> = counts.into_iter().filter(|&c| c > 0).collect();
+        cluster_sizes.sort_unstable_by(|a, b| b.cmp(a));
+        sizes.extend(cluster_sizes);
     }
 
     (parent, rank)
@@ -144,14 +159,18 @@ pub fn sw_update(
         |spin_slice, rng, temp, system_id| {
             let inter_base = system_id * n_spins * n_dims;
 
-            let (mut parent, _) = uf_bonds(lattice, |i, d| {
-                let inter = interactions[inter_base + i * n_dims + d];
-                if inter <= 0.0 {
-                    return false;
-                }
-                let p = 1.0 - (-2.0 * inter / temp).exp();
-                rng.gen::<f32>() < p
-            });
+            let (mut parent, _) = uf_bonds(
+                lattice,
+                |i, d| {
+                    let inter = interactions[inter_base + i * n_dims + d];
+                    if inter <= 0.0 {
+                        return false;
+                    }
+                    let p = 1.0 - (-2.0 * inter / temp).exp();
+                    rng.gen::<f32>() < p
+                },
+                None,
+            );
 
             for i in 0..n_spins {
                 parent[i] = find(&mut parent, i as u32);
@@ -295,4 +314,37 @@ pub fn houdayer_update(
             }
         }
     }
+}
+
+/// Sample FK cluster sizes for the configuration at `spin_base`.
+///
+/// Activates bonds with probability `1 - exp(-2 * s_i * s_j * J / T)` on
+/// satisfied bonds (same as Swendsen-Wang). Returns cluster sizes sorted
+/// descending.
+pub fn fk_cluster_sizes(
+    lattice: &Lattice,
+    spins: &[i8],
+    couplings: &[f32],
+    temp: f32,
+    spin_base: usize,
+    rng: &mut Xoshiro256StarStar,
+) -> Vec<usize> {
+    let n_dims = lattice.n_dims;
+    let mut sizes = Vec::new();
+    uf_bonds(
+        lattice,
+        |i, d| {
+            let j = lattice.neighbor(i, d, true);
+            let inter = spins[spin_base + i] as f32
+                * spins[spin_base + j] as f32
+                * couplings[i * n_dims + d];
+            if inter <= 0.0 {
+                return false;
+            }
+            let p = 1.0 - (-2.0 * inter / temp).exp();
+            rng.gen::<f32>() < p
+        },
+        Some(&mut sizes),
+    );
+    sizes
 }

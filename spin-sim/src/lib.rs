@@ -33,6 +33,7 @@
 //!     "metropolis",
 //!     Some(1), "wolff",
 //!     Some(1), None,
+//!     false,
 //!     &|| {},
 //! );
 //! ```
