@@ -33,7 +33,7 @@ let result = run_sweep_loop(
     n_replicas, temps.len(),
     10_000,   // total sweeps
     1_000,    // warmup sweeps
-    "metropolis",
+    "metropolis", // sweep_mode
     None,     // cluster_update_interval
     "wolff",  // cluster_mode (unused when interval is None)
     Some(1),  // pt_interval
