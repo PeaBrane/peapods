@@ -33,6 +33,42 @@ fn union(parent: &mut [u32], rank: &mut [u8], x: u32, y: u32) {
 }
 
 // --- Generic cluster helpers ---
+//
+// `bfs_cluster` and `uf_bonds` factor out the two cluster-building patterns
+// (BFS single-cluster and union-find global decomposition). Each takes a
+// closure for the algorithm-specific activation logic. The closure is
+// `impl FnMut`, so it is monomorphized at each call site — zero overhead
+// vs hand-inlined code. The closure can capture mutable state (e.g. an RNG
+// for probabilistic bond activation).
+//
+// To build a new cluster algorithm, provide a closure encoding both site
+// and bond constraints. For example, a Jörg cluster (negative-overlap sites
+// + probabilistic bond activation) as a BFS single-cluster:
+//
+//   bfs_cluster(lattice, seed, &mut in_cluster, &mut stack, |site, nb, d, fwd| {
+//       // site constraint: both endpoints must disagree between replicas
+//       if spins[base_a + nb] == spins[base_b + nb] {
+//           return false;
+//       }
+//       // bond constraint: satisfied interaction + stochastic activation
+//       let coupling = if fwd { couplings[site * n_dims + d] }
+//                      else   { couplings[nb * n_dims + d] };
+//       let inter = spins[base_a + site] as f32 * spins[base_a + nb] as f32 * coupling;
+//       if inter <= 0.0 { return false; }
+//       rng.gen::<f32>() < 1.0 - (-4.0 * inter / temp).exp()
+//   });
+//
+// Or equivalently as a global SW-style decomposition via `uf_bonds`:
+//
+//   let (mut parent, _) = uf_bonds(lattice, |i, d| {
+//       let j = lattice.neighbor(i, d, true);
+//       if spins[base_a + i] == spins[base_b + i]
+//       || spins[base_a + j] == spins[base_b + j] { return false; }
+//       let inter = spins[base_a + i] as f32 * spins[base_a + j] as f32
+//                 * couplings[i * n_dims + d];
+//       if inter <= 0.0 { return false; }
+//       rng.gen::<f32>() < 1.0 - (-4.0 * inter / temp).exp()
+//   });
 
 /// Grow a BFS cluster from `seed`. `should_add(site, neighbor, dim, forward)`
 /// decides whether to add each not-yet-visited neighbor.
