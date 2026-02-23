@@ -59,6 +59,14 @@ jobs:
           name: wheels-sdist
           path: dist/
 
+  publish-crate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish spin-sim to crates.io
+        run: cargo publish -p spin-sim --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
   publish:
     needs: [build, sdist]
     runs-on: ubuntu-latest
