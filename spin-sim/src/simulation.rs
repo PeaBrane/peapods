@@ -27,8 +27,6 @@ pub struct Realization {
     pub rngs: Vec<Xoshiro256StarStar>,
     /// Cached total energy per system (E / N), length `n_systems`.
     pub energies: Vec<f32>,
-    /// Cached per-bond interactions (s_i * s_j * J_ij), length `n_systems * n_spins * n_dims`.
-    pub interactions: Vec<f32>,
 }
 
 impl Realization {
@@ -62,9 +60,7 @@ impl Realization {
 
         let system_ids: Vec<usize> = (0..n_systems).collect();
 
-        let (energies, interactions) =
-            energy::compute_energies(lattice, &spins, &couplings, n_systems, true);
-        let interactions = interactions.unwrap();
+        let (energies, _) = energy::compute_energies(lattice, &spins, &couplings, n_systems, false);
 
         Self {
             couplings,
@@ -73,7 +69,6 @@ impl Realization {
             system_ids,
             rngs,
             energies,
-            interactions,
         }
     }
 
@@ -95,10 +90,9 @@ impl Realization {
 
         self.system_ids = (0..n_systems).collect();
 
-        let (energies, interactions) =
-            energy::compute_energies(lattice, &self.spins, &self.couplings, n_systems, true);
+        let (energies, _) =
+            energy::compute_energies(lattice, &self.spins, &self.couplings, n_systems, false);
         self.energies = energies;
-        self.interactions = interactions.unwrap();
     }
 }
 
@@ -199,70 +193,35 @@ pub fn run_sweep_loop(
         let do_cluster = cluster_update_interval.is_some_and(|interval| sweep_id % interval == 0);
 
         if do_cluster {
-            match cluster_mode {
-                "wolff" => {
-                    clusters::wolff_update(
-                        lattice,
-                        &mut real.spins,
-                        &real.couplings,
-                        &real.temperatures,
-                        &real.system_ids,
-                        &mut real.rngs,
-                    );
-                    (real.energies, _) = energy::compute_energies(
-                        lattice,
-                        &real.spins,
-                        &real.couplings,
-                        n_systems,
-                        false,
-                    );
+            let wolff = cluster_mode == "wolff";
+            let csd_out = if collect_csd && record {
+                for buf in sw_csd_buf.iter_mut() {
+                    buf.clear();
                 }
-                "sw" => {
-                    let (energies, interactions) = energy::compute_energies(
-                        lattice,
-                        &real.spins,
-                        &real.couplings,
-                        n_systems,
-                        true,
-                    );
-                    real.energies = energies;
-                    real.interactions = interactions.unwrap();
+                Some(sw_csd_buf.as_mut_slice())
+            } else {
+                None
+            };
 
-                    let csd_out = if collect_csd && record {
-                        for buf in sw_csd_buf.iter_mut() {
-                            buf.clear();
-                        }
-                        Some(sw_csd_buf.as_mut_slice())
-                    } else {
-                        None
-                    };
+            clusters::fk_update(
+                lattice,
+                &mut real.spins,
+                &real.couplings,
+                &real.temperatures,
+                &real.system_ids,
+                &mut real.rngs,
+                wolff,
+                csd_out,
+            );
 
-                    clusters::sw_update(
-                        lattice,
-                        &mut real.spins,
-                        &real.interactions,
-                        &real.temperatures,
-                        &real.system_ids,
-                        &mut real.rngs,
-                        csd_out,
-                    );
-
-                    if collect_csd && record {
-                        for (slot, buf) in sw_csd_buf.iter_mut().enumerate() {
-                            fk_csd_accum[slot % n_temps].append(buf);
-                        }
-                    }
-
-                    (real.energies, _) = energy::compute_energies(
-                        lattice,
-                        &real.spins,
-                        &real.couplings,
-                        n_systems,
-                        false,
-                    );
+            if collect_csd && record {
+                for (slot, buf) in sw_csd_buf.iter_mut().enumerate() {
+                    fk_csd_accum[slot % n_temps].append(buf);
                 }
-                _ => unreachable!(),
             }
+
+            (real.energies, _) =
+                energy::compute_energies(lattice, &real.spins, &real.couplings, n_systems, false);
         } else {
             (real.energies, _) =
                 energy::compute_energies(lattice, &real.spins, &real.couplings, n_systems, false);
@@ -329,27 +288,18 @@ pub fn run_sweep_loop(
 
         if let Some(interval) = houdayer_interval {
             if sweep_id % interval == 0 && n_replicas >= 2 {
-                match houdayer_mode {
-                    "houdayer" => clusters::houdayer_update(
-                        lattice,
-                        &mut real.spins,
-                        &real.system_ids,
-                        n_replicas,
-                        n_temps,
-                        &mut real.rngs[0],
-                    ),
-                    "jorg" => clusters::jorg_update(
-                        lattice,
-                        &mut real.spins,
-                        &real.couplings,
-                        &real.temperatures,
-                        &real.system_ids,
-                        n_replicas,
-                        n_temps,
-                        &mut real.rngs[0],
-                    ),
-                    _ => unreachable!(),
-                }
+                clusters::overlap_update(
+                    lattice,
+                    &mut real.spins,
+                    &real.couplings,
+                    &real.temperatures,
+                    &real.system_ids,
+                    n_replicas,
+                    n_temps,
+                    &mut real.rngs[0],
+                    houdayer_mode == "jorg",
+                    true,
+                );
                 (real.energies, _) = energy::compute_energies(
                     lattice,
                     &real.spins,
