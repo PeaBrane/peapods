@@ -1,6 +1,5 @@
 use crate::lattice::Lattice;
-use crate::results::SweepResult;
-use crate::stats::Statistics;
+use crate::statistics::{Statistics, SweepResult};
 use crate::{clusters, energy, sweep, tempering};
 use rand::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256StarStar;
