@@ -24,9 +24,9 @@ use rayon::prelude::*;
 /// When `wolff` is false, uses union-find global decomposition and swaps all
 /// non-singleton clusters. CSD collection forces UF even when `wolff` is true.
 ///
-/// When `csd_out` is `Some`, forces UF path and writes per-pair cluster size
-/// distributions. Slice length must be `n_temps * n_pairs`, indexed by
-/// `t * n_pairs + p`.
+/// When `csd_out` is `Some`, forces UF path and histograms per-pair cluster
+/// sizes. Slice length must be `n_temps * n_pairs`, indexed by
+/// `t * n_pairs + p`. Each inner vec must be pre-sized to `n_spins + 1`.
 #[allow(clippy::too_many_arguments)]
 pub fn overlap_update(
     lattice: &Lattice,
@@ -40,7 +40,7 @@ pub fn overlap_update(
     stochastic: bool,
     restrict_to_negative: bool,
     wolff: bool,
-    csd_out: Option<&mut [Vec<usize>]>,
+    csd_out: Option<&mut [Vec<u64>]>,
 ) {
     let n_spins = lattice.n_spins;
     let n_dims = lattice.n_dims;
@@ -78,7 +78,8 @@ pub fn overlap_update(
 
         if use_uf {
             let csd_slot = if has_csd {
-                Some(&mut *(cp as *mut Vec<usize>).add(t * n_pairs + p))
+                let slot = &mut *(cp as *mut Vec<u64>).add(t * n_pairs + p);
+                Some(slot.as_mut_slice())
             } else {
                 None
             };

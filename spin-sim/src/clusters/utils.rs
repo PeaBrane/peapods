@@ -88,12 +88,13 @@ pub(super) fn bfs_cluster(
 /// Activate forward bonds via union-find. `should_bond(site, dim)` decides
 /// whether to activate the bond from `site` to its forward neighbor in `dim`.
 /// Returns `(parent, rank)`. When `csd` is `Some`, parent is flattened in-place
-/// and sorted cluster sizes (descending) are appended to the vec.
+/// and cluster sizes are histogrammed into the slice (`hist[s]` += 1 for each
+/// cluster of size `s`).
 #[inline]
 pub(super) fn uf_bonds(
     lattice: &Lattice,
     mut should_bond: impl FnMut(usize, usize) -> bool,
-    csd: Option<&mut Vec<usize>>,
+    csd: Option<&mut [u64]>,
 ) -> (Vec<u32>, Vec<u8>) {
     let n_spins = lattice.n_spins;
     let mut parent: Vec<u32> = (0..n_spins as u32).collect();
@@ -108,17 +109,19 @@ pub(super) fn uf_bonds(
         }
     }
 
-    if let Some(sizes) = csd {
+    if let Some(hist) = csd {
         for i in 0..n_spins {
             parent[i] = find(&mut parent, i as u32);
         }
-        let mut counts = vec![0usize; n_spins];
+        let mut counts = vec![0u32; n_spins];
         for i in 0..n_spins {
             counts[parent[i] as usize] += 1;
         }
-        let mut cluster_sizes: Vec<usize> = counts.into_iter().filter(|&c| c > 0).collect();
-        cluster_sizes.sort_unstable_by(|a, b| b.cmp(a));
-        sizes.extend(cluster_sizes);
+        for &c in &counts {
+            if c > 0 {
+                hist[c as usize] += 1;
+            }
+        }
     }
 
     (parent, rank)
@@ -355,24 +358,32 @@ mod tests {
     #[test]
     fn test_uf_csd_bond_based() {
         let lattice = lattice_4x4();
+        let n = lattice.n_spins;
         let bonds = bond_set();
 
-        let mut sizes = Vec::new();
-        let _ = uf_bonds(&lattice, |i, d| bonds.contains(&(i, d)), Some(&mut sizes));
+        let mut hist = vec![0u64; n + 1];
+        let _ = uf_bonds(&lattice, |i, d| bonds.contains(&(i, d)), Some(&mut hist));
 
-        // Clusters: size 4, size 3, and 9 singletons
-        assert_eq!(sizes, vec![4, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+        // Clusters: size 4 ×1, size 3 ×1, size 1 ×9
+        assert_eq!(hist[1], 9);
+        assert_eq!(hist[3], 1);
+        assert_eq!(hist[4], 1);
+        assert_eq!(hist.iter().sum::<u64>(), 11);
     }
 
     #[test]
     fn test_uf_csd_site_based() {
         let lattice = lattice_4x4();
+        let n = lattice.n_spins;
         let sites = active_sites();
 
-        let mut sizes = Vec::new();
-        let _ = uf_bonds(&lattice, |i, _d| sites.contains(&i), Some(&mut sizes));
+        let mut hist = vec![0u64; n + 1];
+        let _ = uf_bonds(&lattice, |i, _d| sites.contains(&i), Some(&mut hist));
 
-        // Clusters: size 5, size 3, and 8 singletons
-        assert_eq!(sizes, vec![5, 3, 1, 1, 1, 1, 1, 1, 1, 1]);
+        // Clusters: size 5 ×1, size 3 ×1, size 1 ×8
+        assert_eq!(hist[1], 8);
+        assert_eq!(hist[3], 1);
+        assert_eq!(hist[5], 1);
+        assert_eq!(hist.iter().sum::<u64>(), 10);
     }
 }

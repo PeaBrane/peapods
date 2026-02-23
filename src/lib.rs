@@ -200,26 +200,20 @@ impl IsingSimulation {
             dict.set_item("overlap4", Array1::from(agg.overlap4).into_pyarray(py))?;
         }
 
-        if agg.fk_csd.iter().any(|s| !s.is_empty()) {
+        if agg.fk_csd.iter().any(|h| h.iter().any(|&c| c > 0)) {
             let csd_py: Vec<_> = agg
                 .fk_csd
                 .into_iter()
-                .map(|sizes| {
-                    Array1::from(sizes.into_iter().map(|s| s as u64).collect::<Vec<_>>())
-                        .into_pyarray(py)
-                })
+                .map(|hist| Array1::from(hist).into_pyarray(py))
                 .collect();
             dict.set_item("fk_csd", csd_py)?;
         }
 
-        if agg.overlap_csd.iter().any(|s| !s.is_empty()) {
+        if agg.overlap_csd.iter().any(|h| h.iter().any(|&c| c > 0)) {
             let csd_py: Vec<_> = agg
                 .overlap_csd
                 .into_iter()
-                .map(|sizes| {
-                    Array1::from(sizes.into_iter().map(|s| s as u64).collect::<Vec<_>>())
-                        .into_pyarray(py)
-                })
+                .map(|hist| Array1::from(hist).into_pyarray(py))
                 .collect();
             dict.set_item("overlap_csd", csd_py)?;
         }

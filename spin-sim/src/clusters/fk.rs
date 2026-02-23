@@ -13,10 +13,10 @@ use rayon::prelude::*;
 /// Uses a BFS fast path when `wolff && csd_out.is_none()`. Otherwise uses
 /// union-find, computing interactions on-the-fly from `couplings`.
 ///
-/// When `csd_out` is `Some`, FK cluster sizes (sorted descending) are written
-/// into the pre-allocated per-system slots. The slice length must equal the
-/// number of systems (i.e. `system_ids.len()`); each vec is *appended to*,
-/// so the caller should clear them beforehand if a fresh collection is wanted.
+/// When `csd_out` is `Some`, cluster sizes are histogrammed into the
+/// pre-allocated per-system slots (`hist[s]` += 1 for each cluster of size
+/// `s`). The slice length must equal the number of systems (i.e.
+/// `system_ids.len()`); each inner vec must be pre-sized to `n_spins + 1`.
 #[allow(clippy::too_many_arguments)]
 pub fn fk_update(
     lattice: &Lattice,
@@ -26,7 +26,7 @@ pub fn fk_update(
     system_ids: &[usize],
     rngs: &mut [Xoshiro256StarStar],
     wolff: bool,
-    csd_out: Option<&mut [Vec<usize>]>,
+    csd_out: Option<&mut [Vec<u64>]>,
 ) {
     let n_spins = lattice.n_spins;
     let n_dims = lattice.n_dims;
@@ -91,7 +91,8 @@ pub fn fk_update(
         let temp = temperatures[temp_id];
 
         let csd_slot = if has_csd {
-            Some(&mut *(cp as *mut Vec<usize>).add(temp_id))
+            let slot = &mut *(cp as *mut Vec<u64>).add(temp_id);
+            Some(slot.as_mut_slice())
         } else {
             None
         };
