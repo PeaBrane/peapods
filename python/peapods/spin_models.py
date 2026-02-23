@@ -54,6 +54,7 @@ class Ising:
         pt_interval=None,
         houdayer_interval=None,
         houdayer_mode="houdayer",
+        overlap_cluster_mode="wolff",
         warmup_ratio=0.25,
         collect_csd=False,
     ):
@@ -65,6 +66,7 @@ class Ising:
             pt_interval=pt_interval,
             houdayer_interval=houdayer_interval,
             houdayer_mode=houdayer_mode if houdayer_interval else None,
+            overlap_cluster_mode=overlap_cluster_mode if houdayer_interval else None,
             warmup_ratio=warmup_ratio,
             collect_csd=collect_csd,
         )

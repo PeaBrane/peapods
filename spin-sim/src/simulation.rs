@@ -138,11 +138,13 @@ pub fn run_sweep_loop(
     pt_interval: Option<usize>,
     houdayer_interval: Option<usize>,
     houdayer_mode: &str,
+    overlap_cluster_mode: &str,
     collect_csd: bool,
     on_sweep: &(dyn Fn() + Sync),
 ) -> SweepResult {
     let n_spins = lattice.n_spins;
     let n_systems = n_replicas * n_temps;
+    let overlap_wolff = overlap_cluster_mode == "wolff";
 
     let (stochastic, restrict_to_negative) = match houdayer_mode {
         "houdayer" => (false, true),
@@ -310,7 +312,7 @@ pub fn run_sweep_loop(
                     &mut real.pair_rngs,
                     stochastic,
                     restrict_to_negative,
-                    true,
+                    overlap_wolff,
                     ov_csd_out,
                 );
 
