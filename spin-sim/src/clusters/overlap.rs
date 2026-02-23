@@ -1,5 +1,5 @@
 use super::utils::{bfs_cluster, find, find_seed, uf_bonds};
-use crate::lattice::Lattice;
+use crate::spins::Lattice;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;

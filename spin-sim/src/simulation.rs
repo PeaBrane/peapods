@@ -1,6 +1,6 @@
-use crate::lattice::Lattice;
+use crate::spins::Lattice;
 use crate::statistics::{Statistics, SweepResult};
-use crate::{clusters, energy, sweep, tempering};
+use crate::{clusters, mcmc, spins};
 use rand::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256StarStar;
 
@@ -70,7 +70,8 @@ impl Realization {
             ));
         }
 
-        let (energies, _) = energy::compute_energies(lattice, &spins, &couplings, n_systems, false);
+        let (energies, _) =
+            spins::energy::compute_energies(lattice, &spins, &couplings, n_systems, false);
 
         Self {
             couplings,
@@ -107,8 +108,13 @@ impl Realization {
                 Xoshiro256StarStar::seed_from_u64(base_seed + n_systems as u64 + i as u64);
         }
 
-        let (energies, _) =
-            energy::compute_energies(lattice, &self.spins, &self.couplings, n_systems, false);
+        let (energies, _) = spins::energy::compute_energies(
+            lattice,
+            &self.spins,
+            &self.couplings,
+            n_systems,
+            false,
+        );
         self.energies = energies;
     }
 }
@@ -175,7 +181,7 @@ pub fn run_sweep_loop(
         let record = sweep_id >= warmup_sweeps;
 
         match sweep_mode {
-            "metropolis" => sweep::metropolis_sweep(
+            "metropolis" => mcmc::sweep::metropolis_sweep(
                 lattice,
                 &mut real.spins,
                 &real.couplings,
@@ -183,7 +189,7 @@ pub fn run_sweep_loop(
                 &real.system_ids,
                 &mut real.rngs,
             ),
-            "gibbs" => sweep::gibbs_sweep(
+            "gibbs" => mcmc::sweep::gibbs_sweep(
                 lattice,
                 &mut real.spins,
                 &real.couplings,
@@ -224,11 +230,21 @@ pub fn run_sweep_loop(
                 }
             }
 
-            (real.energies, _) =
-                energy::compute_energies(lattice, &real.spins, &real.couplings, n_systems, false);
+            (real.energies, _) = spins::energy::compute_energies(
+                lattice,
+                &real.spins,
+                &real.couplings,
+                n_systems,
+                false,
+            );
         } else {
-            (real.energies, _) =
-                energy::compute_energies(lattice, &real.spins, &real.couplings, n_systems, false);
+            (real.energies, _) = spins::energy::compute_energies(
+                lattice,
+                &real.spins,
+                &real.couplings,
+                n_systems,
+                false,
+            );
         }
 
         if record {
@@ -322,7 +338,7 @@ pub fn run_sweep_loop(
                     }
                 }
 
-                (real.energies, _) = energy::compute_energies(
+                (real.energies, _) = spins::energy::compute_energies(
                     lattice,
                     &real.spins,
                     &real.couplings,
@@ -338,7 +354,7 @@ pub fn run_sweep_loop(
                     let offset = r * n_temps;
                     let sid_slice = &mut real.system_ids[offset..offset + n_temps];
                     let temp_slice = &real.temperatures[offset..offset + n_temps];
-                    tempering::parallel_tempering(
+                    mcmc::tempering::parallel_tempering(
                         &real.energies,
                         temp_slice,
                         sid_slice,

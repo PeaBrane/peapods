@@ -1,4 +1,4 @@
-use crate::lattice::Lattice;
+use super::Lattice;
 
 /// Compute per-system average energy, and optionally per-spin forward interactions.
 ///
