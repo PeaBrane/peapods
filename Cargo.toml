@@ -3,7 +3,7 @@ members = ["spin-sim"]
 
 [package]
 name = "peapods"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 
 [lib]
@@ -11,7 +11,7 @@ name = "_core"
 crate-type = ["cdylib"]
 
 [dependencies]
-spin-sim = { path = "spin-sim", version = "0.1.2" }
+spin-sim = { path = "spin-sim", version = "0.1.3" }
 pyo3 = { version = "0.24", features = ["extension-module"] }
 numpy = "0.24"
 rayon = "1.10"

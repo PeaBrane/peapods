@@ -1,12 +1,21 @@
-/// Lattice geometry with on-the-fly neighbor computation.
+/// Periodic hypercubic lattice with on-the-fly neighbor computation.
+///
+/// Sites are indexed in row-major (C) order. Couplings are stored in a flat
+/// array of length `n_spins * n_dims`, where element `i * n_dims + d` is the
+/// coupling on the bond from site `i` to its forward neighbor in dimension `d`.
 pub struct Lattice {
+    /// Extent along each dimension (e.g. `[8, 8, 8]`).
     pub shape: Vec<usize>,
+    /// Row-major strides: `strides[d] = product of shape[d+1..]`.
     pub strides: Vec<usize>,
+    /// Total number of sites (`shape.iter().product()`).
     pub n_spins: usize,
+    /// Number of spatial dimensions (`shape.len()`).
     pub n_dims: usize,
 }
 
 impl Lattice {
+    /// Create a lattice with the given shape (e.g. `vec![8, 8, 8]` for a 8^3 cube).
     pub fn new(shape: Vec<usize>) -> Self {
         let n_dims = shape.len();
         let n_spins: usize = shape.iter().product();

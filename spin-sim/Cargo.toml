@@ -1,9 +1,13 @@
 [package]
 name = "spin-sim"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Ising model Monte Carlo: Metropolis, Gibbs, Wolff, Swendsen-Wang, parallel tempering, Houdayer ICM"
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/PeaBrane/peapods"
+keywords = ["ising", "monte-carlo", "spin-glass", "parallel-tempering", "cluster-algorithm"]
+categories = ["science", "simulation"]
 
 [dependencies]
 rand = "0.8"
