@@ -58,10 +58,13 @@ impl IsingSimulation {
         let couplings_raw = couplings.as_slice()?;
         let chunk_size = n_spins * n_dims;
 
+        let n_pairs = n_replicas / 2;
+        let rngs_per_real = n_systems + n_temps * n_pairs;
+
         let mut realizations = Vec::with_capacity(n_realizations);
         for r in 0..n_realizations {
             let coup_chunk = couplings_raw[r * chunk_size..(r + 1) * chunk_size].to_vec();
-            let base_seed = 42 + (r * n_systems) as u64;
+            let base_seed = 42 + (r * rngs_per_real) as u64;
             realizations.push(Realization::new(
                 &lattice, coup_chunk, temps_raw, n_replicas, base_seed,
             ));
@@ -209,14 +212,15 @@ impl IsingSimulation {
         let base_seed = seed.unwrap_or(42);
         let n_replicas = self.n_replicas;
         let n_temps = self.n_temps;
-        let n_systems = n_replicas * n_temps;
+        let n_pairs = n_replicas / 2;
+        let rngs_per_real = n_replicas * n_temps + n_temps * n_pairs;
         let lattice = &self.lattice;
         for (r, real) in self.realizations.iter_mut().enumerate() {
             real.reset(
                 lattice,
                 n_replicas,
                 n_temps,
-                base_seed + (r * n_systems) as u64,
+                base_seed + (r * rngs_per_real) as u64,
             );
         }
     }
