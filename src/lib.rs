@@ -79,7 +79,7 @@ impl IsingSimulation {
         })
     }
 
-    #[pyo3(signature = (n_sweeps, sweep_mode, cluster_update_interval=None, cluster_mode=None, pt_interval=None, houdayer_interval=None, houdayer_mode=None, warmup_ratio=None, collect_csd=None))]
+    #[pyo3(signature = (n_sweeps, sweep_mode, cluster_update_interval=None, cluster_mode=None, pt_interval=None, houdayer_interval=None, houdayer_mode=None, overlap_cluster_mode=None, warmup_ratio=None, collect_csd=None))]
     #[allow(clippy::too_many_arguments)]
     fn sample<'py>(
         &mut self,
@@ -91,6 +91,7 @@ impl IsingSimulation {
         pt_interval: Option<usize>,
         houdayer_interval: Option<usize>,
         houdayer_mode: Option<&str>,
+        overlap_cluster_mode: Option<&str>,
         warmup_ratio: Option<f64>,
         collect_csd: Option<bool>,
     ) -> PyResult<Bound<'py, PyDict>> {
@@ -98,6 +99,7 @@ impl IsingSimulation {
         let warmup_sweeps = (n_sweeps as f64 * warmup).round() as usize;
         let cluster_mode = cluster_mode.unwrap_or("sw");
         let houdayer_mode = houdayer_mode.unwrap_or("houdayer");
+        let overlap_cluster_mode = overlap_cluster_mode.unwrap_or("wolff");
 
         match sweep_mode {
             "metropolis" | "gibbs" => {}
@@ -126,6 +128,14 @@ impl IsingSimulation {
                     ))
                 }
             }
+            match overlap_cluster_mode {
+                "sw" | "wolff" => {}
+                _ => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "Invalid overlap cluster mode. Use 'sw' or 'wolff'.",
+                    ))
+                }
+            }
         }
 
         let n_replicas = self.n_replicas;
@@ -133,6 +143,7 @@ impl IsingSimulation {
         let sweep_mode = sweep_mode.to_string();
         let cluster_mode = cluster_mode.to_string();
         let houdayer_mode = houdayer_mode.to_string();
+        let overlap_cluster_mode = overlap_cluster_mode.to_string();
         let collect_csd = collect_csd.unwrap_or(false);
 
         let pb = ProgressBar::new((self.n_realizations * n_sweeps) as u64);
@@ -165,6 +176,7 @@ impl IsingSimulation {
                         pt_interval,
                         houdayer_interval,
                         &houdayer_mode,
+                        &overlap_cluster_mode,
                         collect_csd,
                         &|| pb.inc(1),
                     )
