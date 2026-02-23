@@ -25,6 +25,8 @@ pub struct Realization {
     pub system_ids: Vec<usize>,
     /// One PRNG per system.
     pub rngs: Vec<Xoshiro256StarStar>,
+    /// One PRNG per overlap-update pair slot, length `n_temps * (n_replicas / 2)`.
+    pub pair_rngs: Vec<Xoshiro256StarStar>,
     /// Cached total energy per system (E / N), length `n_systems`.
     pub energies: Vec<f32>,
 }
@@ -60,6 +62,14 @@ impl Realization {
 
         let system_ids: Vec<usize> = (0..n_systems).collect();
 
+        let n_pairs = n_replicas / 2;
+        let mut pair_rngs = Vec::with_capacity(n_temps * n_pairs);
+        for i in 0..n_temps * n_pairs {
+            pair_rngs.push(Xoshiro256StarStar::seed_from_u64(
+                base_seed + n_systems as u64 + i as u64,
+            ));
+        }
+
         let (energies, _) = energy::compute_energies(lattice, &spins, &couplings, n_systems, false);
 
         Self {
@@ -68,6 +78,7 @@ impl Realization {
             temperatures,
             system_ids,
             rngs,
+            pair_rngs,
             energies,
         }
     }
@@ -89,6 +100,12 @@ impl Realization {
         }
 
         self.system_ids = (0..n_systems).collect();
+
+        let n_pairs = n_replicas / 2;
+        for i in 0..n_temps * n_pairs {
+            self.pair_rngs[i] =
+                Xoshiro256StarStar::seed_from_u64(base_seed + n_systems as u64 + i as u64);
+        }
 
         let (energies, _) =
             energy::compute_energies(lattice, &self.spins, &self.couplings, n_systems, false);
@@ -296,7 +313,7 @@ pub fn run_sweep_loop(
                     &real.system_ids,
                     n_replicas,
                     n_temps,
-                    &mut real.rngs[0],
+                    &mut real.pair_rngs,
                     houdayer_mode == "jorg",
                     true,
                 );
