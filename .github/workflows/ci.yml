@@ -38,7 +38,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build and install
-        run: uv pip install --system maturin numpy matplotlib && maturin develop --release
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv pip install maturin numpy matplotlib
+          maturin develop --release
 
       - name: Ferromagnet Binder crossing
-        run: cd tests && python binder_crossing.py
+        run: source .venv/bin/activate && cd tests && python binder_crossing.py
