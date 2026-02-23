@@ -32,33 +32,60 @@ fn union(parent: &mut [u32], rank: &mut [u8], x: u32, y: u32) {
     }
 }
 
-// --- Wolff helpers ---
+// --- Generic cluster helpers ---
 
-/// Try to add a neighbor to the Wolff cluster.
+/// Grow a BFS cluster from `seed`. `should_add(site, neighbor, dim, forward)`
+/// decides whether to add each not-yet-visited neighbor.
+/// Caller owns buffers: `in_cluster` must be all-false, `stack` must be empty.
 #[inline]
-#[allow(clippy::too_many_arguments)]
-fn wolff_try_add(
-    neighbor: usize,
-    si: f32,
-    spin_slice: &[i8],
-    coupling: f32,
-    temp: f32,
+fn bfs_cluster(
+    lattice: &Lattice,
+    seed: usize,
     in_cluster: &mut [bool],
     stack: &mut Vec<usize>,
-    rng: &mut Xoshiro256StarStar,
+    mut should_add: impl FnMut(usize, usize, usize, bool) -> bool,
 ) {
-    if in_cluster[neighbor] {
-        return;
-    }
-    let interaction = si * spin_slice[neighbor] as f32 * coupling;
-    if interaction > 0.0 {
-        let p = 1.0 - (-2.0 * interaction / temp).exp();
-        if rng.gen::<f32>() < p {
-            in_cluster[neighbor] = true;
-            stack.push(neighbor);
+    in_cluster[seed] = true;
+    stack.push(seed);
+
+    while let Some(site) = stack.pop() {
+        for d in 0..lattice.n_dims {
+            for &fwd in &[true, false] {
+                let nb = lattice.neighbor(site, d, fwd);
+                if !in_cluster[nb] && should_add(site, nb, d, fwd) {
+                    in_cluster[nb] = true;
+                    stack.push(nb);
+                }
+            }
         }
     }
 }
+
+/// Activate forward bonds via union-find. `should_bond(site, dim)` decides
+/// whether to activate the bond from `site` to its forward neighbor in `dim`.
+/// Returns `(parent, rank)` with parent NOT flattened.
+#[inline]
+fn uf_bonds(
+    lattice: &Lattice,
+    mut should_bond: impl FnMut(usize, usize) -> bool,
+) -> (Vec<u32>, Vec<u8>) {
+    let n_spins = lattice.n_spins;
+    let mut parent: Vec<u32> = (0..n_spins as u32).collect();
+    let mut rank = vec![0u8; n_spins];
+
+    for i in 0..n_spins {
+        for d in 0..lattice.n_dims {
+            if should_bond(i, d) {
+                let j = lattice.neighbor(i, d, true);
+                union(&mut parent, &mut rank, i as u32, j as u32);
+            }
+        }
+    }
+
+    (parent, rank)
+}
+
+// --- Public cluster updates ---
 
 /// Swendsen-Wang cluster update, parallelized over replicas.
 pub fn sw_update(
@@ -81,31 +108,19 @@ pub fn sw_update(
         |spin_slice, rng, temp, system_id| {
             let inter_base = system_id * n_spins * n_dims;
 
-            // Initialize union-find
-            let mut parent: Vec<u32> = (0..n_spins as u32).collect();
-            let mut rank = vec![0u8; n_spins];
-
-            // Activate bonds and union
-            for i in 0..n_spins {
-                for d in 0..n_dims {
-                    let inter = interactions[inter_base + i * n_dims + d];
-                    if inter <= 0.0 {
-                        continue;
-                    }
-                    let p = 1.0 - (-2.0 * inter / temp).exp();
-                    if rng.gen::<f32>() < p {
-                        let j = lattice.neighbor(i, d, true);
-                        union(&mut parent, &mut rank, i as u32, j as u32);
-                    }
+            let (mut parent, _) = uf_bonds(lattice, |i, d| {
+                let inter = interactions[inter_base + i * n_dims + d];
+                if inter <= 0.0 {
+                    return false;
                 }
-            }
+                let p = 1.0 - (-2.0 * inter / temp).exp();
+                rng.gen::<f32>() < p
+            });
 
-            // Flatten parent
             for i in 0..n_spins {
                 parent[i] = find(&mut parent, i as u32);
             }
 
-            // Decide flip for each cluster root
             let mut flip_decision = vec![2u8; n_spins]; // 2 = undecided
             for i in 0..n_spins {
                 let root = parent[i] as usize;
@@ -143,43 +158,26 @@ pub fn wolff_update(
             let mut in_cluster = vec![false; n_spins];
             let mut stack = Vec::with_capacity(n_spins);
 
-            in_cluster[seed] = true;
-            stack.push(seed);
+            bfs_cluster(
+                lattice,
+                seed,
+                &mut in_cluster,
+                &mut stack,
+                |site, nb, d, fwd| {
+                    let coupling = if fwd {
+                        couplings[site * n_dims + d]
+                    } else {
+                        couplings[nb * n_dims + d]
+                    };
+                    let interaction = spin_slice[site] as f32 * spin_slice[nb] as f32 * coupling;
+                    if interaction <= 0.0 {
+                        return false;
+                    }
+                    let p = 1.0 - (-2.0 * interaction / temp).exp();
+                    rng.gen::<f32>() < p
+                },
+            );
 
-            while let Some(spin_id) = stack.pop() {
-                let si = spin_slice[spin_id] as f32;
-                for d in 0..n_dims {
-                    // Forward neighbor
-                    let j_fwd = lattice.neighbor(spin_id, d, true);
-                    let c_fwd = couplings[spin_id * n_dims + d];
-                    wolff_try_add(
-                        j_fwd,
-                        si,
-                        spin_slice,
-                        c_fwd,
-                        temp,
-                        &mut in_cluster,
-                        &mut stack,
-                        rng,
-                    );
-
-                    // Backward neighbor (coupling is forward coupling of that neighbor)
-                    let j_back = lattice.neighbor(spin_id, d, false);
-                    let c_back = couplings[j_back * n_dims + d];
-                    wolff_try_add(
-                        j_back,
-                        si,
-                        spin_slice,
-                        c_back,
-                        temp,
-                        &mut in_cluster,
-                        &mut stack,
-                        rng,
-                    );
-                }
-            }
-
-            // Flip the cluster
             for i in 0..n_spins {
                 if in_cluster[i] {
                     spin_slice[i] = -spin_slice[i];
@@ -192,7 +190,7 @@ pub fn wolff_update(
 /// Houdayer isoenergetic cluster move (ICM).
 ///
 /// For each temperature, shuffle replicas into random pairs. For each pair,
-/// identify negative-overlap sites (where spins disagree), grow a Wolff-style
+/// identify negative-overlap sites (where spins disagree), grow a BFS
 /// cluster on that subgraph (prob=1), and exchange the cluster between replicas.
 /// Preserves each replica's energy → always accepted.
 pub fn houdayer_update(
@@ -204,26 +202,24 @@ pub fn houdayer_update(
     rng: &mut Xoshiro256StarStar,
 ) {
     let n_spins = lattice.n_spins;
-    let n_dims = lattice.n_dims;
+
+    let mut in_cluster = vec![false; n_spins];
+    let mut stack = Vec::with_capacity(n_spins);
 
     for t in 0..n_temps {
-        // Collect system IDs for all replicas at temperature t
         let mut replica_systems: Vec<usize> = (0..n_replicas)
             .map(|k| system_ids[k * n_temps + t])
             .collect();
         replica_systems.shuffle(rng);
 
-        // Pair consecutive replicas
         for pair in replica_systems.chunks_exact(2) {
             let sys_a = pair[0];
             let sys_b = pair[1];
             let base_a = sys_a * n_spins;
             let base_b = sys_b * n_spins;
 
-            // Find a random negative-overlap seed site
             let seed = {
                 let mut found = None;
-                // Try random samples first
                 for _ in 0..64 {
                     let i = rng.gen_range(0..n_spins);
                     if spins[base_a + i] != spins[base_b + i] {
@@ -231,7 +227,6 @@ pub fn houdayer_update(
                         break;
                     }
                 }
-                // Fall back to linear scan
                 if found.is_none() {
                     for i in 0..n_spins {
                         if spins[base_a + i] != spins[base_b + i] {
@@ -242,29 +237,21 @@ pub fn houdayer_update(
                 }
                 match found {
                     Some(s) => s,
-                    None => continue, // all agree, skip this pair
+                    None => continue,
                 }
             };
 
-            // BFS: grow cluster on negative-overlap subgraph (prob=1)
-            let mut in_cluster = vec![false; n_spins];
-            let mut stack = Vec::with_capacity(n_spins);
-            in_cluster[seed] = true;
-            stack.push(seed);
+            in_cluster.fill(false);
+            stack.clear();
 
-            while let Some(site) = stack.pop() {
-                for d in 0..n_dims {
-                    for &fwd in &[true, false] {
-                        let nb = lattice.neighbor(site, d, fwd);
-                        if !in_cluster[nb] && spins[base_a + nb] != spins[base_b + nb] {
-                            in_cluster[nb] = true;
-                            stack.push(nb);
-                        }
-                    }
-                }
-            }
+            bfs_cluster(
+                lattice,
+                seed,
+                &mut in_cluster,
+                &mut stack,
+                |_site, nb, _d, _fwd| spins[base_a + nb] != spins[base_b + nb],
+            );
 
-            // Exchange cluster sites between the two replicas
             for (i, &in_c) in in_cluster.iter().enumerate() {
                 if in_c {
                     spins.swap(base_a + i, base_b + i);
