@@ -5,10 +5,9 @@
 //! | Move | Function |
 //! |------|----------|
 //! | Metropolis / Gibbs sweep | [`run_sweep_loop`] (`sweep_mode`) |
-//! | Wolff single-cluster | [`run_sweep_loop`] (`cluster_mode = "wolff"`) |
-//! | Swendsen-Wang | [`run_sweep_loop`] (`cluster_mode = "sw"`) |
+//! | Wolff / Swendsen-Wang | [`run_sweep_loop`] (`cluster_mode`) |
 //! | Parallel tempering | [`run_sweep_loop`] (`pt_interval`) |
-//! | Houdayer ICM | [`run_sweep_loop`] (`houdayer_interval`) |
+//! | Houdayer / Jörg ICM | [`run_sweep_loop`] (`houdayer_interval`, `houdayer_mode`) |
 //!
 //! Replicas are parallelized over threads with [`rayon`].
 //!
@@ -32,7 +31,7 @@
 //!     5000, 1000,
 //!     "metropolis",
 //!     Some(1), "wolff",
-//!     Some(1), None,
+//!     Some(1), None, "houdayer",
 //!     false,
 //!     &|| {},
 //! );
