@@ -1,6 +1,6 @@
 use super::utils::{bfs_cluster, find, uf_bonds};
-use crate::lattice::Lattice;
 use crate::parallel::par_over_replicas;
+use crate::spins::Lattice;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 use rayon::prelude::*;

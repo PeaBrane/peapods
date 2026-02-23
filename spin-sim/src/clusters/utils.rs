@@ -1,4 +1,4 @@
-use crate::lattice::Lattice;
+use crate::spins::Lattice;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 

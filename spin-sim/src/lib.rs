@@ -39,16 +39,14 @@
 //!
 //! For a Python interface, see the [`peapods`](https://pypi.org/project/peapods/) package.
 
-pub mod lattice;
 pub mod simulation;
+pub mod spins;
 pub mod statistics;
 
 mod clusters;
-mod energy;
+mod mcmc;
 mod parallel;
-mod sweep;
-mod tempering;
 
-pub use lattice::Lattice;
 pub use simulation::{run_sweep_loop, Realization};
+pub use spins::Lattice;
 pub use statistics::SweepResult;
