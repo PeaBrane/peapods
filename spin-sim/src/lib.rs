@@ -40,16 +40,15 @@
 //! For a Python interface, see the [`peapods`](https://pypi.org/project/peapods/) package.
 
 pub mod lattice;
-pub mod results;
 pub mod simulation;
+pub mod statistics;
 
 mod clusters;
 mod energy;
 mod parallel;
-mod stats;
 mod sweep;
 mod tempering;
 
 pub use lattice::Lattice;
-pub use results::SweepResult;
 pub use simulation::{run_sweep_loop, Realization};
+pub use statistics::SweepResult;
