@@ -1,5 +1,5 @@
 use super::utils::{bfs_cluster, find, find_seed, uf_bonds};
-use crate::spins::Lattice;
+use crate::geometry::Lattice;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
@@ -43,7 +43,7 @@ pub fn overlap_update(
     csd_out: Option<&mut [Vec<u64>]>,
 ) {
     let n_spins = lattice.n_spins;
-    let n_dims = lattice.n_dims;
+    let n_neighbors = lattice.n_neighbors;
     let n_pairs = n_replicas / 2;
 
     // Phase 1 (sequential): determine all pairs via per-temperature shuffle
@@ -100,7 +100,7 @@ pub fn overlap_update(
                     }
                     let inter = *sp_ptr.add(base_a + i) as f32
                         * *sp_ptr.add(base_a + j) as f32
-                        * couplings[i * n_dims + d];
+                        * couplings[i * n_neighbors + d];
                     if inter <= 0.0 {
                         return false;
                     }
@@ -172,9 +172,9 @@ pub fn overlap_update(
                         return true;
                     }
                     let coupling = if fwd {
-                        couplings[site * n_dims + d]
+                        couplings[site * n_neighbors + d]
                     } else {
-                        couplings[nb * n_dims + d]
+                        couplings[nb * n_neighbors + d]
                     };
                     let inter = *sp_ptr.add(base_a + site) as f32
                         * *sp_ptr.add(base_a + nb) as f32

@@ -1,4 +1,4 @@
-use crate::spins::Lattice;
+use crate::geometry::Lattice;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 
@@ -73,7 +73,7 @@ pub(super) fn bfs_cluster(
     stack.push(seed);
 
     while let Some(site) = stack.pop() {
-        for d in 0..lattice.n_dims {
+        for d in 0..lattice.n_neighbors {
             for &fwd in &[true, false] {
                 let nb = lattice.neighbor(site, d, fwd);
                 if !in_cluster[nb] && should_add(site, nb, d, fwd) {
@@ -101,7 +101,7 @@ pub(super) fn uf_bonds(
     let mut rank = vec![0u8; n_spins];
 
     for i in 0..n_spins {
-        for d in 0..lattice.n_dims {
+        for d in 0..lattice.n_neighbors {
             if should_bond(i, d) {
                 let j = lattice.neighbor(i, d, true);
                 union(&mut parent, &mut rank, i as u32, j as u32);

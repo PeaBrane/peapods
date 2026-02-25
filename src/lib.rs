@@ -18,16 +18,25 @@ struct IsingSimulation {
 #[pymethods]
 impl IsingSimulation {
     #[new]
-    #[pyo3(signature = (lattice_shape, couplings, temperatures, n_replicas=None))]
+    #[pyo3(signature = (lattice_shape, couplings, temperatures, n_replicas=None, neighbor_offsets=None))]
     fn new(
         lattice_shape: Vec<usize>,
         couplings: PyReadonlyArrayDyn<f32>,
         temperatures: PyReadonlyArray1<f32>,
         n_replicas: Option<usize>,
+        neighbor_offsets: Option<Vec<Vec<i64>>>,
     ) -> PyResult<Self> {
-        let lattice = Lattice::new(lattice_shape);
+        let lattice = if let Some(offsets) = neighbor_offsets {
+            let offsets: Vec<Vec<isize>> = offsets
+                .into_iter()
+                .map(|v| v.into_iter().map(|x| x as isize).collect())
+                .collect();
+            Lattice::with_offsets(lattice_shape, offsets)
+        } else {
+            Lattice::new(lattice_shape)
+        };
         let n_spins = lattice.n_spins;
-        let n_dims = lattice.n_dims;
+        let n_neighbors = lattice.n_neighbors;
         let n_replicas = n_replicas.unwrap_or(1);
 
         let temps_raw = temperatures.as_slice()?;
@@ -39,7 +48,7 @@ impl IsingSimulation {
             .shape
             .iter()
             .copied()
-            .chain(std::iter::once(n_dims))
+            .chain(std::iter::once(n_neighbors))
             .collect();
 
         let n_realizations = if coup_shape == expected_single.as_slice() {
@@ -56,7 +65,7 @@ impl IsingSimulation {
         };
 
         let couplings_raw = couplings.as_slice()?;
-        let chunk_size = n_spins * n_dims;
+        let chunk_size = n_spins * n_neighbors;
 
         let n_pairs = n_replicas / 2;
         let rngs_per_real = n_systems + n_temps * n_pairs;

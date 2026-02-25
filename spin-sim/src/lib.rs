@@ -1,4 +1,4 @@
-//! Pure-Rust Ising model Monte Carlo on periodic hypercubic lattices.
+//! Pure-Rust Ising model Monte Carlo on periodic Bravais lattices.
 //!
 //! # Algorithms
 //!
@@ -18,11 +18,11 @@
 //!
 //! let lattice = Lattice::new(vec![16, 16]);
 //! let n_spins = lattice.n_spins;
-//! let n_dims = lattice.n_dims;
+//! let n_neighbors = lattice.n_neighbors;
 //! let temps = vec![2.0, 2.27, 2.5];
 //!
 //! // Uniform ferromagnetic couplings
-//! let couplings = vec![1.0f32; n_spins * n_dims];
+//! let couplings = vec![1.0f32; n_spins * n_neighbors];
 //! let mut real = Realization::new(&lattice, couplings, &temps, 2, 42);
 //!
 //! let result = run_sweep_loop(
@@ -39,6 +39,7 @@
 //!
 //! For a Python interface, see the [`peapods`](https://pypi.org/project/peapods/) package.
 
+pub mod geometry;
 pub mod simulation;
 pub mod spins;
 pub mod statistics;
@@ -47,6 +48,6 @@ mod clusters;
 mod mcmc;
 mod parallel;
 
+pub use geometry::Lattice;
 pub use simulation::{run_sweep_loop, Realization};
-pub use spins::Lattice;
 pub use statistics::SweepResult;

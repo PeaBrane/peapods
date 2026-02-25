@@ -22,7 +22,7 @@ let temps = vec![2.0, 2.27, 2.5];
 let n_replicas = 2;
 
 // Random ±1 couplings (bimodal spin glass)
-let couplings: Vec<f32> = (0..lattice.n_spins * lattice.n_dims)
+let couplings: Vec<f32> = (0..lattice.n_spins * lattice.n_neighbors)
     .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
     .collect();
 
