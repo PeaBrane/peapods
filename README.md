@@ -9,7 +9,7 @@ The core simulation loop is written in Rust (via PyO3) for performance, with a t
 
 ## Features
 
-- Ising ferromagnets and spin glasses on arbitrary-dimensional hypercubic lattices
+- Ising ferromagnets and spin glasses on periodic Bravais lattices (hypercubic, triangular, or any custom neighbor offsets)
 - Arbitrary, bimodal (±J), or Gaussian coupling distributions
 - Multiple replicas with overlap statistics for spin glass order parameters
 
@@ -20,11 +20,8 @@ The following algorithms are currently supported:
 - [Wolff cluster updates](https://en.wikipedia.org/wiki/Wolff_algorithm)
 - [Parallel tempering](https://en.wikipedia.org/wiki/Parallel_tempering)
 - [Houdayer isoenergetic cluster move](https://arxiv.org/abs/cond-mat/0101116) (replica cluster move for spin glasses)
-
-Planned:
-
-- Cluster updates for frustrated systems (e.g. [KBD algorithm](https://en.wikipedia.org/wiki/KBD_algorithm))
-- [Jorg move](https://arxiv.org/abs/cond-mat/0410328) (Houdayer + SW-style bond breaking within clusters)
+- [Jörg move](https://arxiv.org/abs/cond-mat/0410328) (stochastic overlap cluster move)
+- [CMR move](https://doi.org/10.1103/PhysRevE.62.8114) (Chayes-Machta-Redner blue-bond overlap cluster move)
 
 ## Quickstart
 
@@ -37,6 +34,13 @@ model = Ising((32, 32), temperatures=np.linspace(1.5, 3.0, 32), n_replicas=2)
 model.sample(n_sweeps=5000, sweep_mode="metropolis",
              cluster_update_interval=1, pt_interval=1)
 print(model.binder_cumulant)
+
+# Triangular lattice ferromagnet (T_c = 4/ln(3) ≈ 3.641)
+tri = Ising((32, 32), temperatures=np.linspace(3.0, 4.2, 32),
+            n_replicas=2, neighbor_offsets=[[1, 0], [0, 1], [1, -1]])
+tri.sample(n_sweeps=5000, sweep_mode="metropolis",
+           cluster_update_interval=1, pt_interval=1)
+print(tri.binder_cumulant)
 
 # 3D spin glass with Houdayer ICM
 sg = Ising((8, 8, 8), couplings="bimodal",
