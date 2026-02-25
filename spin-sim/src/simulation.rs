@@ -1,4 +1,4 @@
-use crate::spins::Lattice;
+use crate::geometry::Lattice;
 use crate::statistics::{Statistics, SweepResult};
 use crate::{clusters, mcmc, spins};
 use rand::{Rng, SeedableRng};
@@ -14,7 +14,7 @@ use rand_xoshiro::Xoshiro256StarStar;
 /// Spins are stored in a single flat `Vec` of length `n_systems * n_spins`,
 /// where system `i` occupies `spins[i*n_spins .. (i+1)*n_spins]`.
 pub struct Realization {
-    /// Forward couplings, length `n_spins * n_dims`.
+    /// Forward couplings, length `n_spins * n_neighbors`.
     pub couplings: Vec<f32>,
     /// All spin configurations, length `n_systems * n_spins` (+1/−1).
     pub spins: Vec<i8>,

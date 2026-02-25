@@ -11,9 +11,11 @@ class Ising:
         temperatures=np.geomspace(0.1, 10, 32),
         n_replicas=1,
         n_disorder=1,
+        neighbor_offsets=None,
     ):
         self.lattice_shape = tuple(lattice_shape)
         self.n_dims = len(lattice_shape)
+        self.n_neighbors = len(neighbor_offsets) if neighbor_offsets else self.n_dims
         self.temperatures = temperatures.copy().astype(np.float32)
         self.n_temps = len(temperatures)
         self.n_replicas = n_replicas
@@ -23,9 +25,9 @@ class Ising:
             coup = couplings.astype(np.float32)
         else:
             if n_disorder > 1:
-                shape = (n_disorder,) + self.lattice_shape + (self.n_dims,)
+                shape = (n_disorder,) + self.lattice_shape + (self.n_neighbors,)
             else:
-                shape = self.lattice_shape + (self.n_dims,)
+                shape = self.lattice_shape + (self.n_neighbors,)
 
             match couplings:
                 case "ferro":
@@ -39,7 +41,11 @@ class Ising:
 
         self.couplings = coup
         self._sim = IsingSimulation(
-            list(lattice_shape), coup, self.temperatures, n_replicas
+            list(lattice_shape),
+            coup,
+            self.temperatures,
+            n_replicas,
+            neighbor_offsets,
         )
 
     def reset(self):

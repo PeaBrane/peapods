@@ -1,19 +1,19 @@
+use crate::geometry::Lattice;
 use crate::parallel::par_over_replicas;
-use crate::spins::Lattice;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 
-/// Compute local field for spin `i` from all 2*n_dims neighbors.
+/// Compute local field for spin `i` from all `2 * n_neighbors` neighbors.
 #[inline]
 fn local_field(lattice: &Lattice, spin_slice: &[i8], couplings: &[f32], i: usize) -> f32 {
-    let n_dims = lattice.n_dims;
+    let n_neighbors = lattice.n_neighbors;
     let mut h = 0.0f32;
-    for d in 0..n_dims {
+    for d in 0..n_neighbors {
         let j_fwd = lattice.neighbor(i, d, true);
-        h += spin_slice[j_fwd] as f32 * couplings[i * n_dims + d];
+        h += spin_slice[j_fwd] as f32 * couplings[i * n_neighbors + d];
 
         let j_back = lattice.neighbor(i, d, false);
-        h += spin_slice[j_back] as f32 * couplings[j_back * n_dims + d];
+        h += spin_slice[j_back] as f32 * couplings[j_back * n_neighbors + d];
     }
     h
 }

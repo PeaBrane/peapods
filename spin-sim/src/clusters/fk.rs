@@ -1,6 +1,6 @@
 use super::utils::{bfs_cluster, find, uf_bonds};
+use crate::geometry::Lattice;
 use crate::parallel::par_over_replicas;
-use crate::spins::Lattice;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 use rayon::prelude::*;
@@ -29,7 +29,7 @@ pub fn fk_update(
     csd_out: Option<&mut [Vec<u64>]>,
 ) {
     let n_spins = lattice.n_spins;
-    let n_dims = lattice.n_dims;
+    let n_neighbors = lattice.n_neighbors;
 
     // BFS fast path: Wolff without CSD collection
     if wolff && csd_out.is_none() {
@@ -51,9 +51,9 @@ pub fn fk_update(
                     &mut stack,
                     |site, nb, d, fwd| {
                         let coupling = if fwd {
-                            couplings[site * n_dims + d]
+                            couplings[site * n_neighbors + d]
                         } else {
-                            couplings[nb * n_dims + d]
+                            couplings[nb * n_neighbors + d]
                         };
                         let interaction =
                             spin_slice[site] as f32 * spin_slice[nb] as f32 * coupling;
@@ -101,7 +101,8 @@ pub fn fk_update(
             lattice,
             |i, d| {
                 let j = lattice.neighbor(i, d, true);
-                let inter = spin_slice[i] as f32 * spin_slice[j] as f32 * couplings[i * n_dims + d];
+                let inter =
+                    spin_slice[i] as f32 * spin_slice[j] as f32 * couplings[i * n_neighbors + d];
                 if inter <= 0.0 {
                     return false;
                 }
