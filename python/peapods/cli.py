@@ -78,6 +78,17 @@ def add_simulation_args(parser):
     parser.add_argument(
         "--overlap-cluster-mode", default="wolff", choices=["wolff", "sw"]
     )
+    parser.add_argument(
+        "--overlap-update-mode",
+        default="swap",
+        choices=["swap", "free"],
+        help="Overlap cluster update mode (default: swap)",
+    )
+    parser.add_argument(
+        "--collect-top-clusters",
+        action="store_true",
+        help="Collect top-4 overlap cluster sizes per temperature",
+    )
 
 
 def build_model(args):
@@ -110,6 +121,8 @@ def sample_kwargs(args):
         houdayer_interval=args.houdayer_interval,
         houdayer_mode=args.houdayer_mode,
         overlap_cluster_mode=args.overlap_cluster_mode,
+        overlap_update_mode=args.overlap_update_mode,
+        collect_top_clusters=args.collect_top_clusters,
     )
 
 
@@ -178,6 +191,8 @@ def run_simulate(args):
             save_dict["mean_cluster_size"] = model.mean_cluster_size
         if hasattr(model, "fk_csd"):
             save_dict["fk_csd"] = model.fk_csd
+        if hasattr(model, "top_cluster_sizes"):
+            save_dict["top_cluster_sizes"] = model.top_cluster_sizes
         np.savez(args.output, **save_dict)
         print(f"\nResults saved to {args.output}")
 
@@ -200,12 +215,15 @@ def print_table(model, has_overlap, has_csd):
     energy = model.energies_avg
     binder = model.binder_cumulant
     hcap = model.heat_capacity
+    has_top4 = hasattr(model, "top_cluster_sizes")
 
     cols = [f"{'T':>8}", f"{'E':>10}", f"{'Binder':>10}", f"{'C_v':>10}"]
     if has_overlap:
         cols.append(f"{'Overlap Binder':>15}")
     if has_csd:
         cols.append(f"{'Cluster Size':>14}")
+    if has_top4:
+        cols.append(f"{'Top-4 Clusters':>30}")
 
     header = "  ".join(cols)
     print(header)
@@ -222,6 +240,9 @@ def print_table(model, has_overlap, has_csd):
             row.append(f"{model.sg_binder[i]:15.6f}")
         if has_csd:
             row.append(f"{model.mean_cluster_size[i]:14.2f}")
+        if has_top4:
+            t = model.top_cluster_sizes[i]
+            row.append(f"({t[0]:.3f}, {t[1]:.3f}, {t[2]:.3f}, {t[3]:.3f})".rjust(30))
         print("  ".join(row))
 
 
