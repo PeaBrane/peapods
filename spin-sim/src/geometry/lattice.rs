@@ -17,10 +17,12 @@ pub struct Lattice {
     pub n_dims: usize,
     /// Number of forward neighbor directions per site.
     pub n_neighbors: usize,
-    /// Precomputed neighbor table, length `n_spins * n_neighbors * 2`.
-    /// Layout: `neighbors[(i * n_neighbors + d) * 2 + dir]` where `dir = 0`
-    /// is forward and `dir = 1` is backward.
-    neighbors: Vec<u32>,
+    /// Forward neighbors, length `n_spins * n_neighbors`.
+    /// Layout: `fwd_neighbors[i * n_neighbors + d]`.
+    fwd_neighbors: Vec<u32>,
+    /// Backward neighbors, length `n_spins * n_neighbors`.
+    /// Layout: `bwd_neighbors[i * n_neighbors + d]`.
+    bwd_neighbors: Vec<u32>,
 }
 
 impl Lattice {
@@ -54,13 +56,14 @@ impl Lattice {
             strides[d] = strides[d + 1] * shape[d + 1];
         }
 
-        let mut neighbors = vec![0u32; n_spins * n_neighbors * 2];
+        let mut fwd_neighbors = vec![0u32; n_spins * n_neighbors];
+        let mut bwd_neighbors = vec![0u32; n_spins * n_neighbors];
 
         for i in 0..n_spins {
             let coords: Vec<usize> = (0..n_dims).map(|d| (i / strides[d]) % shape[d]).collect();
 
             for (d, off) in offsets.iter().enumerate() {
-                for (dir, sign) in [(0, 1isize), (1, -1isize)] {
+                for (sign, table) in [(1isize, &mut fwd_neighbors), (-1isize, &mut bwd_neighbors)] {
                     let mut flat = 0usize;
                     for dim in 0..n_dims {
                         let c = (coords[dim] as isize + sign * off[dim])
@@ -68,7 +71,7 @@ impl Lattice {
                             as usize;
                         flat += c * strides[dim];
                     }
-                    neighbors[(i * n_neighbors + d) * 2 + dir] = flat as u32;
+                    table[i * n_neighbors + d] = flat as u32;
                 }
             }
         }
@@ -79,15 +82,19 @@ impl Lattice {
             n_spins,
             n_dims,
             n_neighbors,
-            neighbors,
+            fwd_neighbors,
+            bwd_neighbors,
         }
     }
 
-    /// Return the neighbor of site `flat_idx` in direction `dim`.
-    /// `forward = true` means +offset, `forward = false` means −offset.
     #[inline]
-    pub fn neighbor(&self, flat_idx: usize, dim: usize, forward: bool) -> usize {
-        self.neighbors[(flat_idx * self.n_neighbors + dim) * 2 + (!forward as usize)] as usize
+    pub fn neighbor_fwd(&self, flat_idx: usize, dim: usize) -> usize {
+        self.fwd_neighbors[flat_idx * self.n_neighbors + dim] as usize
+    }
+
+    #[inline]
+    pub fn neighbor_bwd(&self, flat_idx: usize, dim: usize) -> usize {
+        self.bwd_neighbors[flat_idx * self.n_neighbors + dim] as usize
     }
 }
 
@@ -103,16 +110,16 @@ mod tests {
         assert_eq!(lat.strides, vec![4, 1]);
 
         // Spin 0 = (0,0): forward in dim 0 -> (1,0)=4, forward in dim 1 -> (0,1)=1
-        assert_eq!(lat.neighbor(0, 0, true), 4);
-        assert_eq!(lat.neighbor(0, 1, true), 1);
+        assert_eq!(lat.neighbor_fwd(0, 0), 4);
+        assert_eq!(lat.neighbor_fwd(0, 1), 1);
 
         // Spin 0 = (0,0): backward in dim 0 -> (2,0)=8 (wrap), backward in dim 1 -> (0,3)=3 (wrap)
-        assert_eq!(lat.neighbor(0, 0, false), 8);
-        assert_eq!(lat.neighbor(0, 1, false), 3);
+        assert_eq!(lat.neighbor_bwd(0, 0), 8);
+        assert_eq!(lat.neighbor_bwd(0, 1), 3);
 
         // Spin 11 = (2,3): forward in dim 0 -> (0,3)=3 (wrap), forward in dim 1 -> (2,0)=8 (wrap)
-        assert_eq!(lat.neighbor(11, 0, true), 3);
-        assert_eq!(lat.neighbor(11, 1, true), 8);
+        assert_eq!(lat.neighbor_fwd(11, 0), 3);
+        assert_eq!(lat.neighbor_fwd(11, 1), 8);
     }
 
     #[test]
@@ -122,9 +129,9 @@ mod tests {
         assert_eq!(lat.strides, vec![12, 4, 1]);
 
         // Spin 0 = (0,0,0)
-        assert_eq!(lat.neighbor(0, 0, true), 12); // (1,0,0)
-        assert_eq!(lat.neighbor(0, 1, true), 4); // (0,1,0)
-        assert_eq!(lat.neighbor(0, 2, true), 1); // (0,0,1)
+        assert_eq!(lat.neighbor_fwd(0, 0), 12); // (1,0,0)
+        assert_eq!(lat.neighbor_fwd(0, 1), 4); // (0,1,0)
+        assert_eq!(lat.neighbor_fwd(0, 2), 1); // (0,0,1)
     }
 
     #[test]
@@ -138,31 +145,31 @@ mod tests {
 
         // Site 0 = (0,0)
         // offset [1,0]  -> (1,0) = 4
-        assert_eq!(lat.neighbor(0, 0, true), 4);
+        assert_eq!(lat.neighbor_fwd(0, 0), 4);
         // offset [0,1]  -> (0,1) = 1
-        assert_eq!(lat.neighbor(0, 1, true), 1);
+        assert_eq!(lat.neighbor_fwd(0, 1), 1);
         // offset [1,-1] -> (1, -1 mod 4) = (1,3) = 7
-        assert_eq!(lat.neighbor(0, 2, true), 7);
+        assert_eq!(lat.neighbor_fwd(0, 2), 7);
 
         // backward of [1,0] from (0,0) -> (-1 mod 4, 0) = (3,0) = 12
-        assert_eq!(lat.neighbor(0, 0, false), 12);
+        assert_eq!(lat.neighbor_bwd(0, 0), 12);
         // backward of [0,1] from (0,0) -> (0, -1 mod 4) = (0,3) = 3
-        assert_eq!(lat.neighbor(0, 1, false), 3);
+        assert_eq!(lat.neighbor_bwd(0, 1), 3);
         // backward of [1,-1] from (0,0) -> (-1 mod 4, 1 mod 4) = (3,1) = 13
-        assert_eq!(lat.neighbor(0, 2, false), 13);
+        assert_eq!(lat.neighbor_bwd(0, 2), 13);
 
         // Site 5 = (1,1)
         // offset [1,-1] -> (2, 0) = 8
-        assert_eq!(lat.neighbor(5, 2, true), 8);
+        assert_eq!(lat.neighbor_fwd(5, 2), 8);
         // backward of [1,-1] from (1,1) -> (0, 2) = 2
-        assert_eq!(lat.neighbor(5, 2, false), 2);
+        assert_eq!(lat.neighbor_bwd(5, 2), 2);
 
         // Site 15 = (3,3): all forward neighbors wrap
         // offset [1,0]  -> (0,3) = 3
-        assert_eq!(lat.neighbor(15, 0, true), 3);
+        assert_eq!(lat.neighbor_fwd(15, 0), 3);
         // offset [0,1]  -> (3,0) = 12
-        assert_eq!(lat.neighbor(15, 1, true), 12);
+        assert_eq!(lat.neighbor_fwd(15, 1), 12);
         // offset [1,-1] -> (0, 2) = 2
-        assert_eq!(lat.neighbor(15, 2, true), 2);
+        assert_eq!(lat.neighbor_fwd(15, 2), 2);
     }
 }

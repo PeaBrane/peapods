@@ -10,6 +10,7 @@ use crate::geometry::Lattice;
 ///   interactions: Option<Vec<f32>> of length (n_systems * n_spins * n_neighbors)
 ///     interactions[r * n_spins * n_neighbors + i * n_neighbors + d] =
 ///       spin[r,i] * spin[r,neighbor_fwd(i,d)] * coupling[i,d]
+#[cfg_attr(feature = "profile", inline(never))]
 pub fn compute_energies(
     lattice: &Lattice,
     spins: &[i8],
@@ -35,7 +36,7 @@ pub fn compute_energies(
         for i in 0..n_spins {
             let si = spins[spin_base + i] as f32;
             for d in 0..n_neighbors {
-                let j = lattice.neighbor(i, d, true);
+                let j = lattice.neighbor_fwd(i, d);
                 let sj = spins[spin_base + j] as f32;
                 let c = couplings[i * n_neighbors + d];
                 let inter = si * sj * c;

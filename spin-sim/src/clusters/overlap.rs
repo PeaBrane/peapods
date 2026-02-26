@@ -34,6 +34,7 @@ use rayon::prelude::*;
 ///
 /// When `top4_out` is `Some`, forces UF path and writes the 4 largest cluster
 /// sizes (descending) per pair. Indexed by `t * n_pairs + p`.
+#[cfg_attr(feature = "profile", inline(never))]
 #[allow(clippy::too_many_arguments)]
 pub fn overlap_update(
     lattice: &Lattice,
@@ -99,7 +100,7 @@ pub fn overlap_update(
             let (mut parent, _) = uf_bonds(
                 lattice,
                 |i, d| {
-                    let j = lattice.neighbor(i, d, true);
+                    let j = lattice.neighbor_fwd(i, d);
                     if restrict_to_negative {
                         if !overlap_sign(i) || !overlap_sign(j) {
                             return false;
