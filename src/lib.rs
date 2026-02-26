@@ -1,9 +1,10 @@
 use indicatif::{ProgressBar, ProgressStyle};
-use numpy::ndarray::Array1;
+use numpy::ndarray::{Array1, Array2};
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rayon::prelude::*;
+use spin_sim::config::*;
 use spin_sim::{run_sweep_loop, Lattice, Realization, SweepResult};
 
 #[pyclass]
@@ -88,7 +89,20 @@ impl IsingSimulation {
         })
     }
 
-    #[pyo3(signature = (n_sweeps, sweep_mode, cluster_update_interval=None, cluster_mode=None, pt_interval=None, houdayer_interval=None, houdayer_mode=None, overlap_cluster_mode=None, warmup_ratio=None, collect_csd=None))]
+    #[pyo3(signature = (
+        n_sweeps,
+        sweep_mode,
+        cluster_update_interval=None,
+        cluster_mode=None,
+        pt_interval=None,
+        houdayer_interval=None,
+        houdayer_mode=None,
+        overlap_cluster_mode=None,
+        warmup_ratio=None,
+        collect_csd=None,
+        overlap_update_mode=None,
+        collect_top_clusters=None,
+    ))]
     #[allow(clippy::too_many_arguments)]
     fn sample<'py>(
         &mut self,
@@ -103,57 +117,65 @@ impl IsingSimulation {
         overlap_cluster_mode: Option<&str>,
         warmup_ratio: Option<f64>,
         collect_csd: Option<bool>,
+        overlap_update_mode: Option<&str>,
+        collect_top_clusters: Option<bool>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let warmup = warmup_ratio.unwrap_or(0.25);
         let warmup_sweeps = (n_sweeps as f64 * warmup).round() as usize;
-        let cluster_mode = cluster_mode.unwrap_or("sw");
-        let houdayer_mode = houdayer_mode.unwrap_or("houdayer");
-        let overlap_cluster_mode = overlap_cluster_mode.unwrap_or("wolff");
+        let collect_csd = collect_csd.unwrap_or(false);
+        let collect_top_clusters = collect_top_clusters.unwrap_or(false);
 
-        match sweep_mode {
-            "metropolis" | "gibbs" => {}
-            _ => {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "Invalid sweep mode. Use 'metropolis' or 'gibbs'.",
-                ))
-            }
-        }
-        if cluster_update_interval.is_some() {
-            match cluster_mode {
-                "sw" | "wolff" => {}
-                _ => {
-                    return Err(pyo3::exceptions::PyValueError::new_err(
-                        "Invalid cluster mode. Use 'sw' or 'wolff'.",
-                    ))
-                }
-            }
-        }
-        if houdayer_interval.is_some() {
-            match houdayer_mode {
-                "houdayer" | "jorg" | "cmr" => {}
-                _ => {
-                    return Err(pyo3::exceptions::PyValueError::new_err(
-                        "Invalid houdayer mode. Use 'houdayer', 'jorg', or 'cmr'.",
-                    ))
-                }
-            }
-            match overlap_cluster_mode {
-                "sw" | "wolff" => {}
-                _ => {
-                    return Err(pyo3::exceptions::PyValueError::new_err(
-                        "Invalid overlap cluster mode. Use 'sw' or 'wolff'.",
-                    ))
-                }
-            }
-        }
+        let sweep_mode_enum =
+            SweepMode::try_from(sweep_mode).map_err(pyo3::exceptions::PyValueError::new_err)?;
+
+        let cluster_update = cluster_update_interval
+            .map(|interval| {
+                let mode_str = cluster_mode.unwrap_or("sw");
+                let mode = ClusterMode::try_from(mode_str)
+                    .map_err(pyo3::exceptions::PyValueError::new_err);
+                mode.map(|m| ClusterConfig {
+                    interval,
+                    mode: m,
+                    collect_csd,
+                })
+            })
+            .transpose()?;
+
+        let houdayer = houdayer_interval
+            .map(|interval| {
+                let h_mode_str = houdayer_mode.unwrap_or("houdayer");
+                let oc_mode_str = overlap_cluster_mode.unwrap_or("wolff");
+                let ou_mode_str = overlap_update_mode.unwrap_or("swap");
+
+                let h_mode = HoudayerMode::try_from(h_mode_str)
+                    .map_err(pyo3::exceptions::PyValueError::new_err)?;
+                let oc_mode = ClusterMode::try_from(oc_mode_str)
+                    .map_err(pyo3::exceptions::PyValueError::new_err)?;
+                let ou_mode = OverlapUpdateMode::try_from(ou_mode_str)
+                    .map_err(pyo3::exceptions::PyValueError::new_err)?;
+
+                Ok::<_, PyErr>(HoudayerConfig {
+                    interval,
+                    mode: h_mode,
+                    cluster_mode: oc_mode,
+                    update_mode: ou_mode,
+                    collect_csd,
+                    collect_top_clusters,
+                })
+            })
+            .transpose()?;
+
+        let config = SimConfig {
+            n_sweeps,
+            warmup_sweeps,
+            sweep_mode: sweep_mode_enum,
+            cluster_update,
+            pt_interval,
+            houdayer,
+        };
 
         let n_replicas = self.n_replicas;
         let n_temps = self.n_temps;
-        let sweep_mode = sweep_mode.to_string();
-        let cluster_mode = cluster_mode.to_string();
-        let houdayer_mode = houdayer_mode.to_string();
-        let overlap_cluster_mode = overlap_cluster_mode.to_string();
-        let collect_csd = collect_csd.unwrap_or(false);
 
         let pb = ProgressBar::new((self.n_realizations * n_sweeps) as u64);
         pb.set_style(
@@ -168,32 +190,22 @@ impl IsingSimulation {
         let lattice = &self.lattice;
         let realizations = &mut self.realizations;
 
-        let results: Vec<SweepResult> = py.allow_threads(|| {
+        let results: Vec<Result<SweepResult, String>> = py.allow_threads(|| {
             realizations
                 .par_iter_mut()
                 .map(|real| {
-                    run_sweep_loop(
-                        lattice,
-                        real,
-                        n_replicas,
-                        n_temps,
-                        n_sweeps,
-                        warmup_sweeps,
-                        &sweep_mode,
-                        cluster_update_interval,
-                        &cluster_mode,
-                        pt_interval,
-                        houdayer_interval,
-                        &houdayer_mode,
-                        &overlap_cluster_mode,
-                        collect_csd,
-                        &|| pb.inc(1),
-                    )
+                    run_sweep_loop(lattice, real, n_replicas, n_temps, &config, &|| pb.inc(1))
                 })
                 .collect()
         });
 
         pb.finish();
+
+        let results: Vec<SweepResult> = results
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+
         let agg = SweepResult::aggregate(&results);
 
         let dict = PyDict::new(py);
@@ -225,6 +237,12 @@ impl IsingSimulation {
                 .map(|hist| Array1::from(hist).into_pyarray(py))
                 .collect();
             dict.set_item("overlap_csd", csd_py)?;
+        }
+
+        if !agg.top_cluster_sizes.is_empty() {
+            let arr = Array2::from_shape_fn((n_temps, 4), |(t, k)| agg.top_cluster_sizes[t][k])
+                .into_pyarray(py);
+            dict.set_item("top_cluster_sizes", arr)?;
         }
 
         Ok(dict)

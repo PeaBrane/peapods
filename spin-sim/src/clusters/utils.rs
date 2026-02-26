@@ -127,6 +127,18 @@ pub(super) fn uf_bonds(
     (parent, rank)
 }
 
+pub(super) fn top4_sizes(counts: &[usize]) -> [u32; 4] {
+    let mut top = [0u32; 4]; // ascending; top[0] = current minimum of top-4
+    for &c in counts {
+        if c as u32 > top[0] {
+            top[0] = c as u32;
+            top.sort_unstable();
+        }
+    }
+    top.reverse(); // descending: top[0] = largest
+    top
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

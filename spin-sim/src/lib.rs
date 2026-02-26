@@ -14,6 +14,7 @@
 //! # Quick start
 //!
 //! ```
+//! use spin_sim::config::*;
 //! use spin_sim::{Lattice, Realization, run_sweep_loop};
 //!
 //! let lattice = Lattice::new(vec![16, 16]);
@@ -25,20 +26,27 @@
 //! let couplings = vec![1.0f32; n_spins * n_neighbors];
 //! let mut real = Realization::new(&lattice, couplings, &temps, 2, 42);
 //!
+//! let config = SimConfig {
+//!     n_sweeps: 5000,
+//!     warmup_sweeps: 1000,
+//!     sweep_mode: SweepMode::Metropolis,
+//!     cluster_update: Some(ClusterConfig {
+//!         interval: 1,
+//!         mode: ClusterMode::Wolff,
+//!         collect_csd: false,
+//!     }),
+//!     pt_interval: Some(1),
+//!     houdayer: None,
+//! };
+//!
 //! let result = run_sweep_loop(
-//!     &lattice, &mut real,
-//!     2, temps.len(),
-//!     5000, 1000,
-//!     "metropolis",
-//!     Some(1), "wolff",
-//!     Some(1), None, "houdayer",
-//!     false,
-//!     &|| {},
-//! );
+//!     &lattice, &mut real, 2, temps.len(), &config, &|| {},
+//! ).unwrap();
 //! ```
 //!
 //! For a Python interface, see the [`peapods`](https://pypi.org/project/peapods/) package.
 
+pub mod config;
 pub mod geometry;
 pub mod simulation;
 pub mod spins;

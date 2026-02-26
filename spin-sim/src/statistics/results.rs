@@ -23,6 +23,9 @@ pub struct SweepResult {
     pub fk_csd: Vec<Vec<u64>>,
     /// Overlap cluster size histogram per temperature: `hist[s]` = count of size-`s` clusters.
     pub overlap_csd: Vec<Vec<u64>>,
+    /// Average relative size of k-th largest blue cluster per temperature.
+    /// Shape: [n_temps][4]. Empty if collect_top_clusters=false.
+    pub top_cluster_sizes: Vec<[f64; 4]>,
 }
 
 impl SweepResult {
@@ -37,6 +40,8 @@ impl SweepResult {
         let fk_len = results[0].fk_csd.first().map_or(0, |v| v.len());
         let ov_len = results[0].overlap_csd.first().map_or(0, |v| v.len());
 
+        let n_top = results[0].top_cluster_sizes.len();
+
         let mut agg = SweepResult {
             mags: vec![0.0; n_temps],
             mags2: vec![0.0; n_temps],
@@ -48,6 +53,7 @@ impl SweepResult {
             overlap4: vec![0.0; n_overlap],
             fk_csd: (0..n_fk_csd).map(|_| vec![0u64; fk_len]).collect(),
             overlap_csd: (0..n_ov_csd).map(|_| vec![0u64; ov_len]).collect(),
+            top_cluster_sizes: vec![[0.0; 4]; n_top],
         };
 
         for r in results {
@@ -85,6 +91,15 @@ impl SweepResult {
                     *ah += sh;
                 }
             }
+            for (a, &s) in agg
+                .top_cluster_sizes
+                .iter_mut()
+                .zip(r.top_cluster_sizes.iter())
+            {
+                for k in 0..4 {
+                    a[k] += s[k];
+                }
+            }
         }
 
         for v in agg
@@ -99,6 +114,12 @@ impl SweepResult {
             .chain(agg.overlap4.iter_mut())
         {
             *v /= n;
+        }
+
+        for arr in agg.top_cluster_sizes.iter_mut() {
+            for v in arr.iter_mut() {
+                *v /= n;
+            }
         }
 
         agg
