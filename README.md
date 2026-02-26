@@ -42,7 +42,7 @@ peapods simulate --shape 32 32 --temp-min 1.5 --temp-max 3.0 \
 # 3D spin glass with Houdayer ICM
 peapods simulate --shape 8 8 8 --couplings bimodal \
     --temp-min 0.8 --temp-max 1.4 --n-temps 24 --n-sweeps 10000 \
-    --pt-interval 1 --houdayer-interval 1 --n-replicas 4
+    --pt-interval 1 --overlap-cluster-update-interval 1 --n-replicas 4
 
 # Save full results to .npz
 peapods simulate --shape 16 16 --temp-min 1.5 --temp-max 3.0 \

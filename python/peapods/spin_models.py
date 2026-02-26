@@ -122,8 +122,8 @@ class Ising:
         cluster_update_interval=None,
         cluster_mode="sw",
         pt_interval=None,
-        houdayer_interval=None,
-        houdayer_mode="houdayer",
+        overlap_cluster_update_interval=None,
+        overlap_cluster_build_mode="houdayer",
         overlap_cluster_mode="wolff",
         warmup_ratio=0.25,
         collect_csd=False,
@@ -150,10 +150,10 @@ class Ising:
             cluster_mode: Cluster algorithm. `"sw"` (Swendsen-Wang) or `"wolff"`.
             pt_interval: If set, attempt parallel tempering swaps every this many
                 sweeps.
-            houdayer_interval: If set, attempt Houdayer isoenergetic cluster
+            overlap_cluster_update_interval: If set, attempt overlap cluster
                 moves every this many sweeps. Requires `n_replicas >= 2`.
-            houdayer_mode: Overlap cluster algorithm. `"houdayer"`, `"jorg"`,
-                or `"cmr"`.
+            overlap_cluster_build_mode: Overlap cluster algorithm. `"houdayer"`,
+                `"jorg"`, or `"cmr"`.
             overlap_cluster_mode: Cluster type used inside the overlap move.
                 `"wolff"` or `"sw"`.
             warmup_ratio: Fraction of sweeps discarded as warmup before
@@ -162,25 +162,26 @@ class Ising:
                 distribution.
             overlap_update_mode: How overlap clusters are applied. `"swap"`
                 exchanges spins between replicas; `"free"` independently flips
-                each replica (requires `houdayer_mode="cmr"`).
+                each replica (requires `overlap_cluster_build_mode="cmr"`).
             collect_top_clusters: If `True`, collect average relative sizes of
                 the 4 largest overlap clusters per temperature.
 
         Returns:
             Raw results dictionary with keys like `"mags"`, `"energies"`, etc.
         """
+        oci = overlap_cluster_update_interval
         result = self._sim.sample(
             n_sweeps,
             sweep_mode,
             cluster_update_interval=cluster_update_interval,
             cluster_mode=cluster_mode if cluster_update_interval else None,
             pt_interval=pt_interval,
-            houdayer_interval=houdayer_interval,
-            houdayer_mode=houdayer_mode if houdayer_interval else None,
-            overlap_cluster_mode=overlap_cluster_mode if houdayer_interval else None,
+            overlap_cluster_update_interval=oci,
+            overlap_cluster_build_mode=overlap_cluster_build_mode if oci else None,
+            overlap_cluster_mode=overlap_cluster_mode if oci else None,
             warmup_ratio=warmup_ratio,
             collect_csd=collect_csd,
-            overlap_update_mode=overlap_update_mode if houdayer_interval else None,
+            overlap_update_mode=overlap_update_mode if oci else None,
             collect_top_clusters=collect_top_clusters,
         )
         self.mags = result["mags"]

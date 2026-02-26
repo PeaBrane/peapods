@@ -9,7 +9,7 @@ from peapods import Ising
 from peapods.sweep import run_sweep
 
 COUPLING_CHOICES = ["ferro", "bimodal", "gaussian"]
-HOUDAYER_CHOICES = ["houdayer", "jorg", "cmr"]
+BUILD_MODE_CHOICES = ["houdayer", "jorg", "cmr"]
 OVERLAP_UPDATE_CHOICES = ["swap", "free"]
 OVERLAP_CLUSTER_CHOICES = ["wolff", "sw"]
 
@@ -35,9 +35,9 @@ def _add_common_args(parser):
     parser.add_argument("--n-temps", type=int, default=32)
     parser.add_argument(
         "--temp-scale",
-        default="linear",
+        default="log",
         choices=["linear", "log"],
-        help="Temperature spacing (default: linear)",
+        help="Temperature spacing (default: log)",
     )
 
     # Sampling
@@ -59,10 +59,10 @@ def _add_common_args(parser):
         help="Parallel tempering every N sweeps",
     )
     parser.add_argument(
-        "--houdayer-interval",
+        "--overlap-cluster-update-interval",
         type=int,
         default=None,
-        help="Houdayer moves every N sweeps (requires n_replicas >= 2)",
+        help="Overlap cluster move every N sweeps (requires n_replicas >= 2)",
     )
     parser.add_argument(
         "--collect-top-clusters",
@@ -85,7 +85,11 @@ def add_simulation_args(parser):
         choices=COUPLING_CHOICES,
         help="Coupling distribution (default: ferro)",
     )
-    parser.add_argument("--houdayer-mode", default="houdayer", choices=HOUDAYER_CHOICES)
+    parser.add_argument(
+        "--overlap-cluster-build-mode",
+        default="houdayer",
+        choices=BUILD_MODE_CHOICES,
+    )
     parser.add_argument(
         "--overlap-cluster-mode", default="wolff", choices=OVERLAP_CLUSTER_CHOICES
     )
@@ -113,10 +117,10 @@ def _add_sweep_args(parser):
         help="Coupling distributions to sweep (default: ferro)",
     )
     parser.add_argument(
-        "--houdayer-mode",
+        "--overlap-cluster-build-mode",
         nargs="+",
         default=["houdayer"],
-        choices=HOUDAYER_CHOICES,
+        choices=BUILD_MODE_CHOICES,
     )
     parser.add_argument(
         "--overlap-cluster-mode",
@@ -168,8 +172,8 @@ def sample_kwargs(args):
         cluster_update_interval=args.cluster_interval,
         cluster_mode=args.cluster_mode,
         pt_interval=args.pt_interval,
-        houdayer_interval=args.houdayer_interval,
-        houdayer_mode=args.houdayer_mode,
+        overlap_cluster_update_interval=args.overlap_cluster_update_interval,
+        overlap_cluster_build_mode=args.overlap_cluster_build_mode,
         overlap_cluster_mode=args.overlap_cluster_mode,
         overlap_update_mode=args.overlap_update_mode,
         collect_top_clusters=args.collect_top_clusters,
@@ -203,8 +207,8 @@ def run_sweep_cli(args):
         cluster_update_interval=args.cluster_interval,
         cluster_mode=args.cluster_mode,
         pt_interval=args.pt_interval,
-        houdayer_interval=args.houdayer_interval,
-        houdayer_modes=tuple(args.houdayer_mode),
+        overlap_cluster_update_interval=args.overlap_cluster_update_interval,
+        overlap_cluster_build_modes=tuple(args.overlap_cluster_build_mode),
         overlap_cluster_modes=tuple(args.overlap_cluster_mode),
         overlap_update_modes=tuple(args.overlap_update_mode),
         warmup_ratio=args.warmup_ratio,
