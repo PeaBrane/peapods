@@ -1,10 +1,26 @@
-**/__pycache__/
-*.so
-.idea
-.ipynb_checkpoints
-**/playground*
-**/target/
-paper/*
-!paper/joss/
-refs/
+# OS
 .DS_Store
+Thumbs.db
+
+# Python
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+*.so
+
+# Rust
+**/target/
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Project-specific
+**/playground*
+refs/
