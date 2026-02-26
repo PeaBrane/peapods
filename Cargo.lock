@@ -216,7 +216,7 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 
 [[package]]
 name = "peapods"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "indicatif",
  "numpy",
@@ -409,7 +409,7 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "spin-sim"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "rand",
  "rand_xoshiro",
