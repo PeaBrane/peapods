@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/PeaBrane/peapods/actions/workflows/ci.yml/badge.svg)](https://github.com/PeaBrane/peapods/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/peapods)](https://pypi.org/project/peapods/)
+[![crates.io](https://img.shields.io/crates/v/spin-sim)](https://crates.io/crates/spin-sim)
 [![docs.rs](https://docs.rs/spin-sim/badge.svg)](https://docs.rs/spin-sim)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -59,8 +60,12 @@ For a more complete example, check out [example.py](example.py).
 
 ## Installation
 
+We recommend [uv](https://docs.astral.sh/uv/) for package management. Bare `pip` works too (but so does a typewriter).
+
 ```bash
-pip install peapods
+uv venv
+source .venv/bin/activate
+uv pip install peapods
 ```
 
 Pre-built wheels are available for Linux (x86_64, aarch64), macOS (Intel, Apple Silicon), and Windows (x86_64).
@@ -70,10 +75,6 @@ Pre-built wheels are available for Linux (x86_64, aarch64), macOS (Intel, Apple 
 Requires a Rust toolchain and [maturin](https://www.maturin.rs/):
 
 ```bash
+uv pip install maturin numpy
 maturin develop --release
 ```
-
-## Dependencies
-
-- numpy
-- matplotlib (for plotting)
