@@ -6,7 +6,7 @@ import numpy as np
 sys.path.insert(0, "tests")
 
 from peapods import Ising
-from plot_utils import plot_bars
+from utils import plot_bars
 
 
 LATTICE_SHAPE = (32, 32)

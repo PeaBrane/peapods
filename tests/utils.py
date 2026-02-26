@@ -1,6 +1,18 @@
 from pathlib import Path
 
+import numpy as np
 import matplotlib.pyplot as plt
+
+
+def assert_crossing(temps, results, tc, tol=0.05):
+    """Assert that Binder curves cross at T_c with spread < tol."""
+    binders = [np.interp(tc, temps, curve) for curve in results.values()]
+    spread = max(binders) - min(binders)
+    for label, b in zip(results.keys(), binders):
+        print(f"  {label}  binder at T_c: {b:.4f}")
+    print(f"  spread: {spread:.4f} (tol={tol})")
+    assert spread < tol, f"spread {spread:.4f} >= {tol}, sizes not crossing"
+    print("  PASSED")
 
 
 def plot_crossing(temps, results, tc, ylabel, title, out_path):
