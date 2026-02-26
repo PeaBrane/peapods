@@ -7,3 +7,4 @@
 paper/*
 !paper/joss/
 refs/
+.DS_Store
