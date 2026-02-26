@@ -1,5 +1,10 @@
 # PeaPods
 
+[![CI](https://github.com/PeaBrane/peapods/actions/workflows/ci.yml/badge.svg)](https://github.com/PeaBrane/peapods/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/peapods)](https://pypi.org/project/peapods/)
+[![docs.rs](https://docs.rs/spin-sim/badge.svg)](https://docs.rs/spin-sim)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A Python library for simulating Ising spin systems with modern Monte Carlo methods.
 The core simulation loop is written in Rust (via PyO3) for performance, with a thin Python wrapper for ease of use.
 
