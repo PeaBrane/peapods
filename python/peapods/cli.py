@@ -6,23 +6,15 @@ import time
 import numpy as np
 
 from peapods import Ising
+from peapods.sweep import run_sweep
+
+COUPLING_CHOICES = ["ferro", "bimodal", "gaussian"]
+HOUDAYER_CHOICES = ["houdayer", "jorg", "cmr"]
+OVERLAP_UPDATE_CHOICES = ["swap", "free"]
+OVERLAP_CLUSTER_CHOICES = ["wolff", "sw"]
 
 
-def add_simulation_args(parser):
-    # Model setup
-    parser.add_argument(
-        "--shape",
-        type=int,
-        nargs="+",
-        required=True,
-        help="Lattice dimensions, e.g. --shape 32 32",
-    )
-    parser.add_argument(
-        "--couplings",
-        default="ferro",
-        choices=["ferro", "bimodal", "gaussian"],
-        help="Coupling distribution (default: ferro)",
-    )
+def _add_common_args(parser):
     parser.add_argument(
         "--geometry",
         choices=["triangular", "tri", "fcc", "bcc"],
@@ -73,29 +65,87 @@ def add_simulation_args(parser):
         help="Houdayer moves every N sweeps (requires n_replicas >= 2)",
     )
     parser.add_argument(
-        "--houdayer-mode", default="houdayer", choices=["houdayer", "jorg", "cmr"]
-    )
-    parser.add_argument(
-        "--overlap-cluster-mode", default="wolff", choices=["wolff", "sw"]
-    )
-    parser.add_argument(
-        "--overlap-update-mode",
-        default="swap",
-        choices=["swap", "free"],
-        help="Overlap cluster update mode (default: swap)",
-    )
-    parser.add_argument(
         "--collect-top-clusters",
         action="store_true",
         help="Collect top-4 overlap cluster sizes per temperature",
     )
 
 
+def add_simulation_args(parser):
+    parser.add_argument(
+        "--shape",
+        type=int,
+        nargs="+",
+        required=True,
+        help="Lattice dimensions, e.g. --shape 32 32",
+    )
+    parser.add_argument(
+        "--couplings",
+        default="ferro",
+        choices=COUPLING_CHOICES,
+        help="Coupling distribution (default: ferro)",
+    )
+    parser.add_argument("--houdayer-mode", default="houdayer", choices=HOUDAYER_CHOICES)
+    parser.add_argument(
+        "--overlap-cluster-mode", default="wolff", choices=OVERLAP_CLUSTER_CHOICES
+    )
+    parser.add_argument(
+        "--overlap-update-mode",
+        default="swap",
+        choices=OVERLAP_UPDATE_CHOICES,
+        help="Overlap cluster update mode (default: swap)",
+    )
+    _add_common_args(parser)
+
+
+def _add_sweep_args(parser):
+    parser.add_argument(
+        "--sizes",
+        nargs="+",
+        required=True,
+        help="Lattice sizes as comma-separated dims, e.g. --sizes 8,8 16,16 8,8,8",
+    )
+    parser.add_argument(
+        "--couplings",
+        nargs="+",
+        default=["ferro"],
+        choices=COUPLING_CHOICES,
+        help="Coupling distributions to sweep (default: ferro)",
+    )
+    parser.add_argument(
+        "--houdayer-mode",
+        nargs="+",
+        default=["houdayer"],
+        choices=HOUDAYER_CHOICES,
+    )
+    parser.add_argument(
+        "--overlap-cluster-mode",
+        nargs="+",
+        default=["wolff"],
+        choices=OVERLAP_CLUSTER_CHOICES,
+    )
+    parser.add_argument(
+        "--overlap-update-mode",
+        nargs="+",
+        default=["swap"],
+        choices=OVERLAP_UPDATE_CHOICES,
+    )
+    _add_common_args(parser)
+    parser.add_argument("--warmup-ratio", type=float, default=0.25)
+    parser.add_argument(
+        "--collect-csd",
+        action="store_true",
+        help="Collect FK cluster size distribution",
+    )
+    parser.add_argument("--save-plots", action="store_true", help="Save plots to disk")
+    parser.add_argument("--save-data", action="store_true", help="Save data as .npz")
+    parser.add_argument(
+        "--output-dir", default=".", help="Output directory (default: .)"
+    )
+
+
 def build_model(args):
-    if args.temp_scale == "linear":
-        temperatures = np.linspace(args.temp_min, args.temp_max, args.n_temps)
-    else:
-        temperatures = np.geomspace(args.temp_min, args.temp_max, args.n_temps)
+    temperatures = _build_temperatures(args)
 
     neighbor_offsets = None
     if args.neighbor_offsets is not None:
@@ -126,6 +176,46 @@ def sample_kwargs(args):
     )
 
 
+def _build_temperatures(args):
+    if args.temp_scale == "linear":
+        return np.linspace(args.temp_min, args.temp_max, args.n_temps)
+    return np.geomspace(args.temp_min, args.temp_max, args.n_temps)
+
+
+def run_sweep_cli(args):
+    sizes = [tuple(int(x) for x in s.split(",")) for s in args.sizes]
+    temperatures = _build_temperatures(args)
+
+    neighbor_offsets = None
+    if args.neighbor_offsets is not None:
+        neighbor_offsets = json.loads(args.neighbor_offsets)
+
+    run_sweep(
+        sizes,
+        couplings=tuple(args.couplings),
+        temperatures=temperatures,
+        n_replicas=args.n_replicas,
+        n_disorder=args.n_disorder,
+        neighbor_offsets=neighbor_offsets,
+        geometry=args.geometry,
+        n_sweeps=args.n_sweeps,
+        sweep_mode=args.sweep_mode,
+        cluster_update_interval=args.cluster_interval,
+        cluster_mode=args.cluster_mode,
+        pt_interval=args.pt_interval,
+        houdayer_interval=args.houdayer_interval,
+        houdayer_modes=tuple(args.houdayer_mode),
+        overlap_cluster_modes=tuple(args.overlap_cluster_mode),
+        overlap_update_modes=tuple(args.overlap_update_mode),
+        warmup_ratio=args.warmup_ratio,
+        collect_csd=args.collect_csd,
+        collect_top_clusters=args.collect_top_clusters,
+        save_plots=args.save_plots,
+        save_data=args.save_data,
+        output_dir=args.output_dir,
+    )
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="peapods",
@@ -149,6 +239,10 @@ def build_parser():
     # bench subcommand
     bench = sub.add_parser("bench", help="Benchmark sampling performance")
     add_simulation_args(bench)
+
+    # sweep subcommand
+    sweep = sub.add_parser("sweep", help="Run parameter sweeps with optional plotting")
+    _add_sweep_args(sweep)
 
     return parser
 
@@ -258,6 +352,8 @@ def main():
         run_simulate(args)
     elif args.command == "bench":
         run_bench(args)
+    elif args.command == "sweep":
+        run_sweep_cli(args)
 
 
 if __name__ == "__main__":
