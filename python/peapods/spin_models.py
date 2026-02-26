@@ -3,7 +3,38 @@ from numpy.random import rand, randn
 from peapods._core import IsingSimulation
 
 
+GEOMETRIES = {
+    "triangular": [[1, 0], [0, 1], [1, -1]],
+    "tri": [[1, 0], [0, 1], [1, -1]],
+    "fcc": [[1, 1, 0], [1, 0, 1], [0, 1, 1], [1, -1, 0], [1, 0, -1], [0, 1, -1]],
+    "bcc": [[1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1]],
+}
+
+
 class Ising:
+    """Ising model on a periodic Bravais lattice with Monte Carlo sampling.
+
+    Supports ferromagnets and spin glasses on hypercubic, triangular, FCC, BCC,
+    or any custom lattice defined by neighbor offsets. Multiple replicas enable
+    overlap-based spin glass order parameters.
+
+    Attributes:
+        lattice_shape: Shape of the lattice as a tuple of ints.
+        n_dims: Number of spatial dimensions.
+        n_neighbors: Number of nearest neighbors per site.
+        temperatures: Array of temperatures for parallel tempering.
+        n_temps: Number of temperature points.
+        n_replicas: Number of replicas per temperature.
+        n_disorder: Number of disorder realizations.
+        couplings: Coupling array with shape `(*lattice_shape, n_neighbors)`.
+        binder_cumulant: Binder cumulant `1 - <m^4> / (3 <m^2>^2)`, set after
+            [`sample`][peapods.Ising.sample].
+        heat_capacity: Heat capacity `(<E^2> - <E>^2) / T^2`, set after
+            [`sample`][peapods.Ising.sample].
+        sg_binder: Spin glass Binder parameter `1 - <q^4> / (3 <q^2>^2)`, set
+            after [`sample`][peapods.Ising.sample] with `n_replicas >= 2`.
+    """
+
     def __init__(
         self,
         lattice_shape,
@@ -12,7 +43,38 @@ class Ising:
         n_replicas=1,
         n_disorder=1,
         neighbor_offsets=None,
+        geometry=None,
     ):
+        """Create an Ising model.
+
+        Args:
+            lattice_shape: Shape of the periodic lattice, e.g. `(32, 32)` for a
+                2D 32x32 grid.
+            couplings: Coupling configuration. One of `"ferro"` (all +1),
+                `"bimodal"` (random +/-1), `"gaussian"` (standard normal), or a
+                NumPy array of shape `(*lattice_shape, n_neighbors)`.
+            temperatures: Array of temperatures for the simulation. Defaults to
+                32 points log-spaced from 0.1 to 10.
+            n_replicas: Number of independent replicas per temperature. Must be
+                >= 2 for overlap statistics and Houdayer moves.
+            n_disorder: Number of disorder realizations. Each realization gets
+                its own coupling array.
+            neighbor_offsets: List of integer offset vectors defining nearest
+                neighbors, e.g. `[[1, 0], [0, 1]]` for a square lattice. Mutually
+                exclusive with `geometry`.
+            geometry: Named lattice geometry. One of `"triangular"` / `"tri"`,
+                `"fcc"`, or `"bcc"`. Mutually exclusive with `neighbor_offsets`.
+                If neither is given, defaults to a hypercubic lattice.
+        """
+        if geometry is not None:
+            if neighbor_offsets is not None:
+                raise ValueError("Cannot specify both geometry and neighbor_offsets")
+            if geometry not in GEOMETRIES:
+                raise ValueError(
+                    f"Unknown geometry '{geometry}', choose from: {list(GEOMETRIES.keys())}"
+                )
+            neighbor_offsets = GEOMETRIES[geometry]
+
         self.lattice_shape = tuple(lattice_shape)
         self.n_dims = len(lattice_shape)
         self.n_neighbors = len(neighbor_offsets) if neighbor_offsets else self.n_dims
@@ -49,6 +111,7 @@ class Ising:
         )
 
     def reset(self):
+        """Reset all spins to a random configuration."""
         self._sim.reset()
 
     def sample(
@@ -64,6 +127,37 @@ class Ising:
         warmup_ratio=0.25,
         collect_csd=False,
     ):
+        """Run Monte Carlo sampling and compute observables.
+
+        After sampling, the following attributes are set on the instance:
+
+        - `binder_cumulant` — Binder cumulant per temperature.
+        - `heat_capacity` — Heat capacity per temperature.
+        - `sg_binder` — Spin glass Binder parameter (only with `n_replicas >= 2`).
+        - `fk_csd` — FK cluster size distribution (only with `collect_csd=True`).
+
+        Args:
+            n_sweeps: Total number of Monte Carlo sweeps (including warmup).
+            sweep_mode: Single-spin update algorithm. `"metropolis"` or `"gibbs"`.
+            cluster_update_interval: If set, perform a cluster update every this
+                many sweeps.
+            cluster_mode: Cluster algorithm. `"sw"` (Swendsen-Wang) or `"wolff"`.
+            pt_interval: If set, attempt parallel tempering swaps every this many
+                sweeps.
+            houdayer_interval: If set, attempt Houdayer isoenergetic cluster
+                moves every this many sweeps. Requires `n_replicas >= 2`.
+            houdayer_mode: Overlap cluster algorithm. `"houdayer"`, `"jorg"`,
+                or `"cmr"`.
+            overlap_cluster_mode: Cluster type used inside the overlap move.
+                `"wolff"` or `"sw"`.
+            warmup_ratio: Fraction of sweeps discarded as warmup before
+                collecting statistics. Default 0.25.
+            collect_csd: If `True`, collect the Fortuin-Kasteleyn cluster size
+                distribution.
+
+        Returns:
+            Raw results dictionary with keys like `"mags"`, `"energies"`, etc.
+        """
         result = self._sim.sample(
             n_sweeps,
             sweep_mode,
@@ -99,4 +193,5 @@ class Ising:
         return result
 
     def get_energies(self):
+        """Return the mean energies per temperature from the last sample run."""
         return self.energies_avg

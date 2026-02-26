@@ -4,6 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/peapods)](https://pypi.org/project/peapods/)
 [![crates.io](https://img.shields.io/crates/v/spin-sim)](https://crates.io/crates/spin-sim)
 [![docs.rs](https://docs.rs/spin-sim/badge.svg)](https://docs.rs/spin-sim)
+[![docs](https://img.shields.io/badge/docs-mkdocs-blue)](https://peabrane.github.io/peapods/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A Python library for simulating Ising spin systems with modern Monte Carlo methods.

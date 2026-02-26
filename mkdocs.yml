@@ -1,0 +1,23 @@
+site_name: PeaPods
+site_url: https://peabrane.github.io/peapods/
+repo_url: https://github.com/PeaBrane/peapods
+
+theme:
+  name: material
+  palette:
+    scheme: slate
+    primary: teal
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_source: false
+            members_order: source
+
+nav:
+  - Home: index.md
+  - API Reference: api.md
