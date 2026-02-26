@@ -1,54 +1,47 @@
 import argparse
 import json
 import sys
+import time
 
 import numpy as np
 
 from peapods import Ising
 
 
-def build_parser():
-    parser = argparse.ArgumentParser(
-        prog="peapods",
-        description="Ising Monte Carlo simulations from the command line.",
-    )
-    sub = parser.add_subparsers(dest="command")
-
-    sim = sub.add_parser("simulate", help="Run an Ising simulation")
-
+def add_simulation_args(parser):
     # Model setup
-    sim.add_argument(
+    parser.add_argument(
         "--shape",
         type=int,
         nargs="+",
         required=True,
         help="Lattice dimensions, e.g. --shape 32 32",
     )
-    sim.add_argument(
+    parser.add_argument(
         "--couplings",
         default="ferro",
         choices=["ferro", "bimodal", "gaussian"],
         help="Coupling distribution (default: ferro)",
     )
-    sim.add_argument(
+    parser.add_argument(
         "--geometry",
         choices=["triangular", "tri", "fcc", "bcc"],
         help="Named lattice geometry",
     )
-    sim.add_argument(
+    parser.add_argument(
         "--neighbor-offsets",
         type=str,
         default=None,
         help="JSON list of offset vectors, e.g. '[[1,0],[0,1]]'",
     )
-    sim.add_argument("--n-replicas", type=int, default=1)
-    sim.add_argument("--n-disorder", type=int, default=1)
+    parser.add_argument("--n-replicas", type=int, default=1)
+    parser.add_argument("--n-disorder", type=int, default=1)
 
     # Temperature grid
-    sim.add_argument("--temp-min", type=float, required=True)
-    sim.add_argument("--temp-max", type=float, required=True)
-    sim.add_argument("--n-temps", type=int, default=32)
-    sim.add_argument(
+    parser.add_argument("--temp-min", type=float, required=True)
+    parser.add_argument("--temp-max", type=float, required=True)
+    parser.add_argument("--n-temps", type=int, default=32)
+    parser.add_argument(
         "--temp-scale",
         default="linear",
         choices=["linear", "log"],
@@ -56,49 +49,38 @@ def build_parser():
     )
 
     # Sampling
-    sim.add_argument("--n-sweeps", type=int, required=True)
-    sim.add_argument(
+    parser.add_argument("--n-sweeps", type=int, required=True)
+    parser.add_argument(
         "--sweep-mode", default="metropolis", choices=["metropolis", "gibbs"]
     )
-    sim.add_argument(
+    parser.add_argument(
         "--cluster-interval",
         type=int,
         default=None,
         help="Cluster update every N sweeps",
     )
-    sim.add_argument("--cluster-mode", default="sw", choices=["sw", "wolff"])
-    sim.add_argument(
+    parser.add_argument("--cluster-mode", default="sw", choices=["sw", "wolff"])
+    parser.add_argument(
         "--pt-interval",
         type=int,
         default=None,
         help="Parallel tempering every N sweeps",
     )
-    sim.add_argument(
+    parser.add_argument(
         "--houdayer-interval",
         type=int,
         default=None,
         help="Houdayer moves every N sweeps (requires n_replicas >= 2)",
     )
-    sim.add_argument(
+    parser.add_argument(
         "--houdayer-mode", default="houdayer", choices=["houdayer", "jorg", "cmr"]
     )
-    sim.add_argument("--overlap-cluster-mode", default="wolff", choices=["wolff", "sw"])
-    sim.add_argument("--warmup-ratio", type=float, default=0.25)
-    sim.add_argument(
-        "--collect-csd",
-        action="store_true",
-        help="Collect FK cluster size distribution",
+    parser.add_argument(
+        "--overlap-cluster-mode", default="wolff", choices=["wolff", "sw"]
     )
 
-    # Output
-    sim.add_argument(
-        "-o", "--output", type=str, default=None, help="Save full results to .npz file"
-    )
 
-    return parser
-
-
-def run_simulate(args):
+def build_model(args):
     if args.temp_scale == "linear":
         temperatures = np.linspace(args.temp_min, args.temp_max, args.n_temps)
     else:
@@ -108,7 +90,7 @@ def run_simulate(args):
     if args.neighbor_offsets is not None:
         neighbor_offsets = json.loads(args.neighbor_offsets)
 
-    model = Ising(
+    return Ising(
         tuple(args.shape),
         couplings=args.couplings,
         temperatures=temperatures,
@@ -118,8 +100,9 @@ def run_simulate(args):
         geometry=args.geometry,
     )
 
-    result = model.sample(
-        args.n_sweeps,
+
+def sample_kwargs(args):
+    return dict(
         sweep_mode=args.sweep_mode,
         cluster_update_interval=args.cluster_interval,
         cluster_mode=args.cluster_mode,
@@ -127,6 +110,42 @@ def run_simulate(args):
         houdayer_interval=args.houdayer_interval,
         houdayer_mode=args.houdayer_mode,
         overlap_cluster_mode=args.overlap_cluster_mode,
+    )
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="peapods",
+        description="Ising Monte Carlo simulations from the command line.",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    # simulate subcommand
+    sim = sub.add_parser("simulate", help="Run an Ising simulation")
+    add_simulation_args(sim)
+    sim.add_argument("--warmup-ratio", type=float, default=0.25)
+    sim.add_argument(
+        "--collect-csd",
+        action="store_true",
+        help="Collect FK cluster size distribution",
+    )
+    sim.add_argument(
+        "-o", "--output", type=str, default=None, help="Save full results to .npz file"
+    )
+
+    # bench subcommand
+    bench = sub.add_parser("bench", help="Benchmark sampling performance")
+    add_simulation_args(bench)
+
+    return parser
+
+
+def run_simulate(args):
+    model = build_model(args)
+
+    result = model.sample(
+        args.n_sweeps,
+        **sample_kwargs(args),
         warmup_ratio=args.warmup_ratio,
         collect_csd=args.collect_csd,
     )
@@ -161,6 +180,19 @@ def run_simulate(args):
             save_dict["fk_csd"] = model.fk_csd
         np.savez(args.output, **save_dict)
         print(f"\nResults saved to {args.output}")
+
+
+def run_bench(args):
+    model = build_model(args)
+    shape_str = "x".join(str(s) for s in args.shape)
+
+    t0 = time.perf_counter()
+    model.sample(args.n_sweeps, **sample_kwargs(args), warmup_ratio=0.0)
+    elapsed = time.perf_counter() - t0
+
+    per_sweep = elapsed / args.n_sweeps * 1000
+    print(f"Lattice: {shape_str}  |  Temps: {args.n_temps}  |  Sweeps: {args.n_sweeps}")
+    print(f"Total: {elapsed:.3f} s  |  {per_sweep:.3f} ms/sweep")
 
 
 def print_table(model, has_overlap, has_csd):
@@ -203,6 +235,8 @@ def main():
 
     if args.command == "simulate":
         run_simulate(args)
+    elif args.command == "bench":
+        run_bench(args)
 
 
 if __name__ == "__main__":

@@ -4,5 +4,6 @@
 .ipynb_checkpoints
 **/playground*
 **/target/
-paper/
+paper/*
+!paper/joss/
 refs/
