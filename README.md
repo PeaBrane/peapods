@@ -63,7 +63,7 @@ tri.sample(n_sweeps=5000, sweep_mode="metropolis",
 print(tri.binder_cumulant)
 ```
 
-For a more complete example, check out [example.py](example.py).
+For a more complete example, check out [examples/energy_vs_temperature.py](examples/energy_vs_temperature.py).
 
 ## Installation
 
