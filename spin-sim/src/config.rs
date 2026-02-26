@@ -136,9 +136,3 @@ pub struct SimConfig {
     #[validate]
     pub houdayer: Option<HoudayerConfig>,
 }
-
-impl SimConfig {
-    pub fn validate_all(&self) -> Result<(), String> {
-        self.validate().map_err(|e| format!("{e}"))
-    }
-}
