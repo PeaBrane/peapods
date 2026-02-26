@@ -74,12 +74,15 @@ pub(super) fn bfs_cluster(
 
     while let Some(site) = stack.pop() {
         for d in 0..lattice.n_neighbors {
-            for &fwd in &[true, false] {
-                let nb = lattice.neighbor(site, d, fwd);
-                if !in_cluster[nb] && should_add(site, nb, d, fwd) {
-                    in_cluster[nb] = true;
-                    stack.push(nb);
-                }
+            let fwd = lattice.neighbor_fwd(site, d);
+            if !in_cluster[fwd] && should_add(site, fwd, d, true) {
+                in_cluster[fwd] = true;
+                stack.push(fwd);
+            }
+            let bwd = lattice.neighbor_bwd(site, d);
+            if !in_cluster[bwd] && should_add(site, bwd, d, false) {
+                in_cluster[bwd] = true;
+                stack.push(bwd);
             }
         }
     }
@@ -103,7 +106,7 @@ pub(super) fn uf_bonds(
     for i in 0..n_spins {
         for d in 0..lattice.n_neighbors {
             if should_bond(i, d) {
-                let j = lattice.neighbor(i, d, true);
+                let j = lattice.neighbor_fwd(i, d);
                 union(&mut parent, &mut rank, i as u32, j as u32);
             }
         }

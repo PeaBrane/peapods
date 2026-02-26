@@ -9,11 +9,11 @@ fn local_field(lattice: &Lattice, spin_slice: &[i8], couplings: &[f32], i: usize
     let n_neighbors = lattice.n_neighbors;
     let mut h = 0.0f32;
     for d in 0..n_neighbors {
-        let j_fwd = lattice.neighbor(i, d, true);
+        let j_fwd = lattice.neighbor_fwd(i, d);
         h += spin_slice[j_fwd] as f32 * couplings[i * n_neighbors + d];
 
-        let j_back = lattice.neighbor(i, d, false);
-        h += spin_slice[j_back] as f32 * couplings[j_back * n_neighbors + d];
+        let j_bwd = lattice.neighbor_bwd(i, d);
+        h += spin_slice[j_bwd] as f32 * couplings[j_bwd * n_neighbors + d];
     }
     h
 }
@@ -51,6 +51,7 @@ fn sweep_generic(
 }
 
 /// Metropolis single-spin-flip sweep over all replicas in parallel.
+#[cfg_attr(feature = "profile", inline(never))]
 pub fn metropolis_sweep(
     lattice: &Lattice,
     spins: &mut [i8],
@@ -71,6 +72,7 @@ pub fn metropolis_sweep(
 }
 
 /// Gibbs single-spin-flip sweep over all replicas in parallel.
+#[cfg_attr(feature = "profile", inline(never))]
 pub fn gibbs_sweep(
     lattice: &Lattice,
     spins: &mut [i8],

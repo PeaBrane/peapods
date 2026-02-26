@@ -17,6 +17,7 @@ use rayon::prelude::*;
 /// pre-allocated per-system slots (`hist[s]` += 1 for each cluster of size
 /// `s`). The slice length must equal the number of systems (i.e.
 /// `system_ids.len()`); each inner vec must be pre-sized to `n_spins + 1`.
+#[cfg_attr(feature = "profile", inline(never))]
 #[allow(clippy::too_many_arguments)]
 pub fn fk_update(
     lattice: &Lattice,
@@ -100,7 +101,7 @@ pub fn fk_update(
         let (mut parent, _) = uf_bonds(
             lattice,
             |i, d| {
-                let j = lattice.neighbor(i, d, true);
+                let j = lattice.neighbor_fwd(i, d);
                 let inter =
                     spin_slice[i] as f32 * spin_slice[j] as f32 * couplings[i * n_neighbors + d];
                 if inter <= 0.0 {
