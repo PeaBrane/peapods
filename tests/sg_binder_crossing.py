@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from peapods import Ising
-from plot_utils import plot_crossing
+from utils import assert_crossing, plot_crossing
 
 # T_c ≈ 1.102 for 3D bimodal EA (Baity-Jesi et al. 2013)
 T_C = 1.102
@@ -33,23 +33,13 @@ def run():
             houdayer_interval=1,
             warmup_ratio=0.25,
         )
-        results[L] = model.sg_binder
-        binder_at_tc = np.interp(T_C, TEMPS, results[L])
-        print(f"L={L:>2d}  sg_binder at T_c: {binder_at_tc:.4f}")
+        results[f"L={L}"] = model.sg_binder
 
-    # Find approximate crossing temperature between smallest and largest size
-    diff = results[SIZES[0]] - results[SIZES[-1]]
-    cross_idx = np.argmin(np.abs(diff))
-    t_cross = TEMPS[cross_idx]
-    print(f"\napproximate crossing T: {t_cross:.3f} (expected ~{T_C})")
-    assert abs(t_cross - T_C) < 0.3, (
-        f"crossing at {t_cross:.3f}, too far from T_c={T_C}"
-    )
-    print("PASSED")
+    assert_crossing(TEMPS, results, T_C, tol=0.3)
 
     plot_crossing(
         TEMPS,
-        {f"L={L}": results[L] for L in SIZES},
+        results,
         T_C,
         ylabel="SG Binder ratio",
         title="Spin glass Binder ratio crossing (3D EA)",
