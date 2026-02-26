@@ -39,8 +39,10 @@
 //!     overlap_cluster: None,
 //! };
 //!
+//! use std::sync::atomic::AtomicBool;
+//! let interrupted = AtomicBool::new(false);
 //! let result = run_sweep_loop(
-//!     &lattice, &mut real, 2, temps.len(), &config, &|| {},
+//!     &lattice, &mut real, 2, temps.len(), &config, &interrupted, &|| {},
 //! ).unwrap();
 //! ```
 //!

@@ -17,3 +17,4 @@ pyo3 = { version = "0.24", features = ["extension-module"] }
 numpy = "0.24"
 rayon = "1.10"
 indicatif = "0.17"
+ctrlc = "3"

@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::config::{OverlapClusterBuildMode, OverlapUpdateMode, SimConfig, SweepMode};
 use crate::geometry::Lattice;
 use crate::statistics::{Statistics, SweepResult};
@@ -137,6 +139,7 @@ pub fn run_sweep_loop(
     n_replicas: usize,
     n_temps: usize,
     config: &SimConfig,
+    interrupted: &AtomicBool,
     on_sweep: &(dyn Fn() + Sync),
 ) -> Result<SweepResult, String> {
     config.validate().map_err(|e| format!("{e}"))?;
@@ -201,6 +204,9 @@ pub fn run_sweep_loop(
     let mut overlap4_stat = Statistics::new(n_temps, 1);
 
     for sweep_id in 0..n_sweeps {
+        if interrupted.load(Ordering::Relaxed) {
+            return Err("interrupted".to_string());
+        }
         on_sweep();
         let record = sweep_id >= warmup_sweeps;
 
