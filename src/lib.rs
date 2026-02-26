@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use indicatif::{ProgressBar, ProgressStyle};
 use numpy::ndarray::{Array1, Array2};
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
@@ -177,7 +179,7 @@ impl IsingSimulation {
         let n_replicas = self.n_replicas;
         let n_temps = self.n_temps;
 
-        let pb = ProgressBar::new((self.n_realizations * n_sweeps) as u64);
+        let pb = ProgressBar::new(n_sweeps as u64);
         pb.set_style(
             ProgressStyle::with_template(
                 "{msg} [{bar:40}] {pos}/{len} [{elapsed_precise} < {eta_precise}, {per_sec}]",
@@ -189,12 +191,19 @@ impl IsingSimulation {
 
         let lattice = &self.lattice;
         let realizations = &mut self.realizations;
+        let n_real = self.n_realizations as u64;
+        let counter = AtomicU64::new(0);
 
         let results: Vec<Result<SweepResult, String>> = py.allow_threads(|| {
             realizations
                 .par_iter_mut()
                 .map(|real| {
-                    run_sweep_loop(lattice, real, n_replicas, n_temps, &config, &|| pb.inc(1))
+                    run_sweep_loop(lattice, real, n_replicas, n_temps, &config, &|| {
+                        let prev = counter.fetch_add(1, Ordering::Relaxed);
+                        if (prev + 1).is_multiple_of(n_real) {
+                            pb.inc(1);
+                        }
+                    })
                 })
                 .collect()
         });
