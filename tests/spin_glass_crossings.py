@@ -35,7 +35,7 @@ def spin_glass_3d():
             N_SWEEPS,
             sweep_mode="metropolis",
             pt_interval=1,
-            houdayer_interval=1,
+            overlap_cluster_update_interval=1,
             warmup_ratio=0.25,
         )
         results[f"L={L}"] = model.sg_binder
@@ -73,8 +73,8 @@ def spin_glass_3d_cmr_free():
             N_SWEEPS,
             sweep_mode="metropolis",
             pt_interval=1,
-            houdayer_interval=1,
-            houdayer_mode="cmr",
+            overlap_cluster_update_interval=1,
+            overlap_cluster_build_mode="cmr",
             overlap_cluster_mode="sw",
             overlap_update_mode="free",
             warmup_ratio=0.25,

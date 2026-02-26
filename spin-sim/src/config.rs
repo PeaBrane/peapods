@@ -39,13 +39,13 @@ impl TryFrom<&str> for ClusterMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum HoudayerMode {
+pub enum OverlapClusterBuildMode {
     Houdayer,
     Jorg,
     Cmr,
 }
 
-impl TryFrom<&str> for HoudayerMode {
+impl TryFrom<&str> for OverlapClusterBuildMode {
     type Error = String;
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         match s {
@@ -53,7 +53,7 @@ impl TryFrom<&str> for HoudayerMode {
             "jorg" => Ok(Self::Jorg),
             "cmr" => Ok(Self::Cmr),
             _ => Err(format!(
-                "unknown houdayer_mode '{s}', expected 'houdayer', 'jorg', or 'cmr'"
+                "unknown overlap_cluster_build_mode '{s}', expected 'houdayer', 'jorg', or 'cmr'"
             )),
         }
     }
@@ -85,20 +85,20 @@ pub struct ClusterConfig {
     pub collect_csd: bool,
 }
 
-fn validate_houdayer_config(cfg: &HoudayerConfig) -> Result<(), ValidationError> {
-    if cfg.update_mode == OverlapUpdateMode::Free && cfg.mode != HoudayerMode::Cmr {
+fn validate_overlap_cluster_config(cfg: &OverlapClusterConfig) -> Result<(), ValidationError> {
+    if cfg.update_mode == OverlapUpdateMode::Free && cfg.mode != OverlapClusterBuildMode::Cmr {
         return Err(ValidationError::new(
-            "overlap_update_mode 'free' requires houdayer_mode 'cmr'",
+            "overlap_update_mode 'free' requires overlap_cluster_build_mode 'cmr'",
         ));
     }
     Ok(())
 }
 
 #[derive(Debug, Validate)]
-#[validate(schema(function = "validate_houdayer_config"))]
-pub struct HoudayerConfig {
+#[validate(schema(function = "validate_overlap_cluster_config"))]
+pub struct OverlapClusterConfig {
     pub interval: usize,
-    pub mode: HoudayerMode,
+    pub mode: OverlapClusterBuildMode,
     pub cluster_mode: ClusterMode,
     pub update_mode: OverlapUpdateMode,
     pub collect_csd: bool,
@@ -117,9 +117,11 @@ fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
             return Err(ValidationError::new("cluster_update interval must be >= 1"));
         }
     }
-    if let Some(ref h) = cfg.houdayer {
+    if let Some(ref h) = cfg.overlap_cluster {
         if h.interval < 1 {
-            return Err(ValidationError::new("houdayer interval must be >= 1"));
+            return Err(ValidationError::new(
+                "overlap_cluster interval must be >= 1",
+            ));
         }
     }
     Ok(())
@@ -134,5 +136,5 @@ pub struct SimConfig {
     pub cluster_update: Option<ClusterConfig>,
     pub pt_interval: Option<usize>,
     #[validate]
-    pub houdayer: Option<HoudayerConfig>,
+    pub overlap_cluster: Option<OverlapClusterConfig>,
 }

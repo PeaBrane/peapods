@@ -1,4 +1,4 @@
-use crate::config::{HoudayerMode, OverlapUpdateMode, SimConfig, SweepMode};
+use crate::config::{OverlapClusterBuildMode, OverlapUpdateMode, SimConfig, SweepMode};
 use crate::geometry::Lattice;
 use crate::statistics::{Statistics, SweepResult};
 use crate::{clusters, mcmc, spins};
@@ -127,7 +127,7 @@ impl Realization {
 /// 1. A full single-spin pass (`sweep_mode`: Metropolis or Gibbs)
 /// 2. An optional cluster update (every `cluster_update.interval` sweeps)
 /// 3. Measurement (after `warmup_sweeps`)
-/// 4. Optional Houdayer ICM (every `houdayer.interval` sweeps, requires `n_replicas ≥ 2`)
+/// 4. Optional overlap cluster move (every `overlap_cluster.interval` sweeps, requires `n_replicas ≥ 2`)
 /// 5. Optional parallel tempering (every `pt_interval` sweeps)
 ///
 /// `on_sweep` is called once per sweep (useful for progress bars).
@@ -147,22 +147,22 @@ pub fn run_sweep_loop(
     let warmup_sweeps = config.warmup_sweeps;
 
     let overlap_wolff = config
-        .houdayer
+        .overlap_cluster
         .as_ref()
         .is_some_and(|h| h.cluster_mode == crate::config::ClusterMode::Wolff);
 
     let (stochastic, restrict_to_negative) =
         config
-            .houdayer
+            .overlap_cluster
             .as_ref()
             .map_or((false, true), |h| match h.mode {
-                HoudayerMode::Houdayer => (false, true),
-                HoudayerMode::Jorg => (true, true),
-                HoudayerMode::Cmr => (true, false),
+                OverlapClusterBuildMode::Houdayer => (false, true),
+                OverlapClusterBuildMode::Jorg => (true, true),
+                OverlapClusterBuildMode::Cmr => (true, false),
             });
 
     let free_assign = config
-        .houdayer
+        .overlap_cluster
         .as_ref()
         .is_some_and(|h| h.update_mode == OverlapUpdateMode::Free);
 
@@ -178,7 +178,7 @@ pub fn run_sweep_loop(
         .collect();
 
     let collect_top = config
-        .houdayer
+        .overlap_cluster
         .as_ref()
         .is_some_and(|h| h.collect_top_clusters)
         && n_pairs > 0;
@@ -336,9 +336,9 @@ pub fn run_sweep_loop(
             }
         }
 
-        if let Some(ref houdayer_cfg) = config.houdayer {
-            if sweep_id % houdayer_cfg.interval == 0 && n_replicas >= 2 {
-                let ov_csd_out = if houdayer_cfg.collect_csd && record {
+        if let Some(ref oc_cfg) = config.overlap_cluster {
+            if sweep_id % oc_cfg.interval == 0 && n_replicas >= 2 {
+                let ov_csd_out = if oc_cfg.collect_csd && record {
                     for buf in overlap_csd_buf.iter_mut() {
                         buf.fill(0);
                     }
@@ -373,7 +373,7 @@ pub fn run_sweep_loop(
                     top4_out,
                 );
 
-                if houdayer_cfg.collect_csd && record {
+                if oc_cfg.collect_csd && record {
                     for (slot, buf) in overlap_csd_buf.iter().enumerate() {
                         let accum = &mut overlap_csd_accum[slot / n_pairs];
                         for (a, &b) in accum.iter_mut().zip(buf.iter()) {

@@ -7,7 +7,7 @@
 //! | Metropolis / Gibbs sweep | [`run_sweep_loop`] (`sweep_mode`) |
 //! | Wolff / Swendsen-Wang | [`run_sweep_loop`] (`cluster_mode`) |
 //! | Parallel tempering | [`run_sweep_loop`] (`pt_interval`) |
-//! | Houdayer / Jörg / CMR | [`run_sweep_loop`] (`houdayer_interval`, `houdayer_mode`) |
+//! | Houdayer / Jörg / CMR | [`run_sweep_loop`] (`overlap_cluster`) |
 //!
 //! Replicas are parallelized over threads with [`rayon`].
 //!
@@ -36,7 +36,7 @@
 //!         collect_csd: false,
 //!     }),
 //!     pt_interval: Some(1),
-//!     houdayer: None,
+//!     overlap_cluster: None,
 //! };
 //!
 //! let result = run_sweep_loop(

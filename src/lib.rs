@@ -97,8 +97,8 @@ impl IsingSimulation {
         cluster_update_interval=None,
         cluster_mode=None,
         pt_interval=None,
-        houdayer_interval=None,
-        houdayer_mode=None,
+        overlap_cluster_update_interval=None,
+        overlap_cluster_build_mode=None,
         overlap_cluster_mode=None,
         warmup_ratio=None,
         collect_csd=None,
@@ -114,8 +114,8 @@ impl IsingSimulation {
         cluster_update_interval: Option<usize>,
         cluster_mode: Option<&str>,
         pt_interval: Option<usize>,
-        houdayer_interval: Option<usize>,
-        houdayer_mode: Option<&str>,
+        overlap_cluster_update_interval: Option<usize>,
+        overlap_cluster_build_mode: Option<&str>,
         overlap_cluster_mode: Option<&str>,
         warmup_ratio: Option<f64>,
         collect_csd: Option<bool>,
@@ -143,22 +143,22 @@ impl IsingSimulation {
             })
             .transpose()?;
 
-        let houdayer = houdayer_interval
+        let overlap_cluster = overlap_cluster_update_interval
             .map(|interval| {
-                let h_mode_str = houdayer_mode.unwrap_or("houdayer");
+                let build_mode_str = overlap_cluster_build_mode.unwrap_or("houdayer");
                 let oc_mode_str = overlap_cluster_mode.unwrap_or("wolff");
                 let ou_mode_str = overlap_update_mode.unwrap_or("swap");
 
-                let h_mode = HoudayerMode::try_from(h_mode_str)
+                let build_mode = OverlapClusterBuildMode::try_from(build_mode_str)
                     .map_err(pyo3::exceptions::PyValueError::new_err)?;
                 let oc_mode = ClusterMode::try_from(oc_mode_str)
                     .map_err(pyo3::exceptions::PyValueError::new_err)?;
                 let ou_mode = OverlapUpdateMode::try_from(ou_mode_str)
                     .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
-                Ok::<_, PyErr>(HoudayerConfig {
+                Ok::<_, PyErr>(OverlapClusterConfig {
                     interval,
-                    mode: h_mode,
+                    mode: build_mode,
                     cluster_mode: oc_mode,
                     update_mode: ou_mode,
                     collect_csd,
@@ -173,7 +173,7 @@ impl IsingSimulation {
             sweep_mode: sweep_mode_enum,
             cluster_update,
             pt_interval,
-            houdayer,
+            overlap_cluster,
         };
 
         let n_replicas = self.n_replicas;
