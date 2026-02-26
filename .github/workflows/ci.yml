@@ -44,11 +44,5 @@ jobs:
           uv pip install maturin numpy matplotlib
           maturin develop --release
 
-      - name: Ferromagnet Binder crossing
-        run: source .venv/bin/activate && cd tests && python binder_crossing.py
-
-      - name: Triangular Binder crossing
-        run: source .venv/bin/activate && cd tests && python triangular_binder_crossing.py
-
-      - name: Spin glass Binder crossing
-        run: source .venv/bin/activate && cd tests && python sg_binder_crossing.py
+      - name: Binder crossings
+        run: source .venv/bin/activate && cd tests && python binder_crossings.py
