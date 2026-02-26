@@ -32,15 +32,28 @@ The following algorithms are currently supported:
 
 ## Quickstart
 
+Run simulations directly from the terminal:
+
+```bash
+# 2D ferromagnet with cluster updates and parallel tempering
+peapods simulate --shape 32 32 --temp-min 1.5 --temp-max 3.0 \
+    --n-sweeps 5000 --cluster-interval 1 --pt-interval 1 --n-replicas 2
+
+# 3D spin glass with Houdayer ICM
+peapods simulate --shape 8 8 8 --couplings bimodal \
+    --temp-min 0.8 --temp-max 1.4 --n-temps 24 --n-sweeps 10000 \
+    --pt-interval 1 --houdayer-interval 1 --n-replicas 4
+
+# Save full results to .npz
+peapods simulate --shape 16 16 --temp-min 1.5 --temp-max 3.0 \
+    --n-sweeps 5000 --pt-interval 1 --n-replicas 2 -o results.npz
+```
+
+For full control over geometry and parameters, use the Python API directly:
+
 ```python
 import numpy as np
 from peapods import Ising
-
-# 2D ferromagnet with cluster updates and parallel tempering
-model = Ising((32, 32), temperatures=np.linspace(1.5, 3.0, 32), n_replicas=2)
-model.sample(n_sweeps=5000, sweep_mode="metropolis",
-             cluster_update_interval=1, pt_interval=1)
-print(model.binder_cumulant)
 
 # Triangular lattice ferromagnet (T_c = 4/ln(3) ≈ 3.641)
 tri = Ising((32, 32), temperatures=np.linspace(3.0, 4.2, 32),
@@ -48,13 +61,6 @@ tri = Ising((32, 32), temperatures=np.linspace(3.0, 4.2, 32),
 tri.sample(n_sweeps=5000, sweep_mode="metropolis",
            cluster_update_interval=1, pt_interval=1)
 print(tri.binder_cumulant)
-
-# 3D spin glass with Houdayer ICM
-sg = Ising((8, 8, 8), couplings="bimodal",
-           temperatures=np.linspace(0.8, 1.4, 24), n_replicas=4)
-sg.sample(n_sweeps=10000, sweep_mode="metropolis",
-          pt_interval=1, houdayer_interval=1)
-print(sg.sg_binder)
 ```
 
 For a more complete example, check out [example.py](example.py).
