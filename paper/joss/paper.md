@@ -22,10 +22,11 @@ bibliography: paper.bib
 
 `peapods` is a Python package for Monte Carlo simulation of Ising spin
 systems on arbitrary Bravais lattices with arbitrary coupling distributions.
-It exposes a high-level Python API and a command-line interface (`peapods
-simulate`, `peapods bench`) while delegating all numerically intensive work to
-a Rust core linked via PyO3 [@PyO3; @Maturin]. The package supports
-Metropolis [@Metropolis1953] and Gibbs single-spin-flip updates,
+It exposes a high-level Python API and a command-line interface
+(`peapods simulate`, `peapods bench`) while delegating all numerically
+intensive work to a Rust core linked via PyO3 [@PyO3; @Maturin]. The
+package supports Metropolis [@Metropolis1953] and Gibbs single-spin-flip
+updates,
 Swendsen--Wang [@Swendsen1987] and Wolff [@Wolff1989] cluster algorithms,
 replica-exchange parallel tempering [@Hukushima1996], and the Houdayer
 [@Houdayer2001], Jörg [@Jorg2006], and Chayes--Machta--Redner [@CMR2000]
