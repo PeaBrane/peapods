@@ -38,8 +38,10 @@ let config = SimConfig {
     overlap_cluster: None,
 };
 
+use std::sync::atomic::AtomicBool;
+let interrupted = AtomicBool::new(false);
 let result = run_sweep_loop(
-    &lattice, &mut real, n_replicas, temps.len(), &config, &|| {},
+    &lattice, &mut real, n_replicas, temps.len(), &config, &interrupted, &|| {},
 ).unwrap();
 
 println!("energies: {:?}", result.energies);
