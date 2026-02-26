@@ -31,7 +31,7 @@ jobs:
       - run: cargo clippy -- -D warnings
       - run: cargo test
 
-  test-python:
+  test-ferromagnets:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,5 +53,30 @@ jobs:
           uv pip install maturin numpy matplotlib
           maturin develop --release
 
-      - name: Binder crossings
+      - name: Binder crossings (ferromagnets)
         run: source .venv/bin/activate && cd tests && python binder_crossings.py
+
+  test-spin-glass:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build and install
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv pip install maturin numpy matplotlib
+          maturin develop --release
+
+      - name: Binder crossings (spin glass)
+        run: source .venv/bin/activate && cd tests && python spin_glass_crossings.py

@@ -1,4 +1,4 @@
-use super::utils::{bfs_cluster, find, find_seed, uf_bonds};
+use super::utils::{bfs_cluster, find, find_seed, top4_sizes, uf_bonds};
 use crate::geometry::Lattice;
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -8,7 +8,7 @@ use rayon::prelude::*;
 /// Overlap cluster update (Houdayer ICM, Jörg, or CMR), parallelized over pairs.
 ///
 /// For each temperature, shuffles replicas into random pairs. For each pair,
-/// grows a cluster on the overlap subgraph and swaps it.
+/// grows a cluster on the overlap subgraph and either swaps or freely assigns it.
 ///
 /// `rngs` has length `n_temps * n_pairs` (one RNG per pair slot, positional).
 /// The first pair slot's RNG at each temperature is also used for the shuffle.
@@ -21,12 +21,19 @@ use rayon::prelude::*;
 /// sites are eligible. When false (CMR), all same-sign overlap sites are bonded.
 ///
 /// When `wolff` is true, uses BFS single-cluster (one seed per pair).
-/// When `wolff` is false, uses union-find global decomposition and swaps all
-/// non-singleton clusters. CSD collection forces UF even when `wolff` is true.
+/// When `wolff` is false, uses union-find global decomposition and swaps/flips
+/// all non-singleton clusters. CSD/top4 collection forces UF even when `wolff`.
+///
+/// When `free_assign` is true (free CMR), instead of swapping σ^a ↔ σ^b,
+/// each replica is independently flipped: SW picks per-cluster coin flips,
+/// Wolff picks uniformly from {flip_a, flip_b, flip_both}.
 ///
 /// When `csd_out` is `Some`, forces UF path and histograms per-pair cluster
 /// sizes. Slice length must be `n_temps * n_pairs`, indexed by
 /// `t * n_pairs + p`. Each inner vec must be pre-sized to `n_spins + 1`.
+///
+/// When `top4_out` is `Some`, forces UF path and writes the 4 largest cluster
+/// sizes (descending) per pair. Indexed by `t * n_pairs + p`.
 #[allow(clippy::too_many_arguments)]
 pub fn overlap_update(
     lattice: &Lattice,
@@ -40,7 +47,9 @@ pub fn overlap_update(
     stochastic: bool,
     restrict_to_negative: bool,
     wolff: bool,
+    free_assign: bool,
     csd_out: Option<&mut [Vec<u64>]>,
+    top4_out: Option<&mut [[u32; 4]]>,
 ) {
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
@@ -61,10 +70,13 @@ pub fn overlap_update(
     // Phase 2 (parallel): process all pairs
     let sp = spins.as_mut_ptr() as usize;
     let rp = rngs.as_mut_ptr() as usize;
-    let use_uf = !wolff || csd_out.is_some();
+    let use_uf = !wolff || csd_out.is_some() || top4_out.is_some();
 
     let cp = csd_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_csd = csd_out.is_some();
+
+    let tp = top4_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
+    let has_top4 = top4_out.is_some();
 
     tasks.par_iter().for_each(|&(t, p, sys_a, sys_b)| unsafe {
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(t * n_pairs + p);
@@ -110,7 +122,7 @@ pub fn overlap_update(
             );
 
             if wolff {
-                // Wolff + CSD: UF decomposition already done, swap only seed's cluster
+                // Wolff + CSD/top4: UF decomposition already done, operate on seed's cluster
                 let Some(seed) = find_seed(n_spins, rng, |i| {
                     if restrict_to_negative {
                         overlap_sign(i)
@@ -121,12 +133,30 @@ pub fn overlap_update(
                     return;
                 };
                 let seed_root = find(&mut parent, seed as u32);
-                for i in 0..n_spins {
-                    if find(&mut parent, i as u32) == seed_root {
-                        std::ptr::swap(sp_ptr.add(base_a + i), sp_ptr.add(base_b + i));
+
+                if free_assign {
+                    let flip_choice = rng.gen_range(0u8..3);
+                    let do_flip_a = flip_choice != 1;
+                    let do_flip_b = flip_choice != 0;
+                    for i in 0..n_spins {
+                        if find(&mut parent, i as u32) == seed_root {
+                            if do_flip_a {
+                                *sp_ptr.add(base_a + i) *= -1;
+                            }
+                            if do_flip_b {
+                                *sp_ptr.add(base_b + i) *= -1;
+                            }
+                        }
+                    }
+                } else {
+                    for i in 0..n_spins {
+                        if find(&mut parent, i as u32) == seed_root {
+                            std::ptr::swap(sp_ptr.add(base_a + i), sp_ptr.add(base_b + i));
+                        }
                     }
                 }
             } else {
+                // SW: flatten parents, compute counts, operate on all non-singletons
                 for i in 0..n_spins {
                     parent[i] = find(&mut parent, i as u32);
                 }
@@ -134,14 +164,40 @@ pub fn overlap_update(
                 for i in 0..n_spins {
                     counts[parent[i] as usize] += 1;
                 }
-                for i in 0..n_spins {
-                    if counts[parent[i] as usize] > 1 {
-                        std::ptr::swap(sp_ptr.add(base_a + i), sp_ptr.add(base_b + i));
+
+                if has_top4 {
+                    let out = &mut *(tp as *mut [u32; 4]).add(t * n_pairs + p);
+                    *out = top4_sizes(&counts);
+                }
+
+                if free_assign {
+                    let mut flip_a = vec![u8::MAX; n_spins];
+                    let mut flip_b = vec![u8::MAX; n_spins];
+                    for (i, &p) in parent.iter().enumerate().take(n_spins) {
+                        let root = p as usize;
+                        if counts[root] > 1 {
+                            if flip_a[root] == u8::MAX {
+                                flip_a[root] = rng.gen::<u8>() & 1;
+                                flip_b[root] = rng.gen::<u8>() & 1;
+                            }
+                            if flip_a[root] == 1 {
+                                *sp_ptr.add(base_a + i) *= -1;
+                            }
+                            if flip_b[root] == 1 {
+                                *sp_ptr.add(base_b + i) *= -1;
+                            }
+                        }
+                    }
+                } else {
+                    for i in 0..n_spins {
+                        if counts[parent[i] as usize] > 1 {
+                            std::ptr::swap(sp_ptr.add(base_a + i), sp_ptr.add(base_b + i));
+                        }
                     }
                 }
             }
         } else {
-            // Pure Wolff without CSD
+            // Pure Wolff without CSD/top4
             let Some(seed) = find_seed(n_spins, rng, |i| {
                 if restrict_to_negative {
                     overlap_sign(i)
@@ -186,9 +242,25 @@ pub fn overlap_update(
                 },
             );
 
-            for (i, &in_c) in in_cluster.iter().enumerate() {
-                if in_c {
-                    std::ptr::swap(sp_ptr.add(base_a + i), sp_ptr.add(base_b + i));
+            if free_assign {
+                let flip_choice = rng.gen_range(0u8..3);
+                let do_flip_a = flip_choice != 1;
+                let do_flip_b = flip_choice != 0;
+                for (i, &in_c) in in_cluster.iter().enumerate() {
+                    if in_c {
+                        if do_flip_a {
+                            *sp_ptr.add(base_a + i) *= -1;
+                        }
+                        if do_flip_b {
+                            *sp_ptr.add(base_b + i) *= -1;
+                        }
+                    }
+                }
+            } else {
+                for (i, &in_c) in in_cluster.iter().enumerate() {
+                    if in_c {
+                        std::ptr::swap(sp_ptr.add(base_a + i), sp_ptr.add(base_b + i));
+                    }
                 }
             }
         }

@@ -127,6 +127,8 @@ class Ising:
         overlap_cluster_mode="wolff",
         warmup_ratio=0.25,
         collect_csd=False,
+        overlap_update_mode="swap",
+        collect_top_clusters=False,
     ):
         """Run Monte Carlo sampling and compute observables.
 
@@ -136,6 +138,9 @@ class Ising:
         - `heat_capacity` — Heat capacity per temperature.
         - `sg_binder` — Spin glass Binder parameter (only with `n_replicas >= 2`).
         - `fk_csd` — FK cluster size distribution (only with `collect_csd=True`).
+        - `top_cluster_sizes` — Average relative sizes of the 4 largest overlap
+          clusters per temperature, shape `(n_temps, 4)` (only with
+          `collect_top_clusters=True`).
 
         Args:
             n_sweeps: Total number of Monte Carlo sweeps (including warmup).
@@ -155,6 +160,11 @@ class Ising:
                 collecting statistics. Default 0.25.
             collect_csd: If `True`, collect the Fortuin-Kasteleyn cluster size
                 distribution.
+            overlap_update_mode: How overlap clusters are applied. `"swap"`
+                exchanges spins between replicas; `"free"` independently flips
+                each replica (requires `houdayer_mode="cmr"`).
+            collect_top_clusters: If `True`, collect average relative sizes of
+                the 4 largest overlap clusters per temperature.
 
         Returns:
             Raw results dictionary with keys like `"mags"`, `"energies"`, etc.
@@ -170,6 +180,8 @@ class Ising:
             overlap_cluster_mode=overlap_cluster_mode if houdayer_interval else None,
             warmup_ratio=warmup_ratio,
             collect_csd=collect_csd,
+            overlap_update_mode=overlap_update_mode if houdayer_interval else None,
+            collect_top_clusters=collect_top_clusters,
         )
         self.mags = result["mags"]
         self.mags2 = result["mags2"]
@@ -199,6 +211,9 @@ class Ising:
                 n_sites = sh.sum()
                 mcs[t] = (s * sh).sum() / n_sites if n_sites > 0 else 0.0
             self.mean_cluster_size = mcs
+
+        if "top_cluster_sizes" in result:
+            self.top_cluster_sizes = result["top_cluster_sizes"]
 
         return result
 
