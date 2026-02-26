@@ -464,7 +464,6 @@ dependencies = [
  "indicatif",
  "numpy",
  "pyo3",
- "rayon",
  "spin-sim",
 ]
 

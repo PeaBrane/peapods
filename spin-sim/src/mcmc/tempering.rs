@@ -8,6 +8,7 @@ use rand_xoshiro::Xoshiro256StarStar;
 ///
 /// `energies`: per-replica average energy (energy per spin)
 /// `n_spins`: total number of spins (for converting to total energy)
+#[cfg_attr(feature = "profile", inline(never))]
 pub fn parallel_tempering(
     energies: &[f32],
     temperatures: &[f32],
