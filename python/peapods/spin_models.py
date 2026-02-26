@@ -76,6 +76,7 @@ class Ising:
             neighbor_offsets = GEOMETRIES[geometry]
 
         self.lattice_shape = tuple(lattice_shape)
+        self.n_spins = int(np.prod(lattice_shape))
         self.n_dims = len(lattice_shape)
         self.n_neighbors = len(neighbor_offsets) if neighbor_offsets else self.n_dims
         self.temperatures = temperatures.copy().astype(np.float32)
@@ -178,8 +179,10 @@ class Ising:
 
         self.binder_cumulant = 1 - self.mags4 / (3 * self.mags2**2)
         self.heat_capacity = (
-            self.energies2_avg - self.energies_avg**2
-        ) / self.temperatures**2
+            self.n_spins
+            * (self.energies2_avg - self.energies_avg**2)
+            / self.temperatures**2
+        )
 
         if "overlap2" in result:
             self.overlap = result["overlap"]
@@ -189,6 +192,13 @@ class Ising:
 
         if "fk_csd" in result:
             self.fk_csd = result["fk_csd"]
+            mcs = np.empty(self.n_temps)
+            for t, h in enumerate(self.fk_csd):
+                s = np.arange(len(h))
+                sh = s * h
+                n_sites = sh.sum()
+                mcs[t] = (s * sh).sum() / n_sites if n_sites > 0 else 0.0
+            self.mean_cluster_size = mcs
 
         return result
 
