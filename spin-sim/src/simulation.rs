@@ -203,6 +203,14 @@ pub fn run_sweep_loop(
     let mut overlap2_stat = Statistics::new(n_temps, 1);
     let mut overlap4_stat = Statistics::new(n_temps, 1);
 
+    let mut mags_buf = vec![0.0f32; n_temps];
+    let mut mags2_buf = vec![0.0f32; n_temps];
+    let mut mags4_buf = vec![0.0f32; n_temps];
+    let mut energies_buf = vec![0.0f32; n_temps];
+    let mut overlaps_buf = vec![0.0f32; n_temps];
+    let mut overlaps2_buf = vec![0.0f32; n_temps];
+    let mut overlaps4_buf = vec![0.0f32; n_temps];
+
     for sweep_id in 0..n_sweeps {
         if interrupted.load(Ordering::Relaxed) {
             return Err("interrupted".to_string());
@@ -265,15 +273,13 @@ pub fn run_sweep_loop(
                     }
                 }
             }
+        }
 
-            (real.energies, _) = spins::energy::compute_energies(
-                lattice,
-                &real.spins,
-                &real.couplings,
-                n_systems,
-                false,
-            );
-        } else {
+        let pt_this_sweep = config
+            .pt_interval
+            .is_some_and(|interval| sweep_id % interval == 0);
+
+        if record || pt_this_sweep {
             (real.energies, _) = spins::energy::compute_energies(
                 lattice,
                 &real.spins,
@@ -284,10 +290,12 @@ pub fn run_sweep_loop(
         }
 
         if record {
-            let mut mags = vec![0.0f32; n_temps];
-            let mut mags2 = vec![0.0f32; n_temps];
-            let mut mags4 = vec![0.0f32; n_temps];
-            let mut energies_ordered = vec![0.0f32; n_temps];
+            for t in 0..n_temps {
+                mags_buf[t] = 0.0;
+                mags2_buf[t] = 0.0;
+                mags4_buf[t] = 0.0;
+                energies_buf[t] = 0.0;
+            }
 
             for r in 0..n_replicas {
                 let offset = r * n_temps;
@@ -300,25 +308,27 @@ pub fn run_sweep_loop(
                     }
                     let mag = sum as f32 / n_spins as f32;
                     let m2 = mag * mag;
-                    mags[t] = mag;
-                    mags2[t] = m2;
-                    mags4[t] = m2 * m2;
-                    energies_ordered[t] = real.energies[system_id];
+                    mags_buf[t] = mag;
+                    mags2_buf[t] = m2;
+                    mags4_buf[t] = m2 * m2;
+                    energies_buf[t] = real.energies[system_id];
                 }
 
-                mags_stat.update(&mags);
-                mags2_stat.update(&mags2);
-                mags4_stat.update(&mags4);
-                energies_stat.update(&energies_ordered);
-                energies2_stat.update(&energies_ordered);
+                mags_stat.update(&mags_buf);
+                mags2_stat.update(&mags2_buf);
+                mags4_stat.update(&mags4_buf);
+                energies_stat.update(&energies_buf);
+                energies2_stat.update(&energies_buf);
             }
 
             for pair_idx in 0..n_pairs {
                 let r_a = 2 * pair_idx;
                 let r_b = 2 * pair_idx + 1;
-                let mut overlaps = vec![0.0f32; n_temps];
-                let mut overlaps2 = vec![0.0f32; n_temps];
-                let mut overlaps4 = vec![0.0f32; n_temps];
+                for t in 0..n_temps {
+                    overlaps_buf[t] = 0.0;
+                    overlaps2_buf[t] = 0.0;
+                    overlaps4_buf[t] = 0.0;
+                }
 
                 for t in 0..n_temps {
                     let sys_a = real.system_ids[r_a * n_temps + t];
@@ -331,14 +341,14 @@ pub fn run_sweep_loop(
                     }
                     let q = dot as f32 / n_spins as f32;
                     let q2 = q * q;
-                    overlaps[t] = q;
-                    overlaps2[t] = q2;
-                    overlaps4[t] = q2 * q2;
+                    overlaps_buf[t] = q;
+                    overlaps2_buf[t] = q2;
+                    overlaps4_buf[t] = q2 * q2;
                 }
 
-                overlap_stat.update(&overlaps);
-                overlap2_stat.update(&overlaps2);
-                overlap4_stat.update(&overlaps4);
+                overlap_stat.update(&overlaps_buf);
+                overlap2_stat.update(&overlaps2_buf);
+                overlap4_stat.update(&overlaps4_buf);
             }
         }
 
@@ -399,7 +409,11 @@ pub fn run_sweep_loop(
                     }
                     top4_n += 1;
                 }
+            }
+        }
 
+        if pt_this_sweep {
+            if config.overlap_cluster.is_some() {
                 (real.energies, _) = spins::energy::compute_energies(
                     lattice,
                     &real.spins,
@@ -408,22 +422,17 @@ pub fn run_sweep_loop(
                     false,
                 );
             }
-        }
-
-        if let Some(interval) = config.pt_interval {
-            if sweep_id % interval == 0 {
-                for r in 0..n_replicas {
-                    let offset = r * n_temps;
-                    let sid_slice = &mut real.system_ids[offset..offset + n_temps];
-                    let temp_slice = &real.temperatures[offset..offset + n_temps];
-                    mcmc::tempering::parallel_tempering(
-                        &real.energies,
-                        temp_slice,
-                        sid_slice,
-                        n_spins,
-                        &mut real.rngs[offset],
-                    );
-                }
+            for r in 0..n_replicas {
+                let offset = r * n_temps;
+                let sid_slice = &mut real.system_ids[offset..offset + n_temps];
+                let temp_slice = &real.temperatures[offset..offset + n_temps];
+                mcmc::tempering::parallel_tempering(
+                    &real.energies,
+                    temp_slice,
+                    sid_slice,
+                    n_spins,
+                    &mut real.rngs[offset],
+                );
             }
         }
     }
