@@ -15,6 +15,5 @@ crate-type = ["cdylib"]
 spin-sim = { path = "spin-sim", version = "0.1.5" }
 pyo3 = { version = "0.24", features = ["extension-module"] }
 numpy = "0.24"
-rayon = "1.10"
 indicatif = "0.17"
 ctrlc = "3"

@@ -10,6 +10,7 @@
 //! | Houdayer / Jörg / CMR | [`run_sweep_loop`] (`overlap_cluster`) |
 //!
 //! Replicas are parallelized over threads with [`rayon`].
+//! Multiple disorder realizations can be run in parallel with [`run_sweep_parallel`].
 //!
 //! # Quick start
 //!
@@ -59,5 +60,5 @@ mod mcmc;
 mod parallel;
 
 pub use geometry::Lattice;
-pub use simulation::{run_sweep_loop, Realization};
+pub use simulation::{run_sweep_loop, run_sweep_parallel, Realization};
 pub use statistics::SweepResult;

@@ -6,6 +6,7 @@ use crate::statistics::{Statistics, SweepResult};
 use crate::{clusters, mcmc, spins};
 use rand::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256StarStar;
+use rayon::prelude::*;
 use validator::Validate;
 
 /// Mutable state for one disorder realization.
@@ -479,4 +480,49 @@ pub fn run_sweep_loop(
         overlap_csd: overlap_csd_accum,
         top_cluster_sizes,
     })
+}
+
+/// Run the sweep loop in parallel over multiple disorder realizations.
+///
+/// Each realization is processed by [`run_sweep_loop`], then results are
+/// averaged via [`SweepResult::aggregate`]. For a single realization the
+/// call is made directly, skipping rayon thread-pool overhead.
+pub fn run_sweep_parallel(
+    lattice: &Lattice,
+    realizations: &mut [Realization],
+    n_replicas: usize,
+    n_temps: usize,
+    config: &SimConfig,
+    interrupted: &AtomicBool,
+    on_sweep: &(dyn Fn() + Sync),
+) -> Result<SweepResult, String> {
+    if realizations.len() == 1 {
+        return run_sweep_loop(
+            lattice,
+            &mut realizations[0],
+            n_replicas,
+            n_temps,
+            config,
+            interrupted,
+            on_sweep,
+        );
+    }
+
+    let results: Vec<Result<SweepResult, String>> = realizations
+        .par_iter_mut()
+        .map(|real| {
+            run_sweep_loop(
+                lattice,
+                real,
+                n_replicas,
+                n_temps,
+                config,
+                interrupted,
+                on_sweep,
+            )
+        })
+        .collect();
+
+    let results: Vec<SweepResult> = results.into_iter().collect::<Result<Vec<_>, _>>()?;
+    Ok(SweepResult::aggregate(&results))
 }

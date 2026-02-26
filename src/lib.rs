@@ -6,9 +6,8 @@ use numpy::ndarray::{Array1, Array2};
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use rayon::prelude::*;
 use spin_sim::config::*;
-use spin_sim::{run_sweep_loop, Lattice, Realization, SweepResult};
+use spin_sim::{run_sweep_parallel, Lattice, Realization};
 
 #[pyclass]
 struct IsingSimulation {
@@ -201,42 +200,32 @@ impl IsingSimulation {
             flag.store(true, Ordering::Relaxed);
         });
 
-        let results: Vec<Result<SweepResult, String>> = py.allow_threads(|| {
-            realizations
-                .par_iter_mut()
-                .map(|real| {
-                    run_sweep_loop(
-                        lattice,
-                        real,
-                        n_replicas,
-                        n_temps,
-                        &config,
-                        &interrupted,
-                        &|| {
-                            let prev = counter.fetch_add(1, Ordering::Relaxed);
-                            if (prev + 1).is_multiple_of(n_real) {
-                                pb.inc(1);
-                            }
-                        },
-                    )
-                })
-                .collect()
-        });
+        let agg = py
+            .allow_threads(|| {
+                run_sweep_parallel(
+                    lattice,
+                    realizations,
+                    n_replicas,
+                    n_temps,
+                    &config,
+                    &interrupted,
+                    &|| {
+                        let prev = counter.fetch_add(1, Ordering::Relaxed);
+                        if (prev + 1).is_multiple_of(n_real) {
+                            pb.inc(1);
+                        }
+                    },
+                )
+            })
+            .map_err(|e| {
+                if e == "interrupted" {
+                    pyo3::exceptions::PyKeyboardInterrupt::new_err(e)
+                } else {
+                    pyo3::exceptions::PyValueError::new_err(e)
+                }
+            })?;
 
         pb.finish();
-
-        if interrupted.load(Ordering::Relaxed) {
-            return Err(pyo3::exceptions::PyKeyboardInterrupt::new_err(
-                "interrupted",
-            ));
-        }
-
-        let results: Vec<SweepResult> = results
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(pyo3::exceptions::PyValueError::new_err)?;
-
-        let agg = SweepResult::aggregate(&results);
 
         let dict = PyDict::new(py);
         dict.set_item("mags", Array1::from(agg.mags).into_pyarray(py))?;
