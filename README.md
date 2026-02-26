@@ -61,7 +61,7 @@ For a more complete example, check out [example.py](example.py).
 
 ## Installation
 
-We recommend [uv](https://docs.astral.sh/uv/) for package management. Bare `pip` works too (but so does a typewriter).
+We recommend [uv](https://docs.astral.sh/uv/) for package management. Bare `pip` works too (if you don't mind using a worse management tool).
 
 ```bash
 uv venv
