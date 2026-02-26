@@ -9,6 +9,9 @@ repository = "https://github.com/PeaBrane/peapods"
 keywords = ["ising", "monte-carlo", "spin-glass", "parallel-tempering", "cluster-algorithm"]
 categories = ["science", "simulation"]
 
+[features]
+profile = []
+
 [dependencies]
 rand = "0.8"
 rand_xoshiro = "0.6"

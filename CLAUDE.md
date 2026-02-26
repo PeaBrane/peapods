@@ -14,3 +14,8 @@
 | metropolis + PT | 0.081 |
 
 Run: `.venv/bin/python benchmarks/sweep_modes.py`
+
+## Performance notes
+
+- Bottleneck is cache pressure + dependent load chains, not compute — see `refs/cache-optimization.md`
+- Sweep ordering options (checkerboard, typewriter, random, etc.) — see `refs/sweep-orderings.md`

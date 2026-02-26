@@ -17,3 +17,7 @@ pyo3 = { version = "0.24", features = ["extension-module"] }
 numpy = "0.24"
 indicatif = "0.17"
 ctrlc = "3"
+
+[profile.bench]
+inherits = "release"
+debug = true
