@@ -153,7 +153,9 @@ class Ising:
             overlap_cluster_update_interval: If set, attempt overlap cluster
                 moves every this many sweeps. Requires `n_replicas >= 2`.
             overlap_cluster_build_mode: Overlap cluster algorithm. `"houdayer"`,
-                `"jorg"`, or `"cmr"`.
+                `"jorg"`, `"cmr"`, or `"cmr3"` (3-replica CMR with triply
+                satisfied bonds; requires `n_replicas >= 3` and
+                `overlap_update_mode="free"`).
             overlap_cluster_mode: Cluster type used inside the overlap move.
                 `"wolff"` or `"sw"`.
             warmup_ratio: Fraction of sweeps discarded as warmup before
@@ -162,7 +164,8 @@ class Ising:
                 distribution.
             overlap_update_mode: How overlap clusters are applied. `"swap"`
                 exchanges spins between replicas; `"free"` independently flips
-                each replica (requires `overlap_cluster_build_mode="cmr"`).
+                each replica (requires `overlap_cluster_build_mode="cmr"` or
+                `"cmr3"`).
             collect_top_clusters: If `True`, collect average relative sizes of
                 the 4 largest overlap clusters per temperature.
 
