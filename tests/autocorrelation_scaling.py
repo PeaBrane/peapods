@@ -28,7 +28,7 @@ def run():
             autocorrelation_max_lag=MAX_LAG,
             warmup_ratio=0.25,
         )
-        tau = model.mags2_autocorrelation_time()[0]
+        tau = model.mags2_tau[0]
         taus[L] = tau
         print(f"  L={L:3d}  τ_int(m²) = {tau:.3f}")
 
