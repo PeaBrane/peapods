@@ -1,0 +1,40 @@
+# CMR3 vs CMR comparison on 3D EA spin glass
+# Run: peapods sweep --config sweep_cmr3.toml
+
+[lattice]
+sizes = [[6, 6, 6], [8, 8, 8], [12, 12, 12]]
+couplings = ["bimodal"]
+
+[temperatures]
+min = 0.1
+max = 5.0
+count = 20
+scale = "log"
+
+[replicas]
+n_replicas = 3
+n_disorder = 100
+
+[sampling]
+n_sweeps = 40000
+sweep_mode = "metropolis"
+warmup_ratio = 0.25
+
+[parallel_tempering]
+interval = 1
+
+[overlap_cluster]
+interval = 1
+build_modes = ["cmr", "cmr3"]
+cluster_mode = "wolff"
+update_modes = ["free"]
+
+[diagnostics]
+
+[diagnostics.autocorrelation]
+max_lag = 4000
+plot_temp = 1.102
+
+[output]
+save_data = true
+dir = "."
