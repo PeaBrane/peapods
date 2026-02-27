@@ -21,8 +21,8 @@ sweep_mode = "metropolis"
 warmup_ratio = 0.25
 sequential = true
 
-[parallel_tempering]
-interval = 1
+# [parallel_tempering]
+# interval = 1
 
 [overlap_cluster]
 interval = 1
