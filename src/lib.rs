@@ -105,6 +105,7 @@ impl IsingSimulation {
         overlap_update_mode=None,
         collect_top_clusters=None,
         autocorrelation_max_lag=None,
+        sequential=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn sample<'py>(
@@ -123,6 +124,7 @@ impl IsingSimulation {
         overlap_update_mode: Option<&str>,
         collect_top_clusters: Option<bool>,
         autocorrelation_max_lag: Option<usize>,
+        sequential: Option<bool>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let warmup = warmup_ratio.unwrap_or(0.25);
         let warmup_sweeps = (n_sweeps as f64 * warmup).round() as usize;
@@ -177,6 +179,7 @@ impl IsingSimulation {
             pt_interval,
             overlap_cluster,
             autocorrelation_max_lag,
+            sequential: sequential.unwrap_or(false),
         };
 
         let n_replicas = self.n_replicas;

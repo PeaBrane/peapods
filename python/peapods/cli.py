@@ -165,6 +165,17 @@ def _add_sweep_common_args(parser):
         default=None,
         help="Max lag for streaming autocorrelation of m² and q²",
     )
+    parser.add_argument(
+        "--sequential",
+        action="store_true",
+        default=None,
+        help=(
+            "Disable inner-loop parallelism (replicas/temps processed sequentially). "
+            "Set n_disorder to number of physical cores (ignore hyperthreading — "
+            "this workload is cache-pressure bound) so each realization gets its "
+            "own L1 cache."
+        ),
+    )
 
 
 def _add_sweep_args(parser):
@@ -294,6 +305,7 @@ _SWEEP_DEFAULTS = dict(
     save_plots=False,
     save_data=False,
     output_dir=".",
+    sequential=False,
 )
 
 
@@ -341,6 +353,8 @@ def _load_sweep_config(path):
             kw["sweep_mode"] = s["sweep_mode"]
         if "warmup_ratio" in s:
             kw["warmup_ratio"] = s["warmup_ratio"]
+        if "sequential" in s:
+            kw["sequential"] = s["sequential"]
 
     if "cluster" in cfg:
         c = cfg["cluster"]
@@ -427,6 +441,7 @@ def run_sweep_cli(args):
         "save_plots": args.save_plots,
         "save_data": args.save_data,
         "output_dir": args.output_dir,
+        "sequential": args.sequential,
     }
     for key, val in cli_map.items():
         if val is not None:
@@ -485,6 +500,7 @@ def run_sweep_cli(args):
         save_plots=kw["save_plots"],
         save_data=kw["save_data"],
         output_dir=kw["output_dir"],
+        sequential=kw["sequential"],
     )
 
 

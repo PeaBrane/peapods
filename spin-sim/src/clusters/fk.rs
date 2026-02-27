@@ -5,7 +5,7 @@ use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 use rayon::prelude::*;
 
-/// Fortuin-Kasteleyn cluster update (SW or Wolff), parallelized over replicas.
+/// Fortuin-Kasteleyn cluster update (SW or Wolff).
 ///
 /// When `wolff` is false, performs Swendsen-Wang (flip each cluster with p=0.5).
 /// When `wolff` is true, performs Wolff (flip only the seed's cluster).
@@ -17,6 +17,8 @@ use rayon::prelude::*;
 /// pre-allocated per-system slots (`hist[s]` += 1 for each cluster of size
 /// `s`). The slice length must equal the number of systems (i.e.
 /// `system_ids.len()`); each inner vec must be pre-sized to `n_spins + 1`.
+///
+/// When `sequential` is true, replicas are processed on the current thread.
 #[cfg_attr(feature = "profile", inline(never))]
 #[allow(clippy::too_many_arguments)]
 pub fn fk_update(
@@ -28,6 +30,7 @@ pub fn fk_update(
     rngs: &mut [Xoshiro256StarStar],
     wolff: bool,
     csd_out: Option<&mut [Vec<u64>]>,
+    sequential: bool,
 ) {
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
@@ -40,6 +43,7 @@ pub fn fk_update(
             temperatures,
             system_ids,
             n_spins,
+            sequential,
             |spin_slice, rng, temp, _| {
                 let seed = rng.gen_range(0..n_spins);
                 let mut in_cluster = vec![false; n_spins];
@@ -85,7 +89,7 @@ pub fn fk_update(
     let cp = csd_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_csd = csd_out.is_some();
 
-    chunks.par_iter().for_each(|&(system_id, temp_id)| unsafe {
+    let work = |&(system_id, temp_id): &(usize, usize)| unsafe {
         let spin_slice =
             std::slice::from_raw_parts_mut((sp as *mut i8).add(system_id * n_spins), n_spins);
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(system_id);
@@ -138,5 +142,11 @@ pub fn fk_update(
                 }
             }
         }
-    });
+    };
+
+    if sequential {
+        chunks.iter().for_each(work);
+    } else {
+        chunks.par_iter().for_each(work);
+    }
 }

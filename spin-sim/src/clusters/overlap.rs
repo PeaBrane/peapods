@@ -59,6 +59,7 @@ pub fn overlap_update(
     group_size: usize,
     csd_out: Option<&mut [Vec<u64>]>,
     top4_out: Option<&mut [[u32; 4]]>,
+    sequential: bool,
 ) {
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
@@ -98,7 +99,7 @@ pub fn overlap_update(
     let tp = top4_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_top4 = top4_out.is_some();
 
-    tasks.par_iter().for_each(|&(t, g, systems)| unsafe {
+    let work = |&(t, g, systems): &(usize, usize, [usize; 3])| unsafe {
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(t * n_pairs + g);
         let temp = temperatures[t];
         let base_a = systems[0] * n_spins;
@@ -397,5 +398,11 @@ pub fn overlap_update(
                 }
             }
         }
-    });
+    };
+
+    if sequential {
+        tasks.iter().for_each(work);
+    } else {
+        tasks.par_iter().for_each(work);
+    }
 }

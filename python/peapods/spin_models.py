@@ -130,6 +130,7 @@ class Ising:
         overlap_update_mode="swap",
         collect_top_clusters=False,
         autocorrelation_max_lag=None,
+        sequential=False,
     ):
         """Run Monte Carlo sampling and compute observables.
 
@@ -169,6 +170,9 @@ class Ising:
                 `"cmr3"`).
             collect_top_clusters: If `True`, collect average relative sizes of
                 the 4 largest overlap clusters per temperature.
+            sequential: If `True`, disable inner-loop parallelism over
+                replicas/temperatures. Use when outer-level parallelism over
+                disorder realizations already saturates all physical cores.
 
         Returns:
             Raw results dictionary with keys like `"mags"`, `"energies"`, etc.
@@ -188,6 +192,7 @@ class Ising:
             overlap_update_mode=overlap_update_mode if oci else None,
             collect_top_clusters=collect_top_clusters,
             autocorrelation_max_lag=autocorrelation_max_lag,
+            sequential=sequential,
         )
         self.mags = result["mags"]
         self.mags2 = result["mags2"]

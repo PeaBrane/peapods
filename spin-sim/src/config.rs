@@ -159,4 +159,5 @@ pub struct SimConfig {
     #[validate]
     pub overlap_cluster: Option<OverlapClusterConfig>,
     pub autocorrelation_max_lag: Option<usize>,
+    pub sequential: bool,
 }
