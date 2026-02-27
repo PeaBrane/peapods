@@ -5,16 +5,18 @@ from pathlib import Path
 import numpy as np
 
 from peapods import Ising
-from utils import assert_crossing, plot_crossing
+from utils import (
+    TC_BCC,
+    TC_CUBIC,
+    TC_FCC,
+    TC_SQUARE,
+    TC_TRIANGULAR,
+    assert_crossing,
+    plot_crossing,
+)
 
 OUT_DIR = Path(__file__).parent
 N_SWEEPS = 10000
-
-TC_SQUARE = 2.0 / np.log(1 + np.sqrt(2))  # exact: 2.26918...
-TC_TRIANGULAR = 4.0 / np.log(3)  # exact: 3.64096...
-TC_CUBIC = 4.511
-TC_BCC = 6.235
-TC_FCC = 9.792
 
 
 def ferromagnet(name, sizes, tc, temps, tol=0.05, shape_fn=None, **ising_kwargs):

@@ -3,6 +3,13 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
+TC_SQUARE = 2.0 / np.log(1 + np.sqrt(2))  # exact: 2.26918...
+TC_TRIANGULAR = 4.0 / np.log(3)  # exact: 3.64096...
+TC_CUBIC = 4.511
+TC_BCC = 6.235
+TC_FCC = 9.792
+TC_EA_3D = 1.102
+
 
 def assert_crossing(temps, results, tc, tol=0.05):
     """Assert that Binder curves cross at T_c with spread < tol."""

@@ -158,4 +158,5 @@ pub struct SimConfig {
     pub pt_interval: Option<usize>,
     #[validate]
     pub overlap_cluster: Option<OverlapClusterConfig>,
+    pub autocorrelation_max_lag: Option<usize>,
 }
