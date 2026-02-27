@@ -50,10 +50,10 @@ def _save_data(models, config_label, temperatures, output_dir):
             save_dict[f"{prefix}_mean_cluster_size"] = model.mean_cluster_size
         if hasattr(model, "top_cluster_sizes"):
             save_dict[f"{prefix}_top_cluster_sizes"] = model.top_cluster_sizes
-        if hasattr(model, "mags2_autocorr"):
-            save_dict[f"{prefix}_mags2_tau"] = model.mags2_autocorrelation_time()
-        if hasattr(model, "overlap2_autocorr"):
-            save_dict[f"{prefix}_overlap2_tau"] = model.overlap2_autocorrelation_time()
+        if hasattr(model, "mags2_tau"):
+            save_dict[f"{prefix}_mags2_tau"] = model.mags2_tau
+        if hasattr(model, "overlap2_tau"):
+            save_dict[f"{prefix}_overlap2_tau"] = model.overlap2_tau
 
     path = Path(output_dir) / f"sweep_{config_label}.npz"
     np.savez(path, **save_dict)
@@ -139,9 +139,9 @@ def _plot_autocorrelation_time(all_results, temperatures, plot_temp, output_dir)
     else:
         t_idx = None
 
-    for obs_name, attr, tau_method in [
-        ("m2", "mags2_autocorr", "mags2_autocorrelation_time"),
-        ("q2", "overlap2_autocorr", "overlap2_autocorrelation_time"),
+    for obs_name, attr in [
+        ("m2", "mags2_tau"),
+        ("q2", "overlap2_tau"),
     ]:
         has_any = any(
             hasattr(m, attr) for models in all_results.values() for m in models.values()
@@ -156,7 +156,7 @@ def _plot_autocorrelation_time(all_results, temperatures, plot_temp, output_dir)
             for size_label, model in models.items():
                 if not hasattr(model, attr):
                     continue
-                tau_arr = getattr(model, tau_method)()
+                tau_arr = getattr(model, attr)
                 L = max(model.lattice_shape)
                 sizes_L.append(L)
                 if t_idx is not None:

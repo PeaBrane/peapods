@@ -270,19 +270,15 @@ impl IsingSimulation {
             dict.set_item("top_cluster_sizes", arr)?;
         }
 
-        if !agg.mags2_autocorrelation.is_empty() {
-            let k = agg.mags2_autocorrelation[0].len();
-            let arr = Array2::from_shape_fn((n_temps, k), |(t, d)| agg.mags2_autocorrelation[t][d])
-                .into_pyarray(py);
-            dict.set_item("mags2_autocorr", arr)?;
+        if !agg.mags2_tau.is_empty() {
+            dict.set_item("mags2_tau", Array1::from(agg.mags2_tau).into_pyarray(py))?;
         }
 
-        if !agg.overlap2_autocorrelation.is_empty() {
-            let k = agg.overlap2_autocorrelation[0].len();
-            let arr =
-                Array2::from_shape_fn((n_temps, k), |(t, d)| agg.overlap2_autocorrelation[t][d])
-                    .into_pyarray(py);
-            dict.set_item("overlap2_autocorr", arr)?;
+        if !agg.overlap2_tau.is_empty() {
+            dict.set_item(
+                "overlap2_tau",
+                Array1::from(agg.overlap2_tau).into_pyarray(py),
+            )?;
         }
 
         Ok(dict)
