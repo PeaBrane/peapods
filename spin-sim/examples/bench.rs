@@ -52,6 +52,8 @@ fn main() {
             collect_csd: false,
             collect_top_clusters: false,
         }),
+        autocorrelation_max_lag: None,
+        sequential: false,
     };
 
     println!(

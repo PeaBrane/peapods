@@ -21,6 +21,7 @@ fn local_field(lattice: &Lattice, spin_slice: &[i8], couplings: &[f32], i: usize
 /// Single-spin-flip sweep with a generic acceptance threshold.
 ///
 /// `threshold_fn(rng, temp)` returns the value that `eng_change` is compared against.
+#[allow(clippy::too_many_arguments)]
 fn sweep_generic(
     lattice: &Lattice,
     spins: &mut [i8],
@@ -28,6 +29,7 @@ fn sweep_generic(
     temperatures: &[f32],
     system_ids: &[usize],
     rngs: &mut [Xoshiro256StarStar],
+    sequential: bool,
     threshold_fn: impl Fn(&mut Xoshiro256StarStar, f32) -> f32 + Send + Sync,
 ) {
     let n_spins = lattice.n_spins;
@@ -37,6 +39,7 @@ fn sweep_generic(
         temperatures,
         system_ids,
         n_spins,
+        sequential,
         |spin_slice, rng, temp, _| {
             for i in 0..n_spins {
                 let si = spin_slice[i] as f32;
@@ -50,7 +53,7 @@ fn sweep_generic(
     );
 }
 
-/// Metropolis single-spin-flip sweep over all replicas in parallel.
+/// Metropolis single-spin-flip sweep over all replicas.
 #[cfg_attr(feature = "profile", inline(never))]
 pub fn metropolis_sweep(
     lattice: &Lattice,
@@ -59,6 +62,7 @@ pub fn metropolis_sweep(
     temperatures: &[f32],
     system_ids: &[usize],
     rngs: &mut [Xoshiro256StarStar],
+    sequential: bool,
 ) {
     sweep_generic(
         lattice,
@@ -67,11 +71,12 @@ pub fn metropolis_sweep(
         temperatures,
         system_ids,
         rngs,
+        sequential,
         |rng, temp| (temp / 2.0) * rng.gen::<f32>().ln(),
     );
 }
 
-/// Gibbs single-spin-flip sweep over all replicas in parallel.
+/// Gibbs single-spin-flip sweep over all replicas.
 #[cfg_attr(feature = "profile", inline(never))]
 pub fn gibbs_sweep(
     lattice: &Lattice,
@@ -80,6 +85,7 @@ pub fn gibbs_sweep(
     temperatures: &[f32],
     system_ids: &[usize],
     rngs: &mut [Xoshiro256StarStar],
+    sequential: bool,
 ) {
     sweep_generic(
         lattice,
@@ -88,6 +94,7 @@ pub fn gibbs_sweep(
         temperatures,
         system_ids,
         rngs,
+        sequential,
         |rng, temp| {
             let u: f32 = rng.gen();
             (temp / 2.0) * (u / (1.0 - u)).ln()

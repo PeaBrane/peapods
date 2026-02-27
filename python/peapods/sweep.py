@@ -214,6 +214,7 @@ def run_sweep(
     save_plots=False,
     save_data=False,
     output_dir=".",
+    sequential=False,
 ):
     """Run a parameter sweep over sizes and configurations.
 
@@ -300,6 +301,7 @@ def run_sweep(
                 overlap_update_mode=ou_mode,
                 collect_top_clusters=collect_top_clusters,
                 autocorrelation_max_lag=autocorrelation_max_lag,
+                sequential=sequential,
             )
             elapsed = time.perf_counter() - t0
             print(f"  {elapsed:.2f}s")

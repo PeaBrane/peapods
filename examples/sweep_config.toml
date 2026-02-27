@@ -19,6 +19,7 @@ n_disorder = 10
 n_sweeps = 5000
 sweep_mode = "metropolis"
 warmup_ratio = 0.25
+# sequential = true  # disable inner-loop parallelism (see --help)
 
 [cluster]
 interval = 1

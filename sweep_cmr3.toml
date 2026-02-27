@@ -19,6 +19,7 @@ n_disorder = 112
 n_sweeps = 40000
 sweep_mode = "metropolis"
 warmup_ratio = 0.25
+sequential = true
 
 [parallel_tempering]
 interval = 1
