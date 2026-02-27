@@ -9,14 +9,15 @@ from peapods import Ising
 from utils import plot_bars
 
 
-LATTICE_SHAPE = (32, 32)
+LATTICE_SHAPE = (64, 64)
 N_TEMPS = 16
-N_SWEEPS = 1000
+N_SWEEPS = 50
+N_REALIZATIONS = 128
 
 
 def make_model():
     temperatures = np.geomspace(0.1, 10, N_TEMPS)
-    return Ising(LATTICE_SHAPE, temperatures=temperatures)
+    return Ising(LATTICE_SHAPE, temperatures=temperatures, n_disorder=N_REALIZATIONS)
 
 
 BENCH_RESULTS = {}
@@ -36,7 +37,9 @@ def bench(name, run_fn):
 
 def run_benchmarks():
     shape_str = "x".join(str(s) for s in LATTICE_SHAPE)
-    print(f"Lattice: {shape_str}  |  Temps: {N_TEMPS}  |  Sweeps: {N_SWEEPS}")
+    print(
+        f"Lattice: {shape_str}  |  Temps: {N_TEMPS}  |  Sweeps: {N_SWEEPS}  |  Realizations: {N_REALIZATIONS}"
+    )
     print("-" * 64)
 
     bench(

@@ -43,6 +43,16 @@ pub enum OverlapClusterBuildMode {
     Houdayer,
     Jorg,
     Cmr,
+    Cmr3,
+}
+
+impl OverlapClusterBuildMode {
+    pub fn group_size(&self) -> usize {
+        match self {
+            Self::Cmr3 => 3,
+            _ => 2,
+        }
+    }
 }
 
 impl TryFrom<&str> for OverlapClusterBuildMode {
@@ -52,8 +62,9 @@ impl TryFrom<&str> for OverlapClusterBuildMode {
             "houdayer" => Ok(Self::Houdayer),
             "jorg" => Ok(Self::Jorg),
             "cmr" => Ok(Self::Cmr),
+            "cmr3" => Ok(Self::Cmr3),
             _ => Err(format!(
-                "unknown overlap_cluster_build_mode '{s}', expected 'houdayer', 'jorg', or 'cmr'"
+                "unknown overlap_cluster_build_mode '{s}', expected 'houdayer', 'jorg', 'cmr', or 'cmr3'"
             )),
         }
     }
@@ -86,9 +97,19 @@ pub struct ClusterConfig {
 }
 
 fn validate_overlap_cluster_config(cfg: &OverlapClusterConfig) -> Result<(), ValidationError> {
-    if cfg.update_mode == OverlapUpdateMode::Free && cfg.mode != OverlapClusterBuildMode::Cmr {
+    if cfg.update_mode == OverlapUpdateMode::Free
+        && !matches!(
+            cfg.mode,
+            OverlapClusterBuildMode::Cmr | OverlapClusterBuildMode::Cmr3
+        )
+    {
         return Err(ValidationError::new(
-            "overlap_update_mode 'free' requires overlap_cluster_build_mode 'cmr'",
+            "overlap_update_mode 'free' requires overlap_cluster_build_mode 'cmr' or 'cmr3'",
+        ));
+    }
+    if cfg.mode == OverlapClusterBuildMode::Cmr3 && cfg.update_mode != OverlapUpdateMode::Free {
+        return Err(ValidationError::new(
+            "overlap_cluster_build_mode 'cmr3' requires overlap_update_mode 'free'",
         ));
     }
     Ok(())
