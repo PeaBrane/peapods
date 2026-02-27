@@ -1,0 +1,47 @@
+[lattice]
+sizes = [[8, 8], [16, 16], [32, 32]]
+# geometry = "triangular"
+# neighbor_offsets = [[1, 0], [0, 1]]
+
+couplings = ["bimodal"]
+
+[temperatures]
+min = 0.8
+max = 1.4
+count = 12
+scale = "log"
+
+[replicas]
+n_replicas = 2
+n_disorder = 10
+
+[sampling]
+n_sweeps = 5000
+sweep_mode = "metropolis"
+warmup_ratio = 0.25
+
+[cluster]
+interval = 1
+mode = "sw"
+
+[parallel_tempering]
+interval = 1
+
+[overlap_cluster]
+interval = 1
+build_modes = ["cmr", "cmr3"]
+cluster_mode = "sw"
+update_modes = ["free"]
+
+[diagnostics]
+collect_csd = false
+collect_top_clusters = false
+
+[diagnostics.autocorrelation]
+max_lag = 2000
+plot_temp = 1.102
+
+[output]
+save_plots = true
+save_data = true
+dir = "./results"
