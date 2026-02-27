@@ -88,6 +88,17 @@ impl AutocorrAccum {
     }
 }
 
+fn sokal_tau(gamma: &[f64]) -> f64 {
+    let mut tau = 0.5;
+    for (w, &g) in gamma.iter().enumerate().skip(1) {
+        tau += g;
+        if w as f64 >= 5.0 * tau {
+            return tau;
+        }
+    }
+    tau
+}
+
 /// Mutable state for one disorder realization.
 ///
 /// Holds the coupling array (fixed after construction), spin configurations for
@@ -603,13 +614,13 @@ pub fn run_sweep_loop(
         vec![]
     };
 
-    let mags2_autocorrelation = m2_accum
+    let mags2_tau = m2_accum
         .as_ref()
-        .map(|acc| acc.finish())
+        .map(|acc| acc.finish().iter().map(|g| sokal_tau(g)).collect())
         .unwrap_or_default();
-    let overlap2_autocorrelation = q2_accum
+    let overlap2_tau = q2_accum
         .as_ref()
-        .map(|acc| acc.finish())
+        .map(|acc| acc.finish().iter().map(|g| sokal_tau(g)).collect())
         .unwrap_or_default();
 
     Ok(SweepResult {
@@ -636,8 +647,8 @@ pub fn run_sweep_loop(
         fk_csd: fk_csd_accum,
         overlap_csd: overlap_csd_accum,
         top_cluster_sizes,
-        mags2_autocorrelation,
-        overlap2_autocorrelation,
+        mags2_tau,
+        overlap2_tau,
     })
 }
 
