@@ -226,57 +226,12 @@ class Ising:
         if "top_cluster_sizes" in result:
             self.top_cluster_sizes = result["top_cluster_sizes"]
 
-        if "mags2_autocorr" in result:
-            self.mags2_autocorr = result["mags2_autocorr"]
-        if "overlap2_autocorr" in result:
-            self.overlap2_autocorr = result["overlap2_autocorr"]
+        if "mags2_tau" in result:
+            self.mags2_tau = result["mags2_tau"]
+        if "overlap2_tau" in result:
+            self.overlap2_tau = result["overlap2_tau"]
 
         return result
-
-    @staticmethod
-    def _sokal_tau(gamma):
-        """Integrated autocorrelation time via Sokal's self-consistent windowing.
-
-        Args:
-            gamma: 1D array, normalized autocorrelation Γ(δ) with Γ[0]=1.
-
-        Returns:
-            τ_int estimate (float).
-        """
-        tau = 0.5
-        for w in range(1, len(gamma)):
-            tau += gamma[w]
-            if w >= 5 * tau:
-                return tau
-        return tau
-
-    def mags2_autocorrelation_time(self):
-        """Integrated autocorrelation time of m² per temperature.
-
-        Returns:
-            Array of shape ``(n_temps,)``.
-        """
-        if not hasattr(self, "mags2_autocorr"):
-            raise RuntimeError(
-                "No autocorrelation data; call sample() with autocorrelation_max_lag first"
-            )
-        return np.array(
-            [self._sokal_tau(self.mags2_autocorr[t]) for t in range(self.n_temps)]
-        )
-
-    def overlap2_autocorrelation_time(self):
-        """Integrated autocorrelation time of q² per temperature. Requires n_replicas >= 2.
-
-        Returns:
-            Array of shape ``(n_temps,)``.
-        """
-        if not hasattr(self, "overlap2_autocorr"):
-            raise RuntimeError(
-                "No overlap autocorrelation data; call sample() with autocorrelation_max_lag and n_replicas >= 2"
-            )
-        return np.array(
-            [self._sokal_tau(self.overlap2_autocorr[t]) for t in range(self.n_temps)]
-        )
 
     def get_energies(self):
         """Return the mean energies per temperature from the last sample run."""
