@@ -334,6 +334,7 @@ pub fn run_sweep_loop(
                 &real.temperatures,
                 &real.system_ids,
                 &mut real.rngs,
+                config.sequential,
             ),
             SweepMode::Gibbs => mcmc::sweep::gibbs_sweep(
                 lattice,
@@ -342,6 +343,7 @@ pub fn run_sweep_loop(
                 &real.temperatures,
                 &real.system_ids,
                 &mut real.rngs,
+                config.sequential,
             ),
         }
 
@@ -371,6 +373,7 @@ pub fn run_sweep_loop(
                 &mut real.rngs,
                 wolff,
                 csd_out,
+                config.sequential,
             );
 
             if cluster_cfg.collect_csd && record {
@@ -532,6 +535,7 @@ pub fn run_sweep_loop(
                     group_size,
                     ov_csd_out,
                     top4_out,
+                    config.sequential,
                 );
 
                 if oc_cfg.collect_csd && record {

@@ -36,6 +36,8 @@ let config = SimConfig {
     cluster_update: None,
     pt_interval: Some(1),
     overlap_cluster: None,
+    autocorrelation_max_lag: None,
+    sequential: false,
 };
 
 use std::sync::atomic::AtomicBool;
