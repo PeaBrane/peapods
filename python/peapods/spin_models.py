@@ -129,6 +129,7 @@ class Ising:
         collect_csd=False,
         overlap_update_mode="swap",
         collect_top_clusters=False,
+        autocorrelation_max_lag=None,
     ):
         """Run Monte Carlo sampling and compute observables.
 
@@ -186,6 +187,7 @@ class Ising:
             collect_csd=collect_csd,
             overlap_update_mode=overlap_update_mode if oci else None,
             collect_top_clusters=collect_top_clusters,
+            autocorrelation_max_lag=autocorrelation_max_lag,
         )
         self.mags = result["mags"]
         self.mags2 = result["mags2"]
@@ -219,7 +221,57 @@ class Ising:
         if "top_cluster_sizes" in result:
             self.top_cluster_sizes = result["top_cluster_sizes"]
 
+        if "mags2_autocorr" in result:
+            self.mags2_autocorr = result["mags2_autocorr"]
+        if "overlap2_autocorr" in result:
+            self.overlap2_autocorr = result["overlap2_autocorr"]
+
         return result
+
+    @staticmethod
+    def _sokal_tau(gamma):
+        """Integrated autocorrelation time via Sokal's self-consistent windowing.
+
+        Args:
+            gamma: 1D array, normalized autocorrelation Γ(δ) with Γ[0]=1.
+
+        Returns:
+            τ_int estimate (float).
+        """
+        tau = 0.5
+        for w in range(1, len(gamma)):
+            tau += gamma[w]
+            if w >= 5 * tau:
+                return tau
+        return tau
+
+    def mags2_autocorrelation_time(self):
+        """Integrated autocorrelation time of m² per temperature.
+
+        Returns:
+            Array of shape ``(n_temps,)``.
+        """
+        if not hasattr(self, "mags2_autocorr"):
+            raise RuntimeError(
+                "No autocorrelation data; call sample() with autocorrelation_max_lag first"
+            )
+        return np.array(
+            [self._sokal_tau(self.mags2_autocorr[t]) for t in range(self.n_temps)]
+        )
+
+    def overlap2_autocorrelation_time(self):
+        """Integrated autocorrelation time of q² per temperature. Requires n_replicas >= 2.
+
+        Returns:
+            Array of shape ``(n_temps,)``.
+        """
+        if not hasattr(self, "overlap2_autocorr"):
+            raise RuntimeError(
+                "No overlap autocorrelation data; call sample() with autocorrelation_max_lag and n_replicas >= 2"
+            )
+        return np.array(
+            [self._sokal_tau(self.overlap2_autocorr[t]) for t in range(self.n_temps)]
+        )
 
     def get_energies(self):
         """Return the mean energies per temperature from the last sample run."""

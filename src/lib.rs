@@ -104,6 +104,7 @@ impl IsingSimulation {
         collect_csd=None,
         overlap_update_mode=None,
         collect_top_clusters=None,
+        autocorrelation_max_lag=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn sample<'py>(
@@ -121,6 +122,7 @@ impl IsingSimulation {
         collect_csd: Option<bool>,
         overlap_update_mode: Option<&str>,
         collect_top_clusters: Option<bool>,
+        autocorrelation_max_lag: Option<usize>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let warmup = warmup_ratio.unwrap_or(0.25);
         let warmup_sweeps = (n_sweeps as f64 * warmup).round() as usize;
@@ -174,6 +176,7 @@ impl IsingSimulation {
             cluster_update,
             pt_interval,
             overlap_cluster,
+            autocorrelation_max_lag,
         };
 
         let n_replicas = self.n_replicas;
@@ -262,6 +265,21 @@ impl IsingSimulation {
             let arr = Array2::from_shape_fn((n_temps, 4), |(t, k)| agg.top_cluster_sizes[t][k])
                 .into_pyarray(py);
             dict.set_item("top_cluster_sizes", arr)?;
+        }
+
+        if !agg.mags2_autocorrelation.is_empty() {
+            let k = agg.mags2_autocorrelation[0].len();
+            let arr = Array2::from_shape_fn((n_temps, k), |(t, d)| agg.mags2_autocorrelation[t][d])
+                .into_pyarray(py);
+            dict.set_item("mags2_autocorr", arr)?;
+        }
+
+        if !agg.overlap2_autocorrelation.is_empty() {
+            let k = agg.overlap2_autocorrelation[0].len();
+            let arr =
+                Array2::from_shape_fn((n_temps, k), |(t, d)| agg.overlap2_autocorrelation[t][d])
+                    .into_pyarray(py);
+            dict.set_item("overlap2_autocorr", arr)?;
         }
 
         Ok(dict)

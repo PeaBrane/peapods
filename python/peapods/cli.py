@@ -9,7 +9,7 @@ from peapods import Ising
 from peapods.sweep import run_sweep
 
 COUPLING_CHOICES = ["ferro", "bimodal", "gaussian"]
-BUILD_MODE_CHOICES = ["houdayer", "jorg", "cmr"]
+BUILD_MODE_CHOICES = ["houdayer", "jorg", "cmr", "cmr3"]
 OVERLAP_UPDATE_CHOICES = ["swap", "free"]
 OVERLAP_CLUSTER_CHOICES = ["wolff", "sw"]
 
@@ -68,6 +68,12 @@ def _add_common_args(parser):
         "--collect-top-clusters",
         action="store_true",
         help="Collect top-4 overlap cluster sizes per temperature",
+    )
+    parser.add_argument(
+        "--autocorrelation-max-lag",
+        type=int,
+        default=None,
+        help="Max lag for streaming autocorrelation of m² and q²",
     )
 
 
@@ -141,6 +147,12 @@ def _add_sweep_args(parser):
         action="store_true",
         help="Collect FK cluster size distribution",
     )
+    parser.add_argument(
+        "--autocorrelation-plot-temp",
+        type=float,
+        default=None,
+        help="Temperature at which to plot τ vs L (uses nearest T in grid)",
+    )
     parser.add_argument("--save-plots", action="store_true", help="Save plots to disk")
     parser.add_argument("--save-data", action="store_true", help="Save data as .npz")
     parser.add_argument(
@@ -177,6 +189,7 @@ def sample_kwargs(args):
         overlap_cluster_mode=args.overlap_cluster_mode,
         overlap_update_mode=args.overlap_update_mode,
         collect_top_clusters=args.collect_top_clusters,
+        autocorrelation_max_lag=args.autocorrelation_max_lag,
     )
 
 
@@ -214,6 +227,8 @@ def run_sweep_cli(args):
         warmup_ratio=args.warmup_ratio,
         collect_csd=args.collect_csd,
         collect_top_clusters=args.collect_top_clusters,
+        autocorrelation_max_lag=args.autocorrelation_max_lag,
+        autocorrelation_plot_temp=args.autocorrelation_plot_temp,
         save_plots=args.save_plots,
         save_data=args.save_data,
         output_dir=args.output_dir,

@@ -26,6 +26,12 @@ pub struct SweepResult {
     /// Average relative size of k-th largest blue cluster per temperature.
     /// Shape: [n_temps][4]. Empty if collect_top_clusters=false.
     pub top_cluster_sizes: Vec<[f64; 4]>,
+    /// Normalized autocorrelation Γ(Δt) of m², shape [n_temps][max_lag+1].
+    /// Empty if autocorrelation_max_lag is None.
+    pub mags2_autocorrelation: Vec<Vec<f64>>,
+    /// Normalized autocorrelation Γ(Δt) of q², shape [n_temps][max_lag+1].
+    /// Empty if autocorrelation_max_lag is None or n_replicas < 2.
+    pub overlap2_autocorrelation: Vec<Vec<f64>>,
 }
 
 impl SweepResult {
@@ -42,6 +48,17 @@ impl SweepResult {
 
         let n_top = results[0].top_cluster_sizes.len();
 
+        let m2_ac_ntemps = results[0].mags2_autocorrelation.len();
+        let m2_ac_len = results[0]
+            .mags2_autocorrelation
+            .first()
+            .map_or(0, |v| v.len());
+        let q2_ac_ntemps = results[0].overlap2_autocorrelation.len();
+        let q2_ac_len = results[0]
+            .overlap2_autocorrelation
+            .first()
+            .map_or(0, |v| v.len());
+
         let mut agg = SweepResult {
             mags: vec![0.0; n_temps],
             mags2: vec![0.0; n_temps],
@@ -54,6 +71,8 @@ impl SweepResult {
             fk_csd: (0..n_fk_csd).map(|_| vec![0u64; fk_len]).collect(),
             overlap_csd: (0..n_ov_csd).map(|_| vec![0u64; ov_len]).collect(),
             top_cluster_sizes: vec![[0.0; 4]; n_top],
+            mags2_autocorrelation: (0..m2_ac_ntemps).map(|_| vec![0.0; m2_ac_len]).collect(),
+            overlap2_autocorrelation: (0..q2_ac_ntemps).map(|_| vec![0.0; q2_ac_len]).collect(),
         };
 
         for r in results {
@@ -100,6 +119,24 @@ impl SweepResult {
                     a[k] += s[k];
                 }
             }
+            for (a_row, r_row) in agg
+                .mags2_autocorrelation
+                .iter_mut()
+                .zip(r.mags2_autocorrelation.iter())
+            {
+                for (a, &v) in a_row.iter_mut().zip(r_row.iter()) {
+                    *a += v;
+                }
+            }
+            for (a_row, r_row) in agg
+                .overlap2_autocorrelation
+                .iter_mut()
+                .zip(r.overlap2_autocorrelation.iter())
+            {
+                for (a, &v) in a_row.iter_mut().zip(r_row.iter()) {
+                    *a += v;
+                }
+            }
         }
 
         for v in agg
@@ -118,6 +155,17 @@ impl SweepResult {
 
         for arr in agg.top_cluster_sizes.iter_mut() {
             for v in arr.iter_mut() {
+                *v /= n;
+            }
+        }
+
+        for row in agg.mags2_autocorrelation.iter_mut() {
+            for v in row.iter_mut() {
+                *v /= n;
+            }
+        }
+        for row in agg.overlap2_autocorrelation.iter_mut() {
+            for v in row.iter_mut() {
                 *v /= n;
             }
         }

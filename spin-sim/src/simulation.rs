@@ -9,6 +9,85 @@ use rand_xoshiro::Xoshiro256StarStar;
 use rayon::prelude::*;
 use validator::Validate;
 
+/// Streaming autocorrelation accumulator using a ring buffer.
+///
+/// Computes the normalized autocorrelation function Γ(δ) for a per-temperature
+/// time series without storing the full history. Memory is O(max_lag × n_temps).
+struct AutocorrAccum {
+    max_lag: usize,
+    n_temps: usize,
+    /// Ring buffer of recent values, shape [n_temps][max_lag].
+    ring: Vec<Vec<f32>>,
+    /// Running sum of o, shape [n_temps].
+    sum_o: Vec<f64>,
+    /// Running sum of o², shape [n_temps].
+    sum_o2: Vec<f64>,
+    /// Running sum of o(t)·o(t−δ), shape [n_temps][max_lag+1].
+    sum_prod: Vec<Vec<f64>>,
+    /// Total number of values pushed so far.
+    n_recorded: usize,
+    /// Current position in the ring buffer.
+    ring_pos: usize,
+}
+
+impl AutocorrAccum {
+    fn new(max_lag: usize, n_temps: usize) -> Self {
+        Self {
+            max_lag,
+            n_temps,
+            ring: (0..n_temps).map(|_| vec![0.0f32; max_lag]).collect(),
+            sum_o: vec![0.0; n_temps],
+            sum_o2: vec![0.0; n_temps],
+            sum_prod: (0..n_temps).map(|_| vec![0.0; max_lag + 1]).collect(),
+            n_recorded: 0,
+            ring_pos: 0,
+        }
+    }
+
+    #[allow(clippy::needless_range_loop)]
+    fn push(&mut self, values: &[f64]) {
+        let pos = self.ring_pos;
+        let ml = self.max_lag;
+        for t in 0..self.n_temps {
+            let o = values[t] as f32;
+            self.ring[t][pos % ml] = o;
+            self.sum_o[t] += o as f64;
+            self.sum_o2[t] += (o as f64) * (o as f64);
+
+            let n_back = self.n_recorded.min(ml);
+            for delta in 0..=n_back {
+                let idx = if pos >= delta {
+                    pos - delta
+                } else {
+                    pos + ml - delta
+                } % ml;
+                self.sum_prod[t][delta] += o as f64 * self.ring[t][idx] as f64;
+            }
+        }
+        self.n_recorded += 1;
+        self.ring_pos = (pos + 1) % ml;
+    }
+
+    fn finish(&self) -> Vec<Vec<f64>> {
+        let m = self.n_recorded as f64;
+        (0..self.n_temps)
+            .map(|t| {
+                let mean = self.sum_o[t] / m;
+                let var = self.sum_o2[t] / m - mean * mean;
+                (0..=self.max_lag)
+                    .map(|delta| {
+                        let count = self.n_recorded.saturating_sub(delta) as f64;
+                        if count <= 0.0 || var <= 0.0 {
+                            return if delta == 0 { 1.0 } else { 0.0 };
+                        }
+                        (self.sum_prod[t][delta] / count - mean * mean) / var
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+}
+
 /// Mutable state for one disorder realization.
 ///
 /// Holds the coupling array (fixed after construction), spin configurations for
@@ -209,6 +288,29 @@ pub fn run_sweep_loop(
     let mut overlap2_stat = Statistics::new(n_temps, 1);
     let mut overlap4_stat = Statistics::new(n_temps, 1);
 
+    let n_measurement_sweeps = n_sweeps.saturating_sub(warmup_sweeps);
+    let ac_max_lag = config
+        .autocorrelation_max_lag
+        .map(|k| k.min(n_measurement_sweeps / 4).max(1));
+    let mut m2_accum = ac_max_lag.map(|k| AutocorrAccum::new(k, n_temps));
+    let mut q2_accum = if ac_max_lag.is_some() && n_pairs > 0 {
+        ac_max_lag.map(|k| AutocorrAccum::new(k, n_temps))
+    } else {
+        None
+    };
+    let collect_ac = ac_max_lag.is_some();
+    let collect_q2_ac = q2_accum.is_some();
+    let mut m2_ac_buf = if collect_ac {
+        vec![0.0f64; n_temps]
+    } else {
+        vec![]
+    };
+    let mut q2_ac_buf = if collect_q2_ac {
+        vec![0.0f64; n_temps]
+    } else {
+        vec![]
+    };
+
     let mut mags_buf = vec![0.0f32; n_temps];
     let mut mags2_buf = vec![0.0f32; n_temps];
     let mut mags4_buf = vec![0.0f32; n_temps];
@@ -303,6 +405,10 @@ pub fn run_sweep_loop(
                 energies_buf[t] = 0.0;
             }
 
+            if collect_ac {
+                m2_ac_buf.fill(0.0);
+            }
+
             for r in 0..n_replicas {
                 let offset = r * n_temps;
                 for t in 0..n_temps {
@@ -320,11 +426,29 @@ pub fn run_sweep_loop(
                     energies_buf[t] = real.energies[system_id];
                 }
 
+                if collect_ac {
+                    for t in 0..n_temps {
+                        m2_ac_buf[t] += mags2_buf[t] as f64;
+                    }
+                }
+
                 mags_stat.update(&mags_buf);
                 mags2_stat.update(&mags2_buf);
                 mags4_stat.update(&mags4_buf);
                 energies_stat.update(&energies_buf);
                 energies2_stat.update(&energies_buf);
+            }
+
+            if let Some(ref mut acc) = m2_accum {
+                let inv = 1.0 / n_replicas as f64;
+                for v in m2_ac_buf.iter_mut() {
+                    *v *= inv;
+                }
+                acc.push(&m2_ac_buf);
+            }
+
+            if collect_q2_ac {
+                q2_ac_buf.fill(0.0);
             }
 
             for pair_idx in 0..n_pairs {
@@ -352,9 +476,23 @@ pub fn run_sweep_loop(
                     overlaps4_buf[t] = q2 * q2;
                 }
 
+                if collect_q2_ac {
+                    for t in 0..n_temps {
+                        q2_ac_buf[t] += overlaps2_buf[t] as f64;
+                    }
+                }
+
                 overlap_stat.update(&overlaps_buf);
                 overlap2_stat.update(&overlaps2_buf);
                 overlap4_stat.update(&overlaps4_buf);
+            }
+
+            if let Some(ref mut acc) = q2_accum {
+                let inv = 1.0 / n_pairs as f64;
+                for v in q2_ac_buf.iter_mut() {
+                    *v *= inv;
+                }
+                acc.push(&q2_ac_buf);
             }
         }
 
@@ -461,6 +599,15 @@ pub fn run_sweep_loop(
         vec![]
     };
 
+    let mags2_autocorrelation = m2_accum
+        .as_ref()
+        .map(|acc| acc.finish())
+        .unwrap_or_default();
+    let overlap2_autocorrelation = q2_accum
+        .as_ref()
+        .map(|acc| acc.finish())
+        .unwrap_or_default();
+
     Ok(SweepResult {
         mags: mags_stat.average(),
         mags2: mags2_stat.average(),
@@ -485,6 +632,8 @@ pub fn run_sweep_loop(
         fk_csd: fk_csd_accum,
         overlap_csd: overlap_csd_accum,
         top_cluster_sizes,
+        mags2_autocorrelation,
+        overlap2_autocorrelation,
     })
 }
 

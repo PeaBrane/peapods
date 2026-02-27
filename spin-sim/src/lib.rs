@@ -38,6 +38,7 @@
 //!     }),
 //!     pt_interval: Some(1),
 //!     overlap_cluster: None,
+//!     autocorrelation_max_lag: None,
 //! };
 //!
 //! use std::sync::atomic::AtomicBool;

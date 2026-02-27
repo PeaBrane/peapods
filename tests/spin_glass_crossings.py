@@ -5,12 +5,10 @@ from pathlib import Path
 import numpy as np
 
 from peapods import Ising
-from utils import assert_crossing, plot_crossing
+from utils import TC_EA_3D, assert_crossing, plot_crossing
 
 OUT_DIR = Path(__file__).parent
 N_SWEEPS = 10000
-
-TC_EA_3D = 1.102
 
 
 def spin_glass_3d():

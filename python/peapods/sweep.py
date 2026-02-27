@@ -24,10 +24,10 @@ def _size_label(shape):
 
 
 def _validate_combo(coupling, build_mode, ou_mode, oc_update_interval):
-    if ou_mode == "free" and build_mode != "cmr":
+    if ou_mode == "free" and build_mode not in ("cmr", "cmr3"):
         return (
             False,
-            f"free update requires cmr, got overlap_cluster_build_mode={build_mode}",
+            f"free update requires cmr or cmr3, got overlap_cluster_build_mode={build_mode}",
         )
     if build_mode != "houdayer" and oc_update_interval is None:
         return (
@@ -50,6 +50,10 @@ def _save_data(models, config_label, temperatures, output_dir):
             save_dict[f"{prefix}_mean_cluster_size"] = model.mean_cluster_size
         if hasattr(model, "top_cluster_sizes"):
             save_dict[f"{prefix}_top_cluster_sizes"] = model.top_cluster_sizes
+        if hasattr(model, "mags2_autocorr"):
+            save_dict[f"{prefix}_mags2_tau"] = model.mags2_autocorrelation_time()
+        if hasattr(model, "overlap2_autocorr"):
+            save_dict[f"{prefix}_overlap2_tau"] = model.overlap2_autocorrelation_time()
 
     path = Path(output_dir) / f"sweep_{config_label}.npz"
     np.savez(path, **save_dict)
@@ -126,6 +130,64 @@ def _plot_csd(model, size_label, config_label, temperatures, output_dir):
     print(f"  Plot saved to {path}")
 
 
+def _plot_autocorrelation_time(all_results, temperatures, plot_temp, output_dir):
+    import matplotlib.pyplot as plt
+
+    if plot_temp is not None:
+        t_idx = int(np.argmin(np.abs(temperatures - plot_temp)))
+        t_actual = temperatures[t_idx]
+    else:
+        t_idx = None
+
+    for obs_name, attr, tau_method in [
+        ("m2", "mags2_autocorr", "mags2_autocorrelation_time"),
+        ("q2", "overlap2_autocorr", "overlap2_autocorrelation_time"),
+    ]:
+        has_any = any(
+            hasattr(m, attr) for models in all_results.values() for m in models.values()
+        )
+        if not has_any:
+            continue
+
+        fig, ax = plt.subplots(figsize=(6, 4))
+        for config_label, models in all_results.items():
+            sizes_L = []
+            taus = []
+            for size_label, model in models.items():
+                if not hasattr(model, attr):
+                    continue
+                tau_arr = getattr(model, tau_method)()
+                L = max(model.lattice_shape)
+                sizes_L.append(L)
+                if t_idx is not None:
+                    taus.append(tau_arr[t_idx])
+                else:
+                    taus.append(tau_arr[np.argmax(tau_arr)])
+            if sizes_L:
+                order = np.argsort(sizes_L)
+                ax.plot(
+                    np.array(sizes_L)[order],
+                    np.array(taus)[order],
+                    "o-",
+                    label=config_label,
+                )
+
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel("$L$")
+        ax.set_ylabel(rf"$\tau_{{\mathrm{{int}}}}({obs_name})$")
+        ax.legend()
+        if t_idx is not None:
+            ax.set_title(rf"$\tau({obs_name})$ vs $L$ at $T={t_actual:.4f}$")
+        else:
+            ax.set_title(rf"$\tau({obs_name})$ vs $L$ (peak $T$)")
+
+        path = Path(output_dir) / f"tau_{obs_name}.png"
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Plot saved to {path}")
+
+
 def run_sweep(
     sizes,
     *,
@@ -147,6 +209,8 @@ def run_sweep(
     warmup_ratio=0.25,
     collect_csd=False,
     collect_top_clusters=False,
+    autocorrelation_max_lag=None,
+    autocorrelation_plot_temp=None,
     save_plots=False,
     save_data=False,
     output_dir=".",
@@ -235,6 +299,7 @@ def run_sweep(
                 collect_csd=collect_csd,
                 overlap_update_mode=ou_mode,
                 collect_top_clusters=collect_top_clusters,
+                autocorrelation_max_lag=autocorrelation_max_lag,
             )
             elapsed = time.perf_counter() - t0
             print(f"  {elapsed:.2f}s")
@@ -253,6 +318,11 @@ def run_sweep(
                 for slabel, model in models.items():
                     if hasattr(model, "fk_csd"):
                         _plot_csd(model, slabel, label, temperatures, output_dir)
+
+    if save_plots and autocorrelation_max_lag is not None:
+        _plot_autocorrelation_time(
+            all_results, temperatures, autocorrelation_plot_temp, output_dir
+        )
 
     wall_total = time.perf_counter() - wall_start
     print(f"\nSweep complete: {total_runs} runs in {wall_total:.1f}s")
