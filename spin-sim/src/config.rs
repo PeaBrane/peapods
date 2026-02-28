@@ -42,14 +42,13 @@ impl TryFrom<&str> for ClusterMode {
 pub enum OverlapClusterBuildMode {
     Houdayer,
     Jorg,
-    Cmr,
-    Cmr3,
+    Cmr(usize),
 }
 
 impl OverlapClusterBuildMode {
     pub fn group_size(&self) -> usize {
         match self {
-            Self::Cmr3 => 3,
+            Self::Cmr(n) => *n,
             _ => 2,
         }
     }
@@ -61,10 +60,18 @@ impl TryFrom<&str> for OverlapClusterBuildMode {
         match s {
             "houdayer" => Ok(Self::Houdayer),
             "jorg" => Ok(Self::Jorg),
-            "cmr" => Ok(Self::Cmr),
-            "cmr3" => Ok(Self::Cmr3),
+            "cmr" | "cmr2" => Ok(Self::Cmr(2)),
+            _ if s.starts_with("cmr") => {
+                let n: usize = s[3..].parse().map_err(|_| {
+                    format!("invalid CMR group size in '{s}', expected 'cmrN' with integer N >= 2")
+                })?;
+                if n < 2 {
+                    return Err(format!("CMR group size must be >= 2, got {n}"));
+                }
+                Ok(Self::Cmr(n))
+            }
             _ => Err(format!(
-                "unknown overlap_cluster_build_mode '{s}', expected 'houdayer', 'jorg', 'cmr', or 'cmr3'"
+                "unknown overlap_cluster_build_mode '{s}', expected 'houdayer', 'jorg', or 'cmrN'"
             )),
         }
     }
@@ -98,18 +105,17 @@ pub struct ClusterConfig {
 
 fn validate_overlap_cluster_config(cfg: &OverlapClusterConfig) -> Result<(), ValidationError> {
     if cfg.update_mode == OverlapUpdateMode::Free
-        && !matches!(
-            cfg.mode,
-            OverlapClusterBuildMode::Cmr | OverlapClusterBuildMode::Cmr3
-        )
+        && !matches!(cfg.mode, OverlapClusterBuildMode::Cmr(_))
     {
         return Err(ValidationError::new(
-            "overlap_update_mode 'free' requires overlap_cluster_build_mode 'cmr' or 'cmr3'",
+            "overlap_update_mode 'free' requires overlap_cluster_build_mode 'cmr'",
         ));
     }
-    if cfg.mode == OverlapClusterBuildMode::Cmr3 && cfg.update_mode != OverlapUpdateMode::Free {
+    if matches!(cfg.mode, OverlapClusterBuildMode::Cmr(n) if n >= 3)
+        && cfg.update_mode != OverlapUpdateMode::Free
+    {
         return Err(ValidationError::new(
-            "overlap_cluster_build_mode 'cmr3' requires overlap_update_mode 'free'",
+            "overlap_cluster_build_mode 'cmrN' (N >= 3) requires overlap_update_mode 'free'",
         ));
     }
     Ok(())
