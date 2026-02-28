@@ -8,7 +8,7 @@ use crate::config::{OverlapClusterBuildMode, OverlapUpdateMode, SimConfig, Sweep
 use crate::geometry::Lattice;
 use crate::statistics::{
     sokal_tau, AutocorrAccum, ClusterStats, Diagnostics, EquilDiagnosticAccum, Statistics,
-    SweepResult,
+    SweepResult, OVERLAP_HIST_BINS,
 };
 use crate::{clusters, mcmc, spins};
 use rayon::prelude::*;
@@ -130,6 +130,14 @@ pub fn run_sweep_loop(
     };
     let mut diag_e_buf = if equil_diag {
         vec![0.0f32; n_temps]
+    } else {
+        vec![]
+    };
+
+    let mut overlap_hist: Vec<Vec<u64>> = if n_pairs > 0 {
+        (0..n_temps)
+            .map(|_| vec![0u64; OVERLAP_HIST_BINS])
+            .collect()
     } else {
         vec![]
     };
@@ -333,6 +341,9 @@ pub fn run_sweep_loop(
                     overlaps_buf[t] = q;
                     overlaps2_buf[t] = q2;
                     overlaps4_buf[t] = q2 * q2;
+                    let bin = (((q + 1.0) * 0.5 * OVERLAP_HIST_BINS as f32) as usize)
+                        .min(OVERLAP_HIST_BINS - 1);
+                    overlap_hist[t][bin] += 1;
                 }
 
                 if collect_q2_ac {
@@ -491,6 +502,7 @@ pub fn run_sweep_loop(
         } else {
             vec![]
         },
+        overlap_histogram: overlap_hist,
         cluster_stats: ClusterStats {
             fk_csd: fk_csd_accum,
             overlap_csd: overlap_csd_accum,

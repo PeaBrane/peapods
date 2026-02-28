@@ -215,6 +215,9 @@ class Ising:
             self.overlap4 = result["overlap4"]
             self.sg_binder = 1 - self.overlap4 / (3 * self.overlap2**2)
 
+        if "overlap_histogram" in result:
+            self.overlap_histogram = result["overlap_histogram"]
+
         if "fk_csd" in result:
             self.fk_csd = result["fk_csd"]
             mcs = np.empty(self.n_temps)

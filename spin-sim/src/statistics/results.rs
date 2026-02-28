@@ -1,5 +1,7 @@
 use super::equilibration::EquilCheckpoint;
 
+pub const OVERLAP_HIST_BINS: usize = 200;
+
 pub struct ClusterStats {
     /// FK cluster size histogram per temperature: `hist[s]` = count of size-`s` clusters.
     pub fk_csd: Vec<Vec<u64>>,
@@ -43,6 +45,9 @@ pub struct SweepResult {
     pub overlap2: Vec<f64>,
     /// ⟨q⁴⟩.
     pub overlap4: Vec<f64>,
+    /// Overlap histogram P(q) per temperature: `[n_temps][OVERLAP_HIST_BINS]`.
+    /// Empty when `n_pairs == 0`.
+    pub overlap_histogram: Vec<Vec<u64>>,
     pub cluster_stats: ClusterStats,
     pub diagnostics: Diagnostics,
 }
@@ -53,6 +58,7 @@ impl SweepResult {
         let n = results.len() as f64;
         let n_temps = results[0].mags.len();
         let n_overlap = results[0].overlap.len();
+        let n_overlap_hist = results[0].overlap_histogram.len();
         let n_fk_csd = results[0].cluster_stats.fk_csd.len();
         let n_ov_csd = results[0].cluster_stats.overlap_csd.len();
 
@@ -82,6 +88,9 @@ impl SweepResult {
             overlap: vec![0.0; n_overlap],
             overlap2: vec![0.0; n_overlap],
             overlap4: vec![0.0; n_overlap],
+            overlap_histogram: (0..n_overlap_hist)
+                .map(|_| vec![0u64; OVERLAP_HIST_BINS])
+                .collect(),
             cluster_stats: ClusterStats {
                 fk_csd: (0..n_fk_csd).map(|_| vec![0u64; fk_len]).collect(),
                 overlap_csd: (0..n_ov_csd).map(|_| vec![0u64; ov_len]).collect(),
@@ -124,6 +133,15 @@ impl SweepResult {
             }
             for (a, &v) in agg.overlap4.iter_mut().zip(r.overlap4.iter()) {
                 *a += v;
+            }
+            for (a, s) in agg
+                .overlap_histogram
+                .iter_mut()
+                .zip(r.overlap_histogram.iter())
+            {
+                for (ah, &sh) in a.iter_mut().zip(s.iter()) {
+                    *ah += sh;
+                }
             }
             for (a, s) in agg
                 .cluster_stats
