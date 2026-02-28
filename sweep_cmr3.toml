@@ -6,8 +6,8 @@ sizes = [[6, 6, 6], [8, 8, 8], [12, 12, 12]]
 couplings = ["bimodal"]
 
 [temperatures]
-min = 0.1
-max = 5.0
+min = 0.4
+max = 3.0
 count = 16
 scale = "log"
 
@@ -32,10 +32,6 @@ update_modes = ["free"]
 
 [diagnostics]
 equilibration_diagnostic = true
-
-[diagnostics.autocorrelation]
-max_lag = 10000
-plot_temp = 1.102
 
 [output]
 save_data = true
