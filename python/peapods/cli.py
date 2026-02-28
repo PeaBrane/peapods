@@ -76,6 +76,11 @@ def _add_common_args(parser):
         default=None,
         help="Max lag for streaming autocorrelation of m² and q²",
     )
+    parser.add_argument(
+        "--equilibration-diagnostic",
+        action="store_true",
+        help="Track energy + link-overlap running averages for equilibration check",
+    )
 
 
 def add_simulation_args(parser):
@@ -164,6 +169,12 @@ def _add_sweep_common_args(parser):
         type=int,
         default=None,
         help="Max lag for streaming autocorrelation of m² and q²",
+    )
+    parser.add_argument(
+        "--equilibration-diagnostic",
+        action="store_true",
+        default=None,
+        help="Track energy + link-overlap running averages for equilibration check",
     )
     parser.add_argument(
         "--sequential",
@@ -268,6 +279,7 @@ def sample_kwargs(args):
         overlap_update_mode=args.overlap_update_mode,
         collect_top_clusters=args.collect_top_clusters,
         autocorrelation_max_lag=args.autocorrelation_max_lag,
+        equilibration_diagnostic=args.equilibration_diagnostic,
     )
 
 
@@ -302,6 +314,7 @@ _SWEEP_DEFAULTS = dict(
     collect_top_clusters=False,
     autocorrelation_max_lag=None,
     autocorrelation_plot_temp=None,
+    equilibration_diagnostic=False,
     save_plots=False,
     save_data=False,
     output_dir=".",
@@ -395,6 +408,8 @@ def _load_sweep_config(path):
                 kw["autocorrelation_max_lag"] = ac["max_lag"]
             if "plot_temp" in ac:
                 kw["autocorrelation_plot_temp"] = ac["plot_temp"]
+        if "equilibration_diagnostic" in d:
+            kw["equilibration_diagnostic"] = d["equilibration_diagnostic"]
 
     if "output" in cfg:
         o = cfg["output"]
@@ -438,6 +453,7 @@ def run_sweep_cli(args):
         "collect_top_clusters": args.collect_top_clusters,
         "autocorrelation_max_lag": args.autocorrelation_max_lag,
         "autocorrelation_plot_temp": args.autocorrelation_plot_temp,
+        "equilibration_diagnostic": args.equilibration_diagnostic,
         "save_plots": args.save_plots,
         "save_data": args.save_data,
         "output_dir": args.output_dir,
@@ -497,6 +513,7 @@ def run_sweep_cli(args):
         collect_top_clusters=kw["collect_top_clusters"],
         autocorrelation_max_lag=kw["autocorrelation_max_lag"],
         autocorrelation_plot_temp=kw["autocorrelation_plot_temp"],
+        equilibration_diagnostic=kw["equilibration_diagnostic"],
         save_plots=kw["save_plots"],
         save_data=kw["save_data"],
         output_dir=kw["output_dir"],
@@ -543,6 +560,7 @@ def run_simulate(args):
         **sample_kwargs(args),
         warmup_ratio=args.warmup_ratio,
         collect_csd=args.collect_csd,
+        equilibration_diagnostic=args.equilibration_diagnostic,
     )
 
     has_overlap = hasattr(model, "sg_binder")

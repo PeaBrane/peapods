@@ -106,6 +106,7 @@ impl IsingSimulation {
         collect_top_clusters=None,
         autocorrelation_max_lag=None,
         sequential=None,
+        equilibration_diagnostic=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn sample<'py>(
@@ -125,6 +126,7 @@ impl IsingSimulation {
         collect_top_clusters: Option<bool>,
         autocorrelation_max_lag: Option<usize>,
         sequential: Option<bool>,
+        equilibration_diagnostic: Option<bool>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let warmup = warmup_ratio.unwrap_or(0.25);
         let warmup_sweeps = (n_sweeps as f64 * warmup).round() as usize;
@@ -180,6 +182,7 @@ impl IsingSimulation {
             overlap_cluster,
             autocorrelation_max_lag,
             sequential: sequential.unwrap_or(false),
+            equilibration_diagnostic: equilibration_diagnostic.unwrap_or(false),
         };
 
         let n_replicas = self.n_replicas;
@@ -246,8 +249,14 @@ impl IsingSimulation {
             dict.set_item("overlap4", Array1::from(agg.overlap4).into_pyarray(py))?;
         }
 
-        if agg.fk_csd.iter().any(|h| h.iter().any(|&c| c > 0)) {
+        if agg
+            .cluster_stats
+            .fk_csd
+            .iter()
+            .any(|h| h.iter().any(|&c| c > 0))
+        {
             let csd_py: Vec<_> = agg
+                .cluster_stats
                 .fk_csd
                 .into_iter()
                 .map(|hist| Array1::from(hist).into_pyarray(py))
@@ -255,8 +264,14 @@ impl IsingSimulation {
             dict.set_item("fk_csd", csd_py)?;
         }
 
-        if agg.overlap_csd.iter().any(|h| h.iter().any(|&c| c > 0)) {
+        if agg
+            .cluster_stats
+            .overlap_csd
+            .iter()
+            .any(|h| h.iter().any(|&c| c > 0))
+        {
             let csd_py: Vec<_> = agg
+                .cluster_stats
                 .overlap_csd
                 .into_iter()
                 .map(|hist| Array1::from(hist).into_pyarray(py))
@@ -264,21 +279,43 @@ impl IsingSimulation {
             dict.set_item("overlap_csd", csd_py)?;
         }
 
-        if !agg.top_cluster_sizes.is_empty() {
-            let arr = Array2::from_shape_fn((n_temps, 4), |(t, k)| agg.top_cluster_sizes[t][k])
-                .into_pyarray(py);
+        if !agg.cluster_stats.top_cluster_sizes.is_empty() {
+            let arr = Array2::from_shape_fn((n_temps, 4), |(t, k)| {
+                agg.cluster_stats.top_cluster_sizes[t][k]
+            })
+            .into_pyarray(py);
             dict.set_item("top_cluster_sizes", arr)?;
         }
 
-        if !agg.mags2_tau.is_empty() {
-            dict.set_item("mags2_tau", Array1::from(agg.mags2_tau).into_pyarray(py))?;
+        if !agg.diagnostics.mags2_tau.is_empty() {
+            dict.set_item(
+                "mags2_tau",
+                Array1::from(agg.diagnostics.mags2_tau).into_pyarray(py),
+            )?;
         }
 
-        if !agg.overlap2_tau.is_empty() {
+        if !agg.diagnostics.overlap2_tau.is_empty() {
             dict.set_item(
                 "overlap2_tau",
-                Array1::from(agg.overlap2_tau).into_pyarray(py),
+                Array1::from(agg.diagnostics.overlap2_tau).into_pyarray(py),
             )?;
+        }
+
+        let ckpts = &agg.diagnostics.equil_checkpoints;
+        if !ckpts.is_empty() {
+            let n_ckpts = ckpts.len();
+            let equil_sweeps: Vec<u64> = ckpts.iter().map(|c| c.sweep as u64).collect();
+            dict.set_item("equil_sweeps", Array1::from(equil_sweeps).into_pyarray(py))?;
+
+            let equil_energy_avg =
+                Array2::from_shape_fn((n_ckpts, n_temps), |(i, t)| ckpts[i].energy_avg[t])
+                    .into_pyarray(py);
+            dict.set_item("equil_energy_avg", equil_energy_avg)?;
+
+            let equil_link_overlap_avg =
+                Array2::from_shape_fn((n_ckpts, n_temps), |(i, t)| ckpts[i].link_overlap_avg[t])
+                    .into_pyarray(py);
+            dict.set_item("equil_link_overlap_avg", equil_link_overlap_avg)?;
         }
 
         Ok(dict)

@@ -54,6 +54,12 @@ def _save_data(models, config_label, temperatures, output_dir):
             save_dict[f"{prefix}_mags2_tau"] = model.mags2_tau
         if hasattr(model, "overlap2_tau"):
             save_dict[f"{prefix}_overlap2_tau"] = model.overlap2_tau
+        if hasattr(model, "_equil_sweeps"):
+            save_dict[f"{prefix}_equil_sweeps"] = model._equil_sweeps
+            save_dict[f"{prefix}_equil_energy_avg"] = model._equil_energy_avg
+            save_dict[f"{prefix}_equil_link_overlap_avg"] = (
+                model._equil_link_overlap_avg
+            )
 
     path = Path(output_dir) / f"sweep_{config_label}.npz"
     np.savez(path, **save_dict)
@@ -211,6 +217,7 @@ def run_sweep(
     collect_top_clusters=False,
     autocorrelation_max_lag=None,
     autocorrelation_plot_temp=None,
+    equilibration_diagnostic=False,
     save_plots=False,
     save_data=False,
     output_dir=".",
@@ -302,6 +309,7 @@ def run_sweep(
                 collect_top_clusters=collect_top_clusters,
                 autocorrelation_max_lag=autocorrelation_max_lag,
                 sequential=sequential,
+                equilibration_diagnostic=equilibration_diagnostic,
             )
             elapsed = time.perf_counter() - t0
             print(f"  {elapsed:.2f}s")

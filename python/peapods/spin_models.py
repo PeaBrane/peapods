@@ -131,6 +131,7 @@ class Ising:
         collect_top_clusters=False,
         autocorrelation_max_lag=None,
         sequential=False,
+        equilibration_diagnostic=False,
     ):
         """Run Monte Carlo sampling and compute observables.
 
@@ -193,6 +194,7 @@ class Ising:
             collect_top_clusters=collect_top_clusters,
             autocorrelation_max_lag=autocorrelation_max_lag,
             sequential=sequential,
+            equilibration_diagnostic=equilibration_diagnostic,
         )
         self.mags = result["mags"]
         self.mags2 = result["mags2"]
@@ -231,7 +233,31 @@ class Ising:
         if "overlap2_tau" in result:
             self.overlap2_tau = result["overlap2_tau"]
 
+        if "equil_sweeps" in result:
+            self._equil_sweeps = result["equil_sweeps"]
+            self._equil_energy_avg = result["equil_energy_avg"]
+            self._equil_link_overlap_avg = result["equil_link_overlap_avg"]
+
         return result
+
+    def equilibration_delta(self, j_squared=1.0):
+        """Compute equilibration diagnostic Δ(t) = e(t) + J²β z (1 - q_l(t)).
+
+        Δ approaches zero as the system thermalizes (Zhu et al. 2015).
+
+        Args:
+            j_squared: Average squared coupling ⟨J²⟩. 1.0 for ferromagnets and
+                bimodal spin glasses, Var(J) for Gaussian.
+
+        Returns:
+            Tuple of (sweeps, delta) where sweeps has shape ``(n_checkpoints,)``
+            and delta has shape ``(n_checkpoints, n_temps)``.
+        """
+        beta = 1.0 / self.temperatures
+        delta = self._equil_energy_avg + j_squared * beta * self.n_neighbors * (
+            1 - self._equil_link_overlap_avg
+        )
+        return self._equil_sweeps, delta
 
     def get_energies(self):
         """Return the mean energies per temperature from the last sample run."""

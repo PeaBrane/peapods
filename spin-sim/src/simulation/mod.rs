@@ -1,218 +1,18 @@
+pub mod realization;
+
+pub use realization::Realization;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::config::{OverlapClusterBuildMode, OverlapUpdateMode, SimConfig, SweepMode};
 use crate::geometry::Lattice;
-use crate::statistics::{Statistics, SweepResult};
+use crate::statistics::{
+    sokal_tau, AutocorrAccum, ClusterStats, Diagnostics, EquilDiagnosticAccum, Statistics,
+    SweepResult,
+};
 use crate::{clusters, mcmc, spins};
-use rand::{Rng, SeedableRng};
-use rand_xoshiro::Xoshiro256StarStar;
 use rayon::prelude::*;
 use validator::Validate;
-
-/// Streaming autocorrelation accumulator using a ring buffer.
-///
-/// Computes the normalized autocorrelation function Γ(δ) for a per-temperature
-/// time series without storing the full history. Memory is O(max_lag × n_temps).
-struct AutocorrAccum {
-    max_lag: usize,
-    n_temps: usize,
-    /// Ring buffer of recent values, shape [n_temps][max_lag].
-    ring: Vec<Vec<f32>>,
-    /// Running sum of o, shape [n_temps].
-    sum_o: Vec<f64>,
-    /// Running sum of o², shape [n_temps].
-    sum_o2: Vec<f64>,
-    /// Running sum of o(t)·o(t−δ), shape [n_temps][max_lag+1].
-    sum_prod: Vec<Vec<f64>>,
-    /// Total number of values pushed so far.
-    n_recorded: usize,
-    /// Current position in the ring buffer.
-    ring_pos: usize,
-}
-
-impl AutocorrAccum {
-    fn new(max_lag: usize, n_temps: usize) -> Self {
-        Self {
-            max_lag,
-            n_temps,
-            ring: (0..n_temps).map(|_| vec![0.0f32; max_lag]).collect(),
-            sum_o: vec![0.0; n_temps],
-            sum_o2: vec![0.0; n_temps],
-            sum_prod: (0..n_temps).map(|_| vec![0.0; max_lag + 1]).collect(),
-            n_recorded: 0,
-            ring_pos: 0,
-        }
-    }
-
-    #[allow(clippy::needless_range_loop)]
-    fn push(&mut self, values: &[f64]) {
-        let pos = self.ring_pos;
-        let ml = self.max_lag;
-        for t in 0..self.n_temps {
-            let o = values[t] as f32;
-            self.ring[t][pos % ml] = o;
-            self.sum_o[t] += o as f64;
-            self.sum_o2[t] += (o as f64) * (o as f64);
-
-            let n_back = self.n_recorded.min(ml);
-            for delta in 0..=n_back {
-                let idx = if pos >= delta {
-                    pos - delta
-                } else {
-                    pos + ml - delta
-                } % ml;
-                self.sum_prod[t][delta] += o as f64 * self.ring[t][idx] as f64;
-            }
-        }
-        self.n_recorded += 1;
-        self.ring_pos = (pos + 1) % ml;
-    }
-
-    fn finish(&self) -> Vec<Vec<f64>> {
-        let m = self.n_recorded as f64;
-        (0..self.n_temps)
-            .map(|t| {
-                let mean = self.sum_o[t] / m;
-                let var = self.sum_o2[t] / m - mean * mean;
-                (0..=self.max_lag)
-                    .map(|delta| {
-                        let count = self.n_recorded.saturating_sub(delta) as f64;
-                        if count <= 0.0 || var <= 0.0 {
-                            return if delta == 0 { 1.0 } else { 0.0 };
-                        }
-                        (self.sum_prod[t][delta] / count - mean * mean) / var
-                    })
-                    .collect()
-            })
-            .collect()
-    }
-}
-
-fn sokal_tau(gamma: &[f64]) -> f64 {
-    let mut tau = 0.5;
-    for (w, &g) in gamma.iter().enumerate().skip(1) {
-        tau += g;
-        if w as f64 >= 5.0 * tau {
-            return tau;
-        }
-    }
-    tau
-}
-
-/// Mutable state for one disorder realization.
-///
-/// Holds the coupling array (fixed after construction), spin configurations for
-/// every replica at every temperature, and bookkeeping for parallel tempering.
-///
-/// With `n_replicas` replicas and `n_temps` temperatures there are
-/// `n_systems = n_replicas * n_temps` independent spin configurations.
-/// Spins are stored in a single flat `Vec` of length `n_systems * n_spins`,
-/// where system `i` occupies `spins[i*n_spins .. (i+1)*n_spins]`.
-pub struct Realization {
-    /// Forward couplings, length `n_spins * n_neighbors`.
-    pub couplings: Vec<f32>,
-    /// All spin configurations, length `n_systems * n_spins` (+1/−1).
-    pub spins: Vec<i8>,
-    /// Temperature assigned to each system slot, length `n_systems`.
-    pub temperatures: Vec<f32>,
-    /// Parallel-tempering permutation: `system_ids[slot]` is the system index
-    /// currently occupying temperature slot `slot`.
-    pub system_ids: Vec<usize>,
-    /// One PRNG per system.
-    pub rngs: Vec<Xoshiro256StarStar>,
-    /// One PRNG per overlap-update pair slot, length `n_temps * (n_replicas / 2)`.
-    pub pair_rngs: Vec<Xoshiro256StarStar>,
-    /// Cached total energy per system (E / N), length `n_systems`.
-    pub energies: Vec<f32>,
-}
-
-impl Realization {
-    /// Initialize a realization with random ±1 spins.
-    ///
-    /// Seeds replica RNGs deterministically as `base_seed, base_seed+1, …`.
-    pub fn new(
-        lattice: &Lattice,
-        couplings: Vec<f32>,
-        temps: &[f32],
-        n_replicas: usize,
-        base_seed: u64,
-    ) -> Self {
-        let n_spins = lattice.n_spins;
-        let n_temps = temps.len();
-        let n_systems = n_replicas * n_temps;
-
-        let temperatures = temps.repeat(n_replicas);
-
-        let mut rngs = Vec::with_capacity(n_systems);
-        for i in 0..n_systems {
-            rngs.push(Xoshiro256StarStar::seed_from_u64(base_seed + i as u64));
-        }
-
-        let mut spins = vec![0i8; n_systems * n_spins];
-        for (i, rng) in rngs.iter_mut().enumerate() {
-            for j in 0..n_spins {
-                spins[i * n_spins + j] = if rng.gen::<f32>() < 0.5 { -1 } else { 1 };
-            }
-        }
-
-        let system_ids: Vec<usize> = (0..n_systems).collect();
-
-        let n_pairs = n_replicas / 2;
-        let mut pair_rngs = Vec::with_capacity(n_temps * n_pairs);
-        for i in 0..n_temps * n_pairs {
-            pair_rngs.push(Xoshiro256StarStar::seed_from_u64(
-                base_seed + n_systems as u64 + i as u64,
-            ));
-        }
-
-        let (energies, _) =
-            spins::energy::compute_energies(lattice, &spins, &couplings, n_systems, false);
-
-        Self {
-            couplings,
-            spins,
-            temperatures,
-            system_ids,
-            rngs,
-            pair_rngs,
-            energies,
-        }
-    }
-
-    /// Re-randomize all spins and reset the tempering permutation.
-    pub fn reset(&mut self, lattice: &Lattice, n_replicas: usize, n_temps: usize, base_seed: u64) {
-        let n_spins = lattice.n_spins;
-        let n_systems = n_replicas * n_temps;
-
-        for i in 0..n_systems {
-            self.rngs[i] = Xoshiro256StarStar::seed_from_u64(base_seed + i as u64);
-            for j in 0..n_spins {
-                self.spins[i * n_spins + j] = if self.rngs[i].gen::<f32>() < 0.5 {
-                    -1
-                } else {
-                    1
-                };
-            }
-        }
-
-        self.system_ids = (0..n_systems).collect();
-
-        let n_pairs = n_replicas / 2;
-        for i in 0..n_temps * n_pairs {
-            self.pair_rngs[i] =
-                Xoshiro256StarStar::seed_from_u64(base_seed + n_systems as u64 + i as u64);
-        }
-
-        let (energies, _) = spins::energy::compute_energies(
-            lattice,
-            &self.spins,
-            &self.couplings,
-            n_systems,
-            false,
-        );
-        self.energies = energies;
-    }
-}
 
 /// Run the full Monte Carlo loop (warmup + measurement) for one [`Realization`].
 ///
@@ -322,6 +122,18 @@ pub fn run_sweep_loop(
         vec![]
     };
 
+    let equil_diag = config.equilibration_diagnostic;
+    let mut equil_accum = if equil_diag {
+        Some(EquilDiagnosticAccum::new(n_temps, n_sweeps))
+    } else {
+        None
+    };
+    let mut diag_e_buf = if equil_diag {
+        vec![0.0f32; n_temps]
+    } else {
+        vec![]
+    };
+
     let mut mags_buf = vec![0.0f32; n_temps];
     let mut mags2_buf = vec![0.0f32; n_temps];
     let mut mags4_buf = vec![0.0f32; n_temps];
@@ -401,7 +213,7 @@ pub fn run_sweep_loop(
             .pt_interval
             .is_some_and(|interval| sweep_id % interval == 0);
 
-        if record || pt_this_sweep {
+        if record || pt_this_sweep || equil_diag {
             (real.energies, _) = spins::energy::compute_energies(
                 lattice,
                 &real.spins,
@@ -409,6 +221,39 @@ pub fn run_sweep_loop(
                 n_systems,
                 false,
             );
+        }
+
+        if equil_diag {
+            diag_e_buf.fill(0.0);
+            #[allow(clippy::needless_range_loop)]
+            for r in 0..n_replicas {
+                let offset = r * n_temps;
+                for t in 0..n_temps {
+                    let system_id = real.system_ids[offset + t];
+                    diag_e_buf[t] += real.energies[system_id];
+                }
+            }
+            let inv = 1.0 / n_replicas as f32;
+            for v in diag_e_buf.iter_mut() {
+                *v *= inv;
+            }
+
+            let link_overlaps = if n_pairs > 0 {
+                spins::energy::compute_link_overlaps(
+                    lattice,
+                    &real.spins,
+                    &real.system_ids,
+                    n_replicas,
+                    n_temps,
+                )
+            } else {
+                vec![0.0f32; n_temps]
+            };
+
+            equil_accum
+                .as_mut()
+                .unwrap()
+                .push(&diag_e_buf, &link_overlaps);
         }
 
         if record {
@@ -623,6 +468,8 @@ pub fn run_sweep_loop(
         .map(|acc| acc.finish().iter().map(|g| sokal_tau(g)).collect())
         .unwrap_or_default();
 
+    let equil_checkpoints = equil_accum.map(|acc| acc.finish()).unwrap_or_default();
+
     Ok(SweepResult {
         mags: mags_stat.average(),
         mags2: mags2_stat.average(),
@@ -644,11 +491,16 @@ pub fn run_sweep_loop(
         } else {
             vec![]
         },
-        fk_csd: fk_csd_accum,
-        overlap_csd: overlap_csd_accum,
-        top_cluster_sizes,
-        mags2_tau,
-        overlap2_tau,
+        cluster_stats: ClusterStats {
+            fk_csd: fk_csd_accum,
+            overlap_csd: overlap_csd_accum,
+            top_cluster_sizes,
+        },
+        diagnostics: Diagnostics {
+            mags2_tau,
+            overlap2_tau,
+            equil_checkpoints,
+        },
     })
 }
 
