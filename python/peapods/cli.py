@@ -10,7 +10,6 @@ from peapods import Ising
 from peapods.sweep import run_sweep
 
 COUPLING_CHOICES = ["ferro", "bimodal", "gaussian"]
-BUILD_MODE_CHOICES = ["houdayer", "jorg", "cmr", "cmr3"]
 OVERLAP_UPDATE_CHOICES = ["swap", "free"]
 OVERLAP_CLUSTER_CHOICES = ["wolff", "sw"]
 
@@ -100,7 +99,6 @@ def add_simulation_args(parser):
     parser.add_argument(
         "--overlap-cluster-build-mode",
         default="houdayer",
-        choices=BUILD_MODE_CHOICES,
     )
     parser.add_argument(
         "--overlap-cluster-mode", default="wolff", choices=OVERLAP_CLUSTER_CHOICES
@@ -210,7 +208,6 @@ def _add_sweep_args(parser):
         "--overlap-cluster-build-mode",
         nargs="+",
         default=None,
-        choices=BUILD_MODE_CHOICES,
     )
     parser.add_argument(
         "--overlap-cluster-mode",
