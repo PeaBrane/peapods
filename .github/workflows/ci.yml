@@ -105,3 +105,6 @@ jobs:
 
       - name: Binder crossings (spin glass)
         run: source .venv/bin/activate && cd tests && python spin_glass_crossings.py
+
+      - name: Overlap histogram P(q)
+        run: source .venv/bin/activate && cd tests && python overlap_histogram.py
