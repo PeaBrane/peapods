@@ -50,6 +50,9 @@ def _save_data(models, config_label, temperatures, output_dir):
             save_dict[f"{prefix}_mean_cluster_size"] = model.mean_cluster_size
         if hasattr(model, "top_cluster_sizes"):
             save_dict[f"{prefix}_top_cluster_sizes"] = model.top_cluster_sizes
+        if hasattr(model, "overlap_histogram"):
+            hist = np.array([h for h in model.overlap_histogram])
+            save_dict[f"{prefix}_overlap_histogram"] = hist
         if hasattr(model, "mags2_tau"):
             save_dict[f"{prefix}_mags2_tau"] = model.mags2_tau
         if hasattr(model, "overlap2_tau"):
@@ -131,6 +134,36 @@ def _plot_csd(model, size_label, config_label, temperatures, output_dir):
     ax.set_title(f"CSD — {size_label}, {config_label}")
 
     path = Path(output_dir) / f"csd_{size_label}_{config_label}.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Plot saved to {path}")
+
+
+def _plot_overlap_histogram(model, size_label, config_label, temperatures, output_dir):
+    import matplotlib.pyplot as plt
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+
+    n_bins = len(model.overlap_histogram[0])
+    bin_edges = np.linspace(-1, 1, n_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    norm = Normalize(vmin=temperatures.min(), vmax=temperatures.max())
+    cmap = plt.get_cmap("viridis")
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    for t_idx, hist in enumerate(model.overlap_histogram):
+        total = hist.sum()
+        if total == 0:
+            continue
+        pq = hist / total / (bin_edges[1] - bin_edges[0])
+        ax.plot(bin_centers, pq, color=cmap(norm(temperatures[t_idx])), alpha=0.7)
+    fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), ax=ax, label="Temperature")
+    ax.set_xlabel("$q$")
+    ax.set_ylabel("$P(q)$")
+    ax.set_title(f"Overlap distribution — {size_label}, {config_label}")
+
+    path = Path(output_dir) / f"pq_{size_label}_{config_label}.png"
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  Plot saved to {path}")
@@ -324,6 +357,11 @@ def run_sweep(
         if save_plots:
             _plot_binder(models, label, temperatures, output_dir)
             _plot_heat_capacity(models, label, temperatures, output_dir)
+            for slabel, model in models.items():
+                if hasattr(model, "overlap_histogram"):
+                    _plot_overlap_histogram(
+                        model, slabel, label, temperatures, output_dir
+                    )
             if collect_csd:
                 for slabel, model in models.items():
                     if hasattr(model, "fk_csd"):

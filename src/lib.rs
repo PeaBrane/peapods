@@ -249,6 +249,15 @@ impl IsingSimulation {
             dict.set_item("overlap4", Array1::from(agg.overlap4).into_pyarray(py))?;
         }
 
+        if !agg.overlap_histogram.is_empty() {
+            let hist_py: Vec<_> = agg
+                .overlap_histogram
+                .into_iter()
+                .map(|hist| Array1::from(hist).into_pyarray(py))
+                .collect();
+            dict.set_item("overlap_histogram", hist_py)?;
+        }
+
         if agg
             .cluster_stats
             .fk_csd
