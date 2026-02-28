@@ -3,7 +3,7 @@
 
 [lattice]
 sizes = [[6, 6, 6], [8, 8, 8], [12, 12, 12]]
-couplings = ["bimodal"]
+couplings = ["gaussian"]
 
 [temperatures]
 min = 0.4
