@@ -24,10 +24,10 @@ def _size_label(shape):
 
 
 def _validate_combo(coupling, build_mode, ou_mode, oc_update_interval):
-    if ou_mode == "free" and build_mode not in ("cmr", "cmr3"):
+    if ou_mode == "free" and not build_mode.startswith("cmr"):
         return (
             False,
-            f"free update requires cmr or cmr3, got overlap_cluster_build_mode={build_mode}",
+            f"free update requires cmr, got overlap_cluster_build_mode={build_mode}",
         )
     if build_mode != "houdayer" and oc_update_interval is None:
         return (

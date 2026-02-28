@@ -52,13 +52,19 @@ pub fn run_sweep_loop(
             .map_or((false, true), |h| match h.mode {
                 OverlapClusterBuildMode::Houdayer => (false, true),
                 OverlapClusterBuildMode::Jorg => (true, true),
-                OverlapClusterBuildMode::Cmr | OverlapClusterBuildMode::Cmr3 => (true, false),
+                OverlapClusterBuildMode::Cmr(_) => (true, false),
             });
 
     let group_size = config
         .overlap_cluster
         .as_ref()
         .map_or(2, |h| h.mode.group_size());
+
+    if config.overlap_cluster.is_some() && n_replicas < group_size {
+        return Err(format!(
+            "overlap cluster requires n_replicas >= group_size ({n_replicas} < {group_size})"
+        ));
+    }
 
     let free_assign = config
         .overlap_cluster
@@ -367,7 +373,7 @@ pub fn run_sweep_loop(
         }
 
         if let Some(ref oc_cfg) = config.overlap_cluster {
-            if sweep_id % oc_cfg.interval == 0 && n_replicas >= group_size {
+            if sweep_id % oc_cfg.interval == 0 {
                 let ov_csd_out = if oc_cfg.collect_csd && record {
                     for buf in overlap_csd_buf.iter_mut() {
                         buf.fill(0);

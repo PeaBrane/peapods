@@ -156,9 +156,9 @@ class Ising:
             overlap_cluster_update_interval: If set, attempt overlap cluster
                 moves every this many sweeps. Requires `n_replicas >= 2`.
             overlap_cluster_build_mode: Overlap cluster algorithm. `"houdayer"`,
-                `"jorg"`, `"cmr"`, or `"cmr3"` (3-replica CMR with triply
-                satisfied bonds; requires `n_replicas >= 3` and
-                `overlap_update_mode="free"`).
+                `"jorg"`, or `"cmrN"` where N >= 2 is the group size (e.g.
+                `"cmr"`, `"cmr2"`, `"cmr3"`). CMR-N with N >= 3 requires
+                `n_replicas >= N` and `overlap_update_mode="free"`.
             overlap_cluster_mode: Cluster type used inside the overlap move.
                 `"wolff"` or `"sw"`.
             warmup_ratio: Fraction of sweeps discarded as warmup before
@@ -167,8 +167,7 @@ class Ising:
                 distribution.
             overlap_update_mode: How overlap clusters are applied. `"swap"`
                 exchanges spins between replicas; `"free"` independently flips
-                each replica (requires `overlap_cluster_build_mode="cmr"` or
-                `"cmr3"`).
+                each replica (requires `overlap_cluster_build_mode="cmrN"`).
             collect_top_clusters: If `True`, collect average relative sizes of
                 the 4 largest overlap clusters per temperature.
             sequential: If `True`, disable inner-loop parallelism over
@@ -244,20 +243,22 @@ class Ising:
         return result
 
     def equilibration_delta(self, j_squared=1.0):
-        """Compute equilibration diagnostic Δ(t) = e(t) + J²β z (1 - q_l(t)).
+        """Compute equilibration diagnostic Δ(t) = e(t) - J²β z (1 - q_l(t)).
 
         Δ approaches zero as the system thermalizes (Zhu et al. 2015).
+        Note: the Rust energy convention is e = +Σ J s_i s_j / N (no minus
+        sign), so the sign here is flipped relative to the Hamiltonian form.
 
         Args:
-            j_squared: Average squared coupling ⟨J²⟩. 1.0 for ferromagnets and
-                bimodal spin glasses, Var(J) for Gaussian.
+            j_squared: Average squared coupling ⟨J²⟩. 1.0 for bimodal and
+                Gaussian (unit variance) spin glasses.
 
         Returns:
             Tuple of (sweeps, delta) where sweeps has shape ``(n_checkpoints,)``
             and delta has shape ``(n_checkpoints, n_temps)``.
         """
         beta = 1.0 / self.temperatures
-        delta = self._equil_energy_avg + j_squared * beta * self.n_neighbors * (
+        delta = self._equil_energy_avg - j_squared * beta * self.n_neighbors * (
             1 - self._equil_link_overlap_avg
         )
         return self._equil_sweeps, delta

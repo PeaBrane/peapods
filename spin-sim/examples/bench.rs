@@ -46,7 +46,7 @@ fn main() {
         pt_interval: Some(1),
         overlap_cluster: Some(OverlapClusterConfig {
             interval: 1,
-            mode: OverlapClusterBuildMode::Cmr,
+            mode: OverlapClusterBuildMode::Cmr(2),
             cluster_mode: ClusterMode::Sw,
             update_mode: OverlapUpdateMode::Free,
             collect_csd: false,
