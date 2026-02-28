@@ -40,6 +40,7 @@
 //!     overlap_cluster: None,
 //!     autocorrelation_max_lag: None,
 //!     sequential: false,
+//!     equilibration_diagnostic: false,
 //! };
 //!
 //! use std::sync::atomic::AtomicBool;
@@ -63,4 +64,4 @@ mod parallel;
 
 pub use geometry::Lattice;
 pub use simulation::{run_sweep_loop, run_sweep_parallel, Realization};
-pub use statistics::SweepResult;
+pub use statistics::{ClusterStats, Diagnostics, EquilCheckpoint, SweepResult};
