@@ -16,7 +16,7 @@ n_replicas = 3
 n_disorder = 112
 
 [sampling]
-n_sweeps = 40000
+n_sweeps = 1000000
 sweep_mode = "metropolis"
 warmup_ratio = 0.25
 sequential = true
@@ -31,9 +31,10 @@ cluster_mode = "wolff"
 update_modes = ["free"]
 
 [diagnostics]
+equilibration_diagnostic = true
 
 [diagnostics.autocorrelation]
-max_lag = 4000
+max_lag = 10000
 plot_temp = 1.102
 
 [output]
