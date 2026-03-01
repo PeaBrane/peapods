@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "peapods"
-version = "0.1.6"
+version = "0.1.7"
 description = "Ising Monte Carlo: Metropolis, Gibbs, Wolff, Swendsen-Wang, parallel tempering, Houdayer ICM"
 readme = "README.md"
 license = {text = "MIT"}
