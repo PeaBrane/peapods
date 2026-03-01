@@ -15,8 +15,7 @@ def _cumulative_overlap_ratio(per_sample_hist):
     Returns: (q_grid, ratio, x_mean, x_median) where ratio has shape (n_temps, n_q)
     """
     n_bins = per_sample_hist.shape[2]
-    bin_edges = np.linspace(-1, 1, n_bins + 1)
-    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    bin_centers = np.linspace(-1, 1, n_bins)
 
     center = n_bins // 2
     n_disorder, n_temps, _ = per_sample_hist.shape
@@ -180,8 +179,9 @@ def _plot_overlap_histogram(model, size_label, config_label, temperatures, outpu
     from matplotlib.colors import Normalize
 
     n_bins = len(model.overlap_histogram[0])
-    bin_edges = np.linspace(-1, 1, n_bins + 1)
-    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    N = n_bins - 1
+    q_values = np.linspace(-1, 1, n_bins)
+    bin_width = 2.0 / N
 
     norm = Normalize(vmin=temperatures.min(), vmax=temperatures.max())
     cmap = plt.get_cmap("viridis")
@@ -191,8 +191,8 @@ def _plot_overlap_histogram(model, size_label, config_label, temperatures, outpu
         total = hist.sum()
         if total == 0:
             continue
-        pq = hist / total / (bin_edges[1] - bin_edges[0])
-        ax.plot(bin_centers, pq, color=cmap(norm(temperatures[t_idx])), alpha=0.7)
+        pq = hist / total / bin_width
+        ax.plot(q_values, pq, color=cmap(norm(temperatures[t_idx])), alpha=0.7)
     fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), ax=ax, label="Temperature")
     ax.set_xlabel("$q$")
     ax.set_ylabel("$P(q)$")
@@ -306,8 +306,7 @@ def run_sweep(
     overlap_cluster_build_modes=("houdayer",),
     overlap_cluster_modes=("wolff",),
     warmup_ratio=0.25,
-    collect_csd=False,
-    collect_top_clusters=False,
+    collect_cluster_stats=False,
     autocorrelation_max_lag=None,
     autocorrelation_plot_temp=None,
     equilibration_diagnostic=False,
@@ -396,8 +395,7 @@ def run_sweep(
                 overlap_cluster_build_mode=build_mode,
                 overlap_cluster_mode=oc_mode,
                 warmup_ratio=warmup_ratio,
-                collect_csd=collect_csd,
-                collect_top_clusters=collect_top_clusters,
+                collect_cluster_stats=collect_cluster_stats,
                 autocorrelation_max_lag=autocorrelation_max_lag,
                 sequential=sequential,
                 equilibration_diagnostic=equilibration_diagnostic,
@@ -425,7 +423,7 @@ def run_sweep(
                     _plot_cumulative_overlap_ratio(
                         model, slabel, label, temperatures, output_dir
                     )
-            if collect_csd:
+            if collect_cluster_stats:
                 for slabel, model in models.items():
                     if hasattr(model, "fk_csd"):
                         _plot_csd(model, slabel, label, temperatures, output_dir)

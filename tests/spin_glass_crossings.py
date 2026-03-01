@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from peapods import Ising
-from utils import TC_EA_3D, assert_crossing, plot_crossing
+from utils import TC_EA_3D, assert_crossing, assert_overlap_binder, plot_crossing
 
 OUT_DIR = Path(__file__).parent
 N_SWEEPS = 10000
@@ -36,6 +36,7 @@ def spin_glass_3d():
             overlap_cluster_update_interval=1,
             warmup_ratio=0.25,
         )
+        assert_overlap_binder(model)
         results[f"L={L}"] = model.sg_binder
 
     assert_crossing(temps, results, TC_EA_3D, tol=0.3)
@@ -76,6 +77,7 @@ def spin_glass_3d_cmr_free():
             overlap_cluster_mode="sw",
             warmup_ratio=0.25,
         )
+        assert_overlap_binder(model)
         results[f"L={L}"] = model.sg_binder
 
     assert_crossing(temps, results, TC_EA_3D, tol=0.3)
@@ -116,6 +118,7 @@ def spin_glass_3d_houd4():
             overlap_cluster_mode="sw",
             warmup_ratio=0.25,
         )
+        assert_overlap_binder(model)
         results[f"L={L}"] = model.sg_binder
 
     assert_crossing(temps, results, TC_EA_3D, tol=0.3)
@@ -156,6 +159,7 @@ def spin_glass_3d_houd6():
             overlap_cluster_mode="sw",
             warmup_ratio=0.25,
         )
+        assert_overlap_binder(model)
         results[f"L={L}"] = model.sg_binder
 
     assert_crossing(temps, results, TC_EA_3D, tol=0.3)

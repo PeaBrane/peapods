@@ -8,7 +8,7 @@ use crate::config::{OverlapClusterBuildMode, SimConfig, SweepMode};
 use crate::geometry::Lattice;
 use crate::statistics::{
     sokal_tau, AutocorrAccum, ClusterStats, Diagnostics, EquilDiagnosticAccum, Statistics,
-    SweepResult, OVERLAP_HIST_BINS,
+    SweepResult,
 };
 use crate::{clusters, mcmc, spins};
 use rayon::prelude::*;
@@ -80,7 +80,7 @@ pub fn run_sweep_loop(
     let collect_top = config
         .overlap_cluster
         .as_ref()
-        .is_some_and(|h| h.collect_top_clusters)
+        .is_some_and(|h| h.collect_stats)
         && n_pairs > 0;
 
     let mut top4_accum: Vec<[f64; 4]> = vec![[0.0; 4]; n_temps];
@@ -136,9 +136,7 @@ pub fn run_sweep_loop(
     };
 
     let mut overlap_hist: Vec<Vec<u64>> = if n_pairs > 0 {
-        (0..n_temps)
-            .map(|_| vec![0u64; OVERLAP_HIST_BINS])
-            .collect()
+        (0..n_temps).map(|_| vec![0u64; n_spins + 1]).collect()
     } else {
         vec![]
     };
@@ -187,7 +185,7 @@ pub fn run_sweep_loop(
         if do_cluster {
             let cluster_cfg = config.cluster_update.as_ref().unwrap();
             let wolff = cluster_cfg.mode == crate::config::ClusterMode::Wolff;
-            let csd_out = if cluster_cfg.collect_csd && record {
+            let csd_out = if cluster_cfg.collect_stats && record {
                 for buf in sw_csd_buf.iter_mut() {
                     buf.fill(0);
                 }
@@ -208,7 +206,7 @@ pub fn run_sweep_loop(
                 config.sequential,
             );
 
-            if cluster_cfg.collect_csd && record {
+            if cluster_cfg.collect_stats && record {
                 for (slot, buf) in sw_csd_buf.iter().enumerate() {
                     let accum = &mut fk_csd_accum[slot % n_temps];
                     for (a, &b) in accum.iter_mut().zip(buf.iter()) {
@@ -342,9 +340,8 @@ pub fn run_sweep_loop(
                     overlaps_buf[t] = q;
                     overlaps2_buf[t] = q2;
                     overlaps4_buf[t] = q2 * q2;
-                    let bin = (((q + 1.0) * 0.5 * OVERLAP_HIST_BINS as f32) as usize)
-                        .min(OVERLAP_HIST_BINS - 1);
-                    overlap_hist[t][bin] += 1;
+                    let idx = ((dot + n_spins as i64) / 2) as usize;
+                    overlap_hist[t][idx] += 1;
                 }
 
                 if collect_q2_ac {
@@ -369,7 +366,7 @@ pub fn run_sweep_loop(
 
         if let Some(ref oc_cfg) = config.overlap_cluster {
             if sweep_id % oc_cfg.interval == 0 {
-                let ov_csd_out = if oc_cfg.collect_csd && record {
+                let ov_csd_out = if oc_cfg.collect_stats && record {
                     for buf in overlap_csd_buf.iter_mut() {
                         buf.fill(0);
                     }
@@ -405,7 +402,7 @@ pub fn run_sweep_loop(
                     config.sequential,
                 );
 
-                if oc_cfg.collect_csd && record {
+                if oc_cfg.collect_stats && record {
                     for (slot, buf) in overlap_csd_buf.iter().enumerate() {
                         let accum = &mut overlap_csd_accum[slot / n_pairs];
                         for (a, &b) in accum.iter_mut().zip(buf.iter()) {

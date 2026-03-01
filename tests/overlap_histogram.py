@@ -39,20 +39,17 @@ def overlap_histogram_checks():
     print("  <q> ~ 0: PASSED")
 
     # --- P(q) symmetry ---
-    hist = model.overlap_histogram[0]
+    hist = model.overlap_histogram[0].astype(float)
     print(f"  counts = {hist.sum()}")
-    coarse = hist.reshape(20, 10).sum(axis=1).astype(float)
-    left = coarse[:10]
-    right = coarse[10:][::-1]
-    norm = np.linalg.norm(coarse)
-    sym_err = np.linalg.norm(left - right) / norm
-    print(f"  coarse symmetry error = {sym_err:.4f}")
-    assert sym_err < 0.25, f"coarse symmetry error {sym_err:.4f} >= 0.25"
+    norm = np.linalg.norm(hist)
+    sym_err = np.linalg.norm(hist - hist[::-1]) / norm
+    print(f"  symmetry error = {sym_err:.4f}")
+    assert sym_err < 0.25, f"symmetry error {sym_err:.4f} >= 0.25"
     print("  P(q) symmetry: PASSED")
 
     # --- per-sample overlap histogram shape ---
     ps_hist = model.per_sample_overlap_histogram
-    expected = (N_DISORDER, 1, 200)
+    expected = (N_DISORDER, 1, 513)
     assert ps_hist.shape == expected, f"shape {ps_hist.shape} != {expected}"
     print(f"  per_sample_overlap_histogram shape: {ps_hist.shape}: PASSED")
 
