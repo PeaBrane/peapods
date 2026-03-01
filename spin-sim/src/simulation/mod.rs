@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::config::{OverlapClusterBuildMode, SimConfig, SweepMode};
 use crate::geometry::Lattice;
 use crate::statistics::{
-    sokal_tau, AutocorrAccum, ClusterStats, Diagnostics, EquilDiagnosticAccum, Statistics,
-    SweepResult,
+    sokal_tau, AutocorrAccum, ClusterStats, Diagnostics, EquilDiagnosticAccum, OverlapAccum,
+    Statistics, SweepResult,
 };
 use crate::{clusters, mcmc, spins};
 use rayon::prelude::*;
@@ -96,10 +96,6 @@ pub fn run_sweep_loop(
     let mut mags4_stat = Statistics::new(n_temps, 1);
     let mut energies_stat = Statistics::new(n_temps, 1);
     let mut energies2_stat = Statistics::new(n_temps, 2);
-    let mut overlap_stat = Statistics::new(n_temps, 1);
-    let mut overlap2_stat = Statistics::new(n_temps, 1);
-    let mut overlap4_stat = Statistics::new(n_temps, 1);
-
     let n_measurement_sweeps = n_sweeps.saturating_sub(warmup_sweeps);
     let ac_max_lag = config
         .autocorrelation_max_lag
@@ -117,11 +113,6 @@ pub fn run_sweep_loop(
     } else {
         vec![]
     };
-    let mut q2_ac_buf = if collect_q2_ac {
-        vec![0.0f64; n_temps]
-    } else {
-        vec![]
-    };
 
     let equil_diag = config.equilibration_diagnostic;
     let mut equil_accum = if equil_diag {
@@ -135,43 +126,19 @@ pub fn run_sweep_loop(
         vec![]
     };
 
-    let mut link_overlap_stat = Statistics::new(n_temps, 1);
-    let mut link_overlap2_stat = Statistics::new(n_temps, 1);
-    let mut link_overlap4_stat = Statistics::new(n_temps, 1);
-
-    let mut overlap_hist: Vec<Vec<u64>> = if n_pairs > 0 {
-        (0..n_temps).map(|_| vec![0u64; n_spins + 1]).collect()
-    } else {
-        vec![]
-    };
-
-    let mut ql_at_q_sum: Vec<Vec<f64>> = if n_pairs > 0 {
-        (0..n_temps).map(|_| vec![0.0f64; n_spins + 1]).collect()
-    } else {
-        vec![]
-    };
-    let mut ql2_at_q_sum: Vec<Vec<f64>> = if n_pairs > 0 {
-        (0..n_temps).map(|_| vec![0.0f64; n_spins + 1]).collect()
-    } else {
-        vec![]
-    };
-
-    let mut diag_ql_buf = if equil_diag {
-        vec![0.0f32; n_temps]
-    } else {
-        vec![]
-    };
+    let mut ov_accum = OverlapAccum::new(
+        n_temps,
+        n_spins,
+        n_pairs,
+        lattice.n_neighbors,
+        equil_diag,
+        collect_q2_ac,
+    );
 
     let mut mags_buf = vec![0.0f32; n_temps];
     let mut mags2_buf = vec![0.0f32; n_temps];
     let mut mags4_buf = vec![0.0f32; n_temps];
     let mut energies_buf = vec![0.0f32; n_temps];
-    let mut overlaps_buf = vec![0.0f32; n_temps];
-    let mut overlaps2_buf = vec![0.0f32; n_temps];
-    let mut overlaps4_buf = vec![0.0f32; n_temps];
-    let mut link_overlaps_buf = vec![0.0f32; n_temps];
-    let mut link_overlaps2_buf = vec![0.0f32; n_temps];
-    let mut link_overlaps4_buf = vec![0.0f32; n_temps];
 
     for sweep_id in 0..n_sweeps {
         if interrupted.load(Ordering::Relaxed) {
@@ -270,91 +237,8 @@ pub fn run_sweep_loop(
             }
         }
 
-        let need_pairs = (equil_diag || record) && n_pairs > 0;
-
-        if need_pairs {
-            if equil_diag {
-                diag_ql_buf.fill(0.0);
-            }
-            if collect_q2_ac && record {
-                q2_ac_buf.fill(0.0);
-            }
-
-            let n_bonds = n_spins * lattice.n_neighbors;
-
-            for pair_idx in 0..n_pairs {
-                let r_a = 2 * pair_idx;
-                let r_b = 2 * pair_idx + 1;
-
-                for t in 0..n_temps {
-                    let sys_a = real.system_ids[r_a * n_temps + t];
-                    let sys_b = real.system_ids[r_b * n_temps + t];
-                    let base_a = sys_a * n_spins;
-                    let base_b = sys_b * n_spins;
-
-                    let mut dot_spin = 0i64;
-                    let mut dot_link = 0i64;
-                    for j in 0..n_spins {
-                        let sa = real.spins[base_a + j] as i64;
-                        let sb = real.spins[base_b + j] as i64;
-                        dot_spin += sa * sb;
-                        for d in 0..lattice.n_neighbors {
-                            let k = lattice.neighbor_fwd(j, d);
-                            dot_link += (sa * real.spins[base_a + k] as i64)
-                                * (sb * real.spins[base_b + k] as i64);
-                        }
-                    }
-
-                    let ql = dot_link as f32 / n_bonds as f32;
-
-                    if equil_diag {
-                        diag_ql_buf[t] += ql;
-                    }
-                    if !record {
-                        continue;
-                    }
-
-                    let q = dot_spin as f32 / n_spins as f32;
-                    let q2 = q * q;
-                    overlaps_buf[t] = q;
-                    overlaps2_buf[t] = q2;
-                    overlaps4_buf[t] = q2 * q2;
-
-                    let ql2 = ql * ql;
-                    link_overlaps_buf[t] = ql;
-                    link_overlaps2_buf[t] = ql2;
-                    link_overlaps4_buf[t] = ql2 * ql2;
-
-                    let idx = ((dot_spin + n_spins as i64) / 2) as usize;
-                    overlap_hist[t][idx] += 1;
-                    ql_at_q_sum[t][idx] += ql as f64;
-                    ql2_at_q_sum[t][idx] += (ql * ql) as f64;
-                }
-
-                if !record {
-                    continue;
-                }
-
-                if collect_q2_ac {
-                    for t in 0..n_temps {
-                        q2_ac_buf[t] += overlaps2_buf[t] as f64;
-                    }
-                }
-
-                overlap_stat.update(&overlaps_buf);
-                overlap2_stat.update(&overlaps2_buf);
-                overlap4_stat.update(&overlaps4_buf);
-                link_overlap_stat.update(&link_overlaps_buf);
-                link_overlap2_stat.update(&link_overlaps2_buf);
-                link_overlap4_stat.update(&link_overlaps4_buf);
-            }
-
-            if equil_diag {
-                let inv = 1.0 / n_pairs as f32;
-                for v in diag_ql_buf.iter_mut() {
-                    *v *= inv;
-                }
-            }
+        if (equil_diag || record) && n_pairs > 0 {
+            ov_accum.collect(lattice, &real.spins, &real.system_ids, record);
         }
 
         if equil_diag {
@@ -362,7 +246,7 @@ pub fn run_sweep_loop(
                 equil_accum
                     .as_mut()
                     .unwrap()
-                    .push(&diag_e_buf, &diag_ql_buf);
+                    .push(&diag_e_buf, &ov_accum.diag_ql_buf);
             } else {
                 let zeros = vec![0.0f32; n_temps];
                 equil_accum.as_mut().unwrap().push(&diag_e_buf, &zeros);
@@ -421,10 +305,10 @@ pub fn run_sweep_loop(
 
             if let Some(ref mut acc) = q2_accum {
                 let inv = 1.0 / n_pairs as f64;
-                for v in q2_ac_buf.iter_mut() {
+                for v in ov_accum.q2_ac_buf.iter_mut() {
                     *v *= inv;
                 }
-                acc.push(&q2_ac_buf);
+                acc.push(&ov_accum.q2_ac_buf);
             }
         }
 
@@ -548,42 +432,7 @@ pub fn run_sweep_loop(
         mags4: mags4_stat.average(),
         energies: energies_stat.average(),
         energies2: energies2_stat.average(),
-        overlap: if n_pairs > 0 {
-            overlap_stat.average()
-        } else {
-            vec![]
-        },
-        overlap2: if n_pairs > 0 {
-            overlap2_stat.average()
-        } else {
-            vec![]
-        },
-        overlap4: if n_pairs > 0 {
-            overlap4_stat.average()
-        } else {
-            vec![]
-        },
-        link_overlap: if n_pairs > 0 {
-            link_overlap_stat.average()
-        } else {
-            vec![]
-        },
-        link_overlap2: if n_pairs > 0 {
-            link_overlap2_stat.average()
-        } else {
-            vec![]
-        },
-        link_overlap4: if n_pairs > 0 {
-            link_overlap4_stat.average()
-        } else {
-            vec![]
-        },
-        overlap_histogram: overlap_hist,
-        ql_at_q_sum,
-        ql2_at_q_sum,
-        per_sample_overlap_histogram: vec![],
-        per_sample_ql_at_q_sum: vec![],
-        per_sample_ql2_at_q_sum: vec![],
+        overlap_stats: ov_accum.finish(),
         cluster_stats: ClusterStats {
             fk_csd: fk_csd_accum,
             overlap_csd: overlap_csd_accum,

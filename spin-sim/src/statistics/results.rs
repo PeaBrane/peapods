@@ -1,4 +1,5 @@
 use super::equilibration::EquilCheckpoint;
+use super::overlap::OverlapStats;
 
 pub struct ClusterStats {
     /// FK cluster size histogram per temperature: `hist[s]` = count of size-`s` clusters.
@@ -37,37 +38,7 @@ pub struct SweepResult {
     pub energies: Vec<f64>,
     /// ⟨E²⟩.
     pub energies2: Vec<f64>,
-    /// ⟨q⟩ — mean replica overlap.
-    pub overlap: Vec<f64>,
-    /// ⟨q²⟩.
-    pub overlap2: Vec<f64>,
-    /// ⟨q⁴⟩.
-    pub overlap4: Vec<f64>,
-    /// ⟨q_l⟩ — mean link overlap.
-    pub link_overlap: Vec<f64>,
-    /// ⟨q_l²⟩.
-    pub link_overlap2: Vec<f64>,
-    /// ⟨q_l⁴⟩.
-    pub link_overlap4: Vec<f64>,
-    /// Overlap histogram P(q) per temperature: `[n_temps][n_spins + 1]`.
-    /// Bins correspond to dot-product values −N, −N+2, …, N where `idx = (dot + N) / 2`.
-    /// Empty when `n_pairs == 0`.
-    pub overlap_histogram: Vec<Vec<u64>>,
-    /// Conditional sum of q_l at each q bin: `[n_temps][n_spins + 1]`.
-    /// Divide by `overlap_histogram` counts to get ⟨q_l | q⟩.
-    pub ql_at_q_sum: Vec<Vec<f64>>,
-    /// Conditional sum of q_l² at each q bin: `[n_temps][n_spins + 1]`.
-    /// Use with `ql_at_q_sum` and `overlap_histogram` to compute A(q) = Var(q_l | q).
-    pub ql2_at_q_sum: Vec<Vec<f64>>,
-    /// Per-disorder-sample overlap histograms: `[n_disorder][n_temps][n_spins + 1]`.
-    /// Only populated by `aggregate()`; empty for single-realization results.
-    pub per_sample_overlap_histogram: Vec<Vec<Vec<u64>>>,
-    /// Per-disorder-sample conditional sums: `[n_disorder][n_temps][n_spins + 1]`.
-    /// Only populated by `aggregate()`; empty for single-realization results.
-    pub per_sample_ql_at_q_sum: Vec<Vec<Vec<f64>>>,
-    /// Per-disorder-sample conditional sums of squares: `[n_disorder][n_temps][n_spins + 1]`.
-    /// Only populated by `aggregate()`; empty for single-realization results.
-    pub per_sample_ql2_at_q_sum: Vec<Vec<Vec<f64>>>,
+    pub overlap_stats: OverlapStats,
     pub cluster_stats: ClusterStats,
     pub diagnostics: Diagnostics,
 }
@@ -77,8 +48,6 @@ impl SweepResult {
     pub fn aggregate(results: &[Self]) -> Self {
         let n = results.len() as f64;
         let n_temps = results[0].mags.len();
-        let n_overlap = results[0].overlap.len();
-        let n_overlap_hist = results[0].overlap_histogram.len();
         let n_fk_csd = results[0].cluster_stats.fk_csd.len();
         let n_ov_csd = results[0].cluster_stats.overlap_csd.len();
 
@@ -93,15 +62,14 @@ impl SweepResult {
             .first()
             .map_or(0, |v| v.len());
 
-        let n_link = results[0].link_overlap.len();
-        let n_ql_at_q = results[0].ql_at_q_sum.len();
-        let ql_bin_len = results[0].ql_at_q_sum.first().map_or(0, |v| v.len());
-
         let n_top = results[0].cluster_stats.top_cluster_sizes.len();
 
         let m2_tau_len = results[0].diagnostics.mags2_tau.len();
         let q2_tau_len = results[0].diagnostics.overlap2_tau.len();
         let n_ckpts = results[0].diagnostics.equil_checkpoints.len();
+
+        let overlap_stats =
+            OverlapStats::aggregate(&results.iter().map(|r| &r.overlap_stats).collect::<Vec<_>>());
 
         let mut agg = SweepResult {
             mags: vec![0.0; n_temps],
@@ -109,23 +77,7 @@ impl SweepResult {
             mags4: vec![0.0; n_temps],
             energies: vec![0.0; n_temps],
             energies2: vec![0.0; n_temps],
-            overlap: vec![0.0; n_overlap],
-            overlap2: vec![0.0; n_overlap],
-            overlap4: vec![0.0; n_overlap],
-            link_overlap: vec![0.0; n_link],
-            link_overlap2: vec![0.0; n_link],
-            link_overlap4: vec![0.0; n_link],
-            overlap_histogram: (0..n_overlap_hist)
-                .map(|_| vec![0u64; results[0].overlap_histogram[0].len()])
-                .collect(),
-            ql_at_q_sum: (0..n_ql_at_q).map(|_| vec![0.0; ql_bin_len]).collect(),
-            ql2_at_q_sum: (0..n_ql_at_q).map(|_| vec![0.0; ql_bin_len]).collect(),
-            per_sample_overlap_histogram: results
-                .iter()
-                .map(|r| r.overlap_histogram.clone())
-                .collect(),
-            per_sample_ql_at_q_sum: results.iter().map(|r| r.ql_at_q_sum.clone()).collect(),
-            per_sample_ql2_at_q_sum: results.iter().map(|r| r.ql2_at_q_sum.clone()).collect(),
+            overlap_stats,
             cluster_stats: ClusterStats {
                 fk_csd: (0..n_fk_csd).map(|_| vec![0u64; fk_len]).collect(),
                 overlap_csd: (0..n_ov_csd).map(|_| vec![0u64; ov_len]).collect(),
@@ -159,43 +111,6 @@ impl SweepResult {
             }
             for (a, &v) in agg.energies2.iter_mut().zip(r.energies2.iter()) {
                 *a += v;
-            }
-            for (a, &v) in agg.overlap.iter_mut().zip(r.overlap.iter()) {
-                *a += v;
-            }
-            for (a, &v) in agg.overlap2.iter_mut().zip(r.overlap2.iter()) {
-                *a += v;
-            }
-            for (a, &v) in agg.overlap4.iter_mut().zip(r.overlap4.iter()) {
-                *a += v;
-            }
-            for (a, &v) in agg.link_overlap.iter_mut().zip(r.link_overlap.iter()) {
-                *a += v;
-            }
-            for (a, &v) in agg.link_overlap2.iter_mut().zip(r.link_overlap2.iter()) {
-                *a += v;
-            }
-            for (a, &v) in agg.link_overlap4.iter_mut().zip(r.link_overlap4.iter()) {
-                *a += v;
-            }
-            for (a, s) in agg
-                .overlap_histogram
-                .iter_mut()
-                .zip(r.overlap_histogram.iter())
-            {
-                for (ah, &sh) in a.iter_mut().zip(s.iter()) {
-                    *ah += sh;
-                }
-            }
-            for (a, s) in agg.ql_at_q_sum.iter_mut().zip(r.ql_at_q_sum.iter()) {
-                for (ah, &sh) in a.iter_mut().zip(s.iter()) {
-                    *ah += sh;
-                }
-            }
-            for (a, s) in agg.ql2_at_q_sum.iter_mut().zip(r.ql2_at_q_sum.iter()) {
-                for (ah, &sh) in a.iter_mut().zip(s.iter()) {
-                    *ah += sh;
-                }
             }
             for (a, s) in agg
                 .cluster_stats
@@ -269,12 +184,6 @@ impl SweepResult {
             .chain(agg.mags4.iter_mut())
             .chain(agg.energies.iter_mut())
             .chain(agg.energies2.iter_mut())
-            .chain(agg.overlap.iter_mut())
-            .chain(agg.overlap2.iter_mut())
-            .chain(agg.overlap4.iter_mut())
-            .chain(agg.link_overlap.iter_mut())
-            .chain(agg.link_overlap2.iter_mut())
-            .chain(agg.link_overlap4.iter_mut())
         {
             *v /= n;
         }
