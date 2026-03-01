@@ -74,7 +74,6 @@ def spin_glass_3d_cmr_free():
             overlap_cluster_update_interval=1,
             overlap_cluster_build_mode="cmr",
             overlap_cluster_mode="sw",
-            overlap_update_mode="free",
             warmup_ratio=0.25,
         )
         results[f"L={L}"] = model.sg_binder
@@ -115,7 +114,6 @@ def spin_glass_3d_cmr3():
             overlap_cluster_update_interval=1,
             overlap_cluster_build_mode="cmr3",
             overlap_cluster_mode="sw",
-            overlap_update_mode="free",
             warmup_ratio=0.25,
         )
         results[f"L={L}"] = model.sg_binder

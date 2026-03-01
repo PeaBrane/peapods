@@ -4,7 +4,7 @@ pub use realization::Realization;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::config::{OverlapClusterBuildMode, OverlapUpdateMode, SimConfig, SweepMode};
+use crate::config::{OverlapClusterBuildMode, SimConfig, SweepMode};
 use crate::geometry::Lattice;
 use crate::statistics::{
     sokal_tau, AutocorrAccum, ClusterStats, Diagnostics, EquilDiagnosticAccum, Statistics,
@@ -65,11 +65,6 @@ pub fn run_sweep_loop(
             "overlap cluster requires n_replicas >= group_size ({n_replicas} < {group_size})"
         ));
     }
-
-    let free_assign = config
-        .overlap_cluster
-        .as_ref()
-        .is_some_and(|h| h.update_mode == OverlapUpdateMode::Free);
 
     let n_pairs = n_replicas / 2;
 
@@ -404,7 +399,6 @@ pub fn run_sweep_loop(
                     stochastic,
                     restrict_to_negative,
                     overlap_wolff,
-                    free_assign,
                     group_size,
                     ov_csd_out,
                     top4_out,

@@ -102,7 +102,6 @@ impl IsingSimulation {
         overlap_cluster_mode=None,
         warmup_ratio=None,
         collect_csd=None,
-        overlap_update_mode=None,
         collect_top_clusters=None,
         autocorrelation_max_lag=None,
         sequential=None,
@@ -122,7 +121,6 @@ impl IsingSimulation {
         overlap_cluster_mode: Option<&str>,
         warmup_ratio: Option<f64>,
         collect_csd: Option<bool>,
-        overlap_update_mode: Option<&str>,
         collect_top_clusters: Option<bool>,
         autocorrelation_max_lag: Option<usize>,
         sequential: Option<bool>,
@@ -153,20 +151,16 @@ impl IsingSimulation {
             .map(|interval| {
                 let build_mode_str = overlap_cluster_build_mode.unwrap_or("houdayer");
                 let oc_mode_str = overlap_cluster_mode.unwrap_or("wolff");
-                let ou_mode_str = overlap_update_mode.unwrap_or("swap");
 
                 let build_mode = OverlapClusterBuildMode::try_from(build_mode_str)
                     .map_err(pyo3::exceptions::PyValueError::new_err)?;
                 let oc_mode = ClusterMode::try_from(oc_mode_str)
-                    .map_err(pyo3::exceptions::PyValueError::new_err)?;
-                let ou_mode = OverlapUpdateMode::try_from(ou_mode_str)
                     .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
                 Ok::<_, PyErr>(OverlapClusterConfig {
                     interval,
                     mode: build_mode,
                     cluster_mode: oc_mode,
-                    update_mode: ou_mode,
                     collect_csd,
                     collect_top_clusters,
                 })

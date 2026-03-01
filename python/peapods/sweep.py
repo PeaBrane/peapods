@@ -8,12 +8,10 @@ import numpy as np
 from peapods.spin_models import Ising
 
 
-def _config_label(coupling, h_mode, ou_mode, oc_mode):
+def _config_label(coupling, h_mode, oc_mode):
     parts = [coupling]
     if h_mode != "houdayer":
         parts.append(h_mode)
-    if ou_mode != "swap":
-        parts.append(ou_mode)
     if oc_mode != "wolff":
         parts.append(oc_mode)
     return "_".join(parts)
@@ -23,12 +21,7 @@ def _size_label(shape):
     return "x".join(str(s) for s in shape)
 
 
-def _validate_combo(coupling, build_mode, ou_mode, oc_update_interval):
-    if ou_mode == "free" and not build_mode.startswith("cmr"):
-        return (
-            False,
-            f"free update requires cmr, got overlap_cluster_build_mode={build_mode}",
-        )
+def _validate_combo(coupling, build_mode, oc_update_interval):
     if build_mode != "houdayer" and oc_update_interval is None:
         return (
             False,
@@ -244,7 +237,6 @@ def run_sweep(
     overlap_cluster_update_interval=None,
     overlap_cluster_build_modes=("houdayer",),
     overlap_cluster_modes=("wolff",),
-    overlap_update_modes=("swap",),
     warmup_ratio=0.25,
     collect_csd=False,
     collect_top_clusters=False,
@@ -283,32 +275,31 @@ def run_sweep(
         itertools.product(
             couplings,
             overlap_cluster_build_modes,
-            overlap_update_modes,
             overlap_cluster_modes,
         )
     )
 
     total_runs = 0
     valid_combos = []
-    for coupling, build_mode, ou_mode, oc_mode in combos:
+    for coupling, build_mode, oc_mode in combos:
         ok, reason = _validate_combo(
-            coupling, build_mode, ou_mode, overlap_cluster_update_interval
+            coupling, build_mode, overlap_cluster_update_interval
         )
         if not ok:
             print(
-                f"  skip: {_config_label(coupling, build_mode, ou_mode, oc_mode)} — {reason}",
+                f"  skip: {_config_label(coupling, build_mode, oc_mode)} — {reason}",
                 file=sys.stderr,
             )
             continue
-        valid_combos.append((coupling, build_mode, ou_mode, oc_mode))
+        valid_combos.append((coupling, build_mode, oc_mode))
         total_runs += len(sizes)
 
     all_results = {}
     run_idx = 0
     wall_start = time.perf_counter()
 
-    for coupling, build_mode, ou_mode, oc_mode in valid_combos:
-        label = _config_label(coupling, build_mode, ou_mode, oc_mode)
+    for coupling, build_mode, oc_mode in valid_combos:
+        label = _config_label(coupling, build_mode, oc_mode)
         models = {}
 
         for shape in sizes:
@@ -338,7 +329,6 @@ def run_sweep(
                 overlap_cluster_mode=oc_mode,
                 warmup_ratio=warmup_ratio,
                 collect_csd=collect_csd,
-                overlap_update_mode=ou_mode,
                 collect_top_clusters=collect_top_clusters,
                 autocorrelation_max_lag=autocorrelation_max_lag,
                 sequential=sequential,
