@@ -101,8 +101,7 @@ impl IsingSimulation {
         overlap_cluster_build_mode=None,
         overlap_cluster_mode=None,
         warmup_ratio=None,
-        collect_csd=None,
-        collect_top_clusters=None,
+        collect_cluster_stats=None,
         autocorrelation_max_lag=None,
         sequential=None,
         equilibration_diagnostic=None,
@@ -120,16 +119,14 @@ impl IsingSimulation {
         overlap_cluster_build_mode: Option<&str>,
         overlap_cluster_mode: Option<&str>,
         warmup_ratio: Option<f64>,
-        collect_csd: Option<bool>,
-        collect_top_clusters: Option<bool>,
+        collect_cluster_stats: Option<bool>,
         autocorrelation_max_lag: Option<usize>,
         sequential: Option<bool>,
         equilibration_diagnostic: Option<bool>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let warmup = warmup_ratio.unwrap_or(0.25);
         let warmup_sweeps = (n_sweeps as f64 * warmup).round() as usize;
-        let collect_csd = collect_csd.unwrap_or(false);
-        let collect_top_clusters = collect_top_clusters.unwrap_or(false);
+        let collect_cluster_stats = collect_cluster_stats.unwrap_or(false);
 
         let sweep_mode_enum =
             SweepMode::try_from(sweep_mode).map_err(pyo3::exceptions::PyValueError::new_err)?;
@@ -142,7 +139,7 @@ impl IsingSimulation {
                 mode.map(|m| ClusterConfig {
                     interval,
                     mode: m,
-                    collect_csd,
+                    collect_stats: collect_cluster_stats,
                 })
             })
             .transpose()?;
@@ -161,8 +158,7 @@ impl IsingSimulation {
                     interval,
                     mode: build_mode,
                     cluster_mode: oc_mode,
-                    collect_csd,
-                    collect_top_clusters,
+                    collect_stats: collect_cluster_stats,
                 })
             })
             .transpose()?;

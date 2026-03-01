@@ -34,7 +34,7 @@
 //!     cluster_update: Some(ClusterConfig {
 //!         interval: 1,
 //!         mode: ClusterMode::Wolff,
-//!         collect_csd: false,
+//!         collect_stats: false,
 //!     }),
 //!     pt_interval: Some(1),
 //!     overlap_cluster: None,
