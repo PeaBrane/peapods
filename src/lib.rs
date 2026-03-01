@@ -237,6 +237,18 @@ impl IsingSimulation {
             dict.set_item("overlap", Array1::from(agg.overlap).into_pyarray(py))?;
             dict.set_item("overlap2", Array1::from(agg.overlap2).into_pyarray(py))?;
             dict.set_item("overlap4", Array1::from(agg.overlap4).into_pyarray(py))?;
+            dict.set_item(
+                "link_overlap",
+                Array1::from(agg.link_overlap).into_pyarray(py),
+            )?;
+            dict.set_item(
+                "link_overlap2",
+                Array1::from(agg.link_overlap2).into_pyarray(py),
+            )?;
+            dict.set_item(
+                "link_overlap4",
+                Array1::from(agg.link_overlap4).into_pyarray(py),
+            )?;
         }
 
         if !agg.overlap_histogram.is_empty() {
@@ -246,6 +258,20 @@ impl IsingSimulation {
                 .map(|hist| Array1::from(hist).into_pyarray(py))
                 .collect();
             dict.set_item("overlap_histogram", hist_py)?;
+        }
+
+        if !agg.ql_at_q_sum.is_empty() {
+            let n_ql_temps = agg.ql_at_q_sum.len();
+            let n_ql_bins = agg.ql_at_q_sum[0].len();
+            let arr =
+                Array2::from_shape_fn((n_ql_temps, n_ql_bins), |(t, b)| agg.ql_at_q_sum[t][b])
+                    .into_pyarray(py);
+            dict.set_item("ql_at_q_sum", arr)?;
+
+            let arr2 =
+                Array2::from_shape_fn((n_ql_temps, n_ql_bins), |(t, b)| agg.ql2_at_q_sum[t][b])
+                    .into_pyarray(py);
+            dict.set_item("ql2_at_q_sum", arr2)?;
         }
 
         if !agg.per_sample_overlap_histogram.is_empty() {

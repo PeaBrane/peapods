@@ -207,9 +207,19 @@ class Ising:
             self.overlap2 = result["overlap2"]
             self.overlap4 = result["overlap4"]
             self.sg_binder = 1 - self.overlap4 / (3 * self.overlap2**2)
+            self.link_overlap = result["link_overlap"]
+            self.link_overlap2 = result["link_overlap2"]
+            self.link_overlap4 = result["link_overlap4"]
+            self.link_overlap_binder = 1 - self.link_overlap4 / (
+                3 * self.link_overlap2**2
+            )
 
         if "overlap_histogram" in result:
             self.overlap_histogram = result["overlap_histogram"]
+
+        if "ql_at_q_sum" in result:
+            self.ql_at_q_sum = result["ql_at_q_sum"]
+            self.ql2_at_q_sum = result["ql2_at_q_sum"]
 
         if "per_sample_overlap_histogram" in result:
             self.per_sample_overlap_histogram = result["per_sample_overlap_histogram"]
