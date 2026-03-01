@@ -77,25 +77,6 @@ impl TryFrom<&str> for OverlapClusterBuildMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum OverlapUpdateMode {
-    Swap,
-    Free,
-}
-
-impl TryFrom<&str> for OverlapUpdateMode {
-    type Error = String;
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        match s {
-            "swap" => Ok(Self::Swap),
-            "free" => Ok(Self::Free),
-            _ => Err(format!(
-                "unknown overlap_update_mode '{s}', expected 'swap' or 'free'"
-            )),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct ClusterConfig {
     pub interval: usize,
@@ -103,31 +84,11 @@ pub struct ClusterConfig {
     pub collect_csd: bool,
 }
 
-fn validate_overlap_cluster_config(cfg: &OverlapClusterConfig) -> Result<(), ValidationError> {
-    if cfg.update_mode == OverlapUpdateMode::Free
-        && !matches!(cfg.mode, OverlapClusterBuildMode::Cmr(_))
-    {
-        return Err(ValidationError::new(
-            "overlap_update_mode 'free' requires overlap_cluster_build_mode 'cmr'",
-        ));
-    }
-    if matches!(cfg.mode, OverlapClusterBuildMode::Cmr(n) if n >= 3)
-        && cfg.update_mode != OverlapUpdateMode::Free
-    {
-        return Err(ValidationError::new(
-            "overlap_cluster_build_mode 'cmrN' (N >= 3) requires overlap_update_mode 'free'",
-        ));
-    }
-    Ok(())
-}
-
-#[derive(Debug, Validate)]
-#[validate(schema(function = "validate_overlap_cluster_config"))]
+#[derive(Debug)]
 pub struct OverlapClusterConfig {
     pub interval: usize,
     pub mode: OverlapClusterBuildMode,
     pub cluster_mode: ClusterMode,
-    pub update_mode: OverlapUpdateMode,
     pub collect_csd: bool,
     pub collect_top_clusters: bool,
 }
@@ -162,7 +123,6 @@ pub struct SimConfig {
     pub sweep_mode: SweepMode,
     pub cluster_update: Option<ClusterConfig>,
     pub pt_interval: Option<usize>,
-    #[validate]
     pub overlap_cluster: Option<OverlapClusterConfig>,
     pub autocorrelation_max_lag: Option<usize>,
     pub sequential: bool,
