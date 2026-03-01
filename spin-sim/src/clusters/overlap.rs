@@ -5,28 +5,30 @@ use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 use rayon::prelude::*;
 
-/// Overlap cluster update (Houdayer ICM, Jörg, or CMR-N), parallelized over groups.
+/// Overlap cluster update (Houdayer-N, Jörg, or CMR), parallelized over groups.
 ///
 /// For each temperature, shuffles replicas into random groups of `group_size`
-/// (2 for Houdayer/Jörg/CMR, N for CMR-N). For each group, grows a cluster on
+/// (2 for Jörg/CMR, N for Houdayer-N). For each group, grows a cluster on
 /// the overlap subgraph and flips all replicas in the group on cluster sites.
+///
+/// Houdayer-N uses an isoenergetic criterion: a site is "active" (balanced)
+/// when the spin sum across the group is zero. For group_size=2 this reduces
+/// to the standard negative overlap σ₁ ≠ σ₂. For group_size=2k, it requires
+/// a k-k split. Flipping all replicas preserves the balanced multiset, so the
+/// move is isoenergetic — no FK decomposition needed.
 ///
 /// `rngs` has length `n_temps * n_pairs` (one RNG per pair slot, positional).
 /// The first slot's RNG at each temperature is also used for the shuffle.
 /// Since `n_groups = n_replicas / group_size <= n_pairs`, the array is always
 /// large enough.
 ///
-/// When `stochastic` is false (Houdayer), bonds are deterministic (prob=1).
-/// When `stochastic` is true (Jörg/CMR-N), bond activation is
-/// `p = 1 - exp(-4 * J * σ_i * σ_j / T)` on satisfied bonds (group_size=2) or
-/// `p = 1 - exp(-2N * |J| / T)` on N-fold satisfied bonds (group_size=N>=3).
+/// When `stochastic` is false (Houdayer-N), bonds are deterministic (prob=1).
+/// When `stochastic` is true (Jörg/CMR), bond activation is
+/// `p = 1 - exp(-4 * J * σ_i * σ_j / T)` on satisfied bonds (group_size=2).
 ///
-/// **Note:** `group_size >= 3` is experimental and likely does not satisfy
-/// detailed balance. The bond criterion and flip rule are under active revision.
-///
-/// When `restrict_to_negative` is true (Houdayer/Jörg), only negative-overlap
-/// sites are eligible. When false (CMR-N), all same-sign overlap sites are
-/// bonded (group_size=2) or all sites are eligible (group_size>=3).
+/// When `restrict_to_negative` is true (Houdayer-N/Jörg), only active
+/// (balanced) sites are eligible. When false (CMR), all same-sign overlap
+/// sites are bonded.
 ///
 /// When `wolff` is true, uses BFS single-cluster (one seed per group).
 /// When `wolff` is false, uses union-find global decomposition and flips
@@ -91,10 +93,13 @@ pub fn overlap_update(
         let bases: Vec<usize> = systems.iter().map(|&s| s * n_spins).collect();
         let sp_ptr = sp as *mut i8;
 
-        let overlap_sign =
-            |i: usize| -> bool { *sp_ptr.add(bases[0] + i) != *sp_ptr.add(bases[1] + i) };
-
-        let n_bond_coeff = -((2 * group_size) as f32);
+        let is_active = |i: usize| -> bool {
+            let mut sum: i32 = 0;
+            for &base in &bases {
+                sum += *sp_ptr.add(base + i) as i32;
+            }
+            sum == 0
+        };
 
         if use_uf {
             let csd_slot = if has_csd {
@@ -108,45 +113,31 @@ pub fn overlap_update(
                 lattice,
                 |i, d| {
                     let j = lattice.neighbor_fwd(i, d);
-                    if group_size >= 3 {
-                        let coup = couplings[i * n_neighbors + d];
-                        for &base in &bases {
-                            let inter =
-                                *sp_ptr.add(base + i) as f32 * *sp_ptr.add(base + j) as f32 * coup;
-                            if inter <= 0.0 {
-                                return false;
-                            }
-                        }
-                        rng.gen::<f32>() < 1.0 - (n_bond_coeff * coup.abs() / temp).exp()
-                    } else {
-                        if restrict_to_negative {
-                            if !overlap_sign(i) || !overlap_sign(j) {
-                                return false;
-                            }
-                        } else if overlap_sign(i) != overlap_sign(j) {
+                    if restrict_to_negative {
+                        if !is_active(i) || !is_active(j) {
                             return false;
                         }
-                        if !stochastic {
-                            return true;
-                        }
-                        let inter = *sp_ptr.add(bases[0] + i) as f32
-                            * *sp_ptr.add(bases[0] + j) as f32
-                            * couplings[i * n_neighbors + d];
-                        if inter <= 0.0 {
-                            return false;
-                        }
-                        rng.gen::<f32>() < 1.0 - (-4.0 * inter / temp).exp()
+                    } else if is_active(i) != is_active(j) {
+                        return false;
                     }
+                    if !stochastic {
+                        return true;
+                    }
+                    let inter = *sp_ptr.add(bases[0] + i) as f32
+                        * *sp_ptr.add(bases[0] + j) as f32
+                        * couplings[i * n_neighbors + d];
+                    if inter <= 0.0 {
+                        return false;
+                    }
+                    rng.gen::<f32>() < 1.0 - (-4.0 * inter / temp).exp()
                 },
                 csd_slot,
             );
 
             if wolff {
                 let Some(seed) = find_seed(n_spins, rng, |i| {
-                    if group_size >= 3 {
-                        true
-                    } else if restrict_to_negative {
-                        overlap_sign(i)
+                    if restrict_to_negative {
+                        is_active(i)
                     } else {
                         true
                     }
@@ -188,10 +179,8 @@ pub fn overlap_update(
         } else {
             // Pure Wolff without CSD/top4
             let Some(seed) = find_seed(n_spins, rng, |i| {
-                if group_size >= 3 {
-                    true
-                } else if restrict_to_negative {
-                    overlap_sign(i)
+                if restrict_to_negative {
+                    is_active(i)
                 } else {
                     true
                 }
@@ -208,45 +197,28 @@ pub fn overlap_update(
                 &mut in_cluster,
                 &mut stack,
                 |site, nb, d, fwd| {
-                    if group_size >= 3 {
-                        let coup = if fwd {
-                            couplings[site * n_neighbors + d]
-                        } else {
-                            couplings[nb * n_neighbors + d]
-                        };
-                        for &base in &bases {
-                            let inter = *sp_ptr.add(base + site) as f32
-                                * *sp_ptr.add(base + nb) as f32
-                                * coup;
-                            if inter <= 0.0 {
-                                return false;
-                            }
-                        }
-                        rng.gen::<f32>() < 1.0 - (n_bond_coeff * coup.abs() / temp).exp()
-                    } else {
-                        if restrict_to_negative {
-                            if !overlap_sign(nb) {
-                                return false;
-                            }
-                        } else if overlap_sign(site) != overlap_sign(nb) {
+                    if restrict_to_negative {
+                        if !is_active(nb) {
                             return false;
                         }
-                        if !stochastic {
-                            return true;
-                        }
-                        let coupling = if fwd {
-                            couplings[site * n_neighbors + d]
-                        } else {
-                            couplings[nb * n_neighbors + d]
-                        };
-                        let inter = *sp_ptr.add(bases[0] + site) as f32
-                            * *sp_ptr.add(bases[0] + nb) as f32
-                            * coupling;
-                        if inter <= 0.0 {
-                            return false;
-                        }
-                        rng.gen::<f32>() < 1.0 - (-4.0 * inter / temp).exp()
+                    } else if is_active(site) != is_active(nb) {
+                        return false;
                     }
+                    if !stochastic {
+                        return true;
+                    }
+                    let coupling = if fwd {
+                        couplings[site * n_neighbors + d]
+                    } else {
+                        couplings[nb * n_neighbors + d]
+                    };
+                    let inter = *sp_ptr.add(bases[0] + site) as f32
+                        * *sp_ptr.add(bases[0] + nb) as f32
+                        * coupling;
+                    if inter <= 0.0 {
+                        return false;
+                    }
+                    rng.gen::<f32>() < 1.0 - (-4.0 * inter / temp).exp()
                 },
             );
 

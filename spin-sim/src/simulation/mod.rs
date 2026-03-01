@@ -50,9 +50,9 @@ pub fn run_sweep_loop(
             .overlap_cluster
             .as_ref()
             .map_or((false, true), |h| match h.mode {
-                OverlapClusterBuildMode::Houdayer => (false, true),
+                OverlapClusterBuildMode::Houdayer(_) => (false, true),
                 OverlapClusterBuildMode::Jorg => (true, true),
-                OverlapClusterBuildMode::Cmr(_) => (true, false),
+                OverlapClusterBuildMode::Cmr => (true, false),
             });
 
     let group_size = config

@@ -40,15 +40,15 @@ impl TryFrom<&str> for ClusterMode {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OverlapClusterBuildMode {
-    Houdayer,
+    Houdayer(usize),
     Jorg,
-    Cmr(usize),
+    Cmr,
 }
 
 impl OverlapClusterBuildMode {
     pub fn group_size(&self) -> usize {
         match self {
-            Self::Cmr(n) => *n,
+            Self::Houdayer(n) => *n,
             _ => 2,
         }
     }
@@ -58,20 +58,24 @@ impl TryFrom<&str> for OverlapClusterBuildMode {
     type Error = String;
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         match s {
-            "houdayer" => Ok(Self::Houdayer),
+            "houdayer" | "houd2" => Ok(Self::Houdayer(2)),
             "jorg" => Ok(Self::Jorg),
-            "cmr" | "cmr2" => Ok(Self::Cmr(2)),
-            _ if s.starts_with("cmr") => {
-                let n: usize = s[3..].parse().map_err(|_| {
-                    format!("invalid CMR group size in '{s}', expected 'cmrN' with integer N >= 2")
+            "cmr" | "cmr2" => Ok(Self::Cmr),
+            _ if s.starts_with("houd") => {
+                let n: usize = s[4..].parse().map_err(|_| {
+                    format!(
+                        "invalid Houdayer group size in '{s}', expected 'houdN' with even integer N >= 2"
+                    )
                 })?;
-                if n < 2 {
-                    return Err(format!("CMR group size must be >= 2, got {n}"));
+                if n < 2 || !n.is_multiple_of(2) {
+                    return Err(format!(
+                        "Houdayer group size must be even and >= 2, got {n}"
+                    ));
                 }
-                Ok(Self::Cmr(n))
+                Ok(Self::Houdayer(n))
             }
             _ => Err(format!(
-                "unknown overlap_cluster_build_mode '{s}', expected 'houdayer', 'jorg', or 'cmrN'"
+                "unknown overlap_cluster_build_mode '{s}', expected 'houdayer', 'houdN', 'jorg', or 'cmr'"
             )),
         }
     }

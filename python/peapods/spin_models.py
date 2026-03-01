@@ -154,11 +154,12 @@ class Ising:
                 sweeps.
             overlap_cluster_update_interval: If set, attempt overlap cluster
                 moves every this many sweeps. Requires `n_replicas >= 2`.
-            overlap_cluster_build_mode: Overlap cluster algorithm. `"houdayer"`,
-                `"jorg"`, or `"cmrN"` where N >= 2 is the group size (e.g.
-                `"cmr"`, `"cmr2"`, `"cmr3"`). CMR-N with N >= 3 requires
-                `n_replicas >= N`. **Note:** N >= 3 is experimental and likely
-                does not satisfy detailed balance; under active revision.
+            overlap_cluster_build_mode: Overlap cluster algorithm. `"houdayer"`
+                (deterministic, group_size=2), `"houdN"` where N is even >= 2
+                (e.g. `"houd4"`, `"houd6"` — isoenergetic balanced-site
+                criterion, requires `n_replicas >= N`), `"jorg"` (stochastic
+                FK bonds, group_size=2), or `"cmr"` (stochastic, unrestricted,
+                group_size=2).
             overlap_cluster_mode: Cluster type used inside the overlap move.
                 `"wolff"` or `"sw"`.
             warmup_ratio: Fraction of sweeps discarded as warmup before
