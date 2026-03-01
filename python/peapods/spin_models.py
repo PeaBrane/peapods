@@ -224,6 +224,10 @@ class Ising:
         if "per_sample_overlap_histogram" in result:
             self.per_sample_overlap_histogram = result["per_sample_overlap_histogram"]
 
+        if "per_sample_ql_at_q_sum" in result:
+            self.per_sample_ql_at_q_sum = result["per_sample_ql_at_q_sum"]
+            self.per_sample_ql2_at_q_sum = result["per_sample_ql2_at_q_sum"]
+
         if "fk_csd" in result:
             self.fk_csd = result["fk_csd"]
             mcs = np.empty(self.n_temps)

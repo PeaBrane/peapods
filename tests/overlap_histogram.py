@@ -60,6 +60,32 @@ def overlap_histogram_checks():
     assert abs(final_delta) < 0.15, f"|Δ| = {abs(final_delta):.4f} >= 0.15"
     print("  thermalization Δ ~ 0: PASSED")
 
+    # --- A(q) = Var(q_l | q) small in paramagnetic phase ---
+    ps_hist_f = ps_hist.astype(float)
+    ps_s1 = model.per_sample_ql_at_q_sum
+    ps_s2 = model.per_sample_ql2_at_q_sum
+    assert ps_s1.shape == expected, (
+        f"per_sample_ql_at_q_sum shape {ps_s1.shape} != {expected}"
+    )
+    print(f"  per_sample_ql_at_q_sum shape: {ps_s1.shape}: PASSED")
+
+    mask = ps_hist_f > 0
+    mean_ql = np.where(mask, ps_s1 / np.where(mask, ps_hist_f, 1), 0)
+    a_s = np.where(mask, ps_s2 / np.where(mask, ps_hist_f, 1) - mean_ql**2, 0)
+    # disorder average weighted by counts: A(q) = Σ_s n_s A_s / Σ_s n_s
+    numer = (ps_hist_f * a_s).sum(axis=0)  # (n_temps, n_bins)
+    denom = ps_hist_f.sum(axis=0)
+    valid = denom > 0
+    a_q = np.where(valid, numer / np.where(valid, denom, 1), 0)
+    # weighted average over q bins for a single scalar per temperature
+    a_mean = (a_q * denom).sum(axis=-1) / denom.sum(axis=-1)
+    print(f"  A(q) weighted mean = {a_mean[0]:.6f}")
+    assert a_mean[0] >= -1e-6, f"A(q) negative: {a_mean[0]:.6f}"
+    assert a_mean[0] < 0.05, (
+        f"A(q) = {a_mean[0]:.6f} >= 0.05 (should be small in paramagnetic)"
+    )
+    print("  A(q) ~ 0 (paramagnetic): PASSED")
+
     # --- I(q)/X(q) ~ 1 in paramagnetic phase ---
     q_grid, ratio, _, _ = _cumulative_overlap_ratio(ps_hist)
     mid = len(q_grid) // 2

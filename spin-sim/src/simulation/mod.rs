@@ -582,6 +582,8 @@ pub fn run_sweep_loop(
         ql_at_q_sum,
         ql2_at_q_sum,
         per_sample_overlap_histogram: vec![],
+        per_sample_ql_at_q_sum: vec![],
+        per_sample_ql2_at_q_sum: vec![],
         cluster_stats: ClusterStats {
             fk_csd: fk_csd_accum,
             overlap_csd: overlap_csd_accum,

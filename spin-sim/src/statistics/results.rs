@@ -62,6 +62,12 @@ pub struct SweepResult {
     /// Per-disorder-sample overlap histograms: `[n_disorder][n_temps][n_spins + 1]`.
     /// Only populated by `aggregate()`; empty for single-realization results.
     pub per_sample_overlap_histogram: Vec<Vec<Vec<u64>>>,
+    /// Per-disorder-sample conditional sums: `[n_disorder][n_temps][n_spins + 1]`.
+    /// Only populated by `aggregate()`; empty for single-realization results.
+    pub per_sample_ql_at_q_sum: Vec<Vec<Vec<f64>>>,
+    /// Per-disorder-sample conditional sums of squares: `[n_disorder][n_temps][n_spins + 1]`.
+    /// Only populated by `aggregate()`; empty for single-realization results.
+    pub per_sample_ql2_at_q_sum: Vec<Vec<Vec<f64>>>,
     pub cluster_stats: ClusterStats,
     pub diagnostics: Diagnostics,
 }
@@ -118,6 +124,8 @@ impl SweepResult {
                 .iter()
                 .map(|r| r.overlap_histogram.clone())
                 .collect(),
+            per_sample_ql_at_q_sum: results.iter().map(|r| r.ql_at_q_sum.clone()).collect(),
+            per_sample_ql2_at_q_sum: results.iter().map(|r| r.ql2_at_q_sum.clone()).collect(),
             cluster_stats: ClusterStats {
                 fk_csd: (0..n_fk_csd).map(|_| vec![0u64; fk_len]).collect(),
                 overlap_csd: (0..n_ov_csd).map(|_| vec![0u64; ov_len]).collect(),

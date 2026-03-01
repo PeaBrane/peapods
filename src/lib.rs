@@ -287,6 +287,23 @@ impl IsingSimulation {
             dict.set_item("per_sample_overlap_histogram", arr)?;
         }
 
+        if !agg.per_sample_ql_at_q_sum.is_empty() {
+            let n_real = agg.per_sample_ql_at_q_sum.len();
+            let n_ps_temps = agg.per_sample_ql_at_q_sum[0].len();
+            let n_ps_bins = agg.per_sample_ql_at_q_sum[0].first().map_or(0, |v| v.len());
+            let arr = Array3::from_shape_fn((n_real, n_ps_temps, n_ps_bins), |(r, t, b)| {
+                agg.per_sample_ql_at_q_sum[r][t][b]
+            })
+            .into_pyarray(py);
+            dict.set_item("per_sample_ql_at_q_sum", arr)?;
+
+            let arr2 = Array3::from_shape_fn((n_real, n_ps_temps, n_ps_bins), |(r, t, b)| {
+                agg.per_sample_ql2_at_q_sum[r][t][b]
+            })
+            .into_pyarray(py);
+            dict.set_item("per_sample_ql2_at_q_sum", arr2)?;
+        }
+
         if agg
             .cluster_stats
             .fk_csd
