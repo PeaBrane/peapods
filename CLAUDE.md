@@ -1,8 +1,8 @@
 # Project: Peapods
 
 - Build Rust: `VIRTUAL_ENV=.venv .venv/bin/maturin develop --release`
-- Paper PDFs and algorithm notes in `refs/` (gitignored) — see `refs/README.md`
-- When unsure about an algorithm or physics claim, check `refs/` first; only fall back to web search if refs don't cover it
+- Paper PDFs and algorithm notes in `refs/`, own write-ups in `notes/` (both gitignored) — see `refs/README.md`
+- When unsure about an algorithm or physics claim, check `refs/` and `notes/` first; only fall back to web search if they don't cover it
 
 ## Benchmark baseline (v0.1.4, 64x64, 16 temps, 50 sweeps, 128 realizations, Apple Silicon)
 
