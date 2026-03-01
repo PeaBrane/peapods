@@ -1,6 +1,6 @@
 [package]
 name = "spin-sim"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 description = "Ising model Monte Carlo: Metropolis, Gibbs, Wolff, Swendsen-Wang, parallel tempering, Houdayer ICM"
 license = "MIT"
