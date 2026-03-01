@@ -1,14 +1,12 @@
 use super::equilibration::EquilCheckpoint;
 
-pub const OVERLAP_HIST_BINS: usize = 200;
-
 pub struct ClusterStats {
     /// FK cluster size histogram per temperature: `hist[s]` = count of size-`s` clusters.
     pub fk_csd: Vec<Vec<u64>>,
     /// Overlap cluster size histogram per temperature: `hist[s]` = count of size-`s` clusters.
     pub overlap_csd: Vec<Vec<u64>>,
     /// Average relative size of k-th largest blue cluster per temperature.
-    /// Shape: [n_temps][4]. Empty if collect_top_clusters=false.
+    /// Shape: [n_temps][4]. Empty if collect_stats=false.
     pub top_cluster_sizes: Vec<[f64; 4]>,
 }
 
@@ -45,10 +43,11 @@ pub struct SweepResult {
     pub overlap2: Vec<f64>,
     /// ⟨q⁴⟩.
     pub overlap4: Vec<f64>,
-    /// Overlap histogram P(q) per temperature: `[n_temps][OVERLAP_HIST_BINS]`.
+    /// Overlap histogram P(q) per temperature: `[n_temps][n_spins + 1]`.
+    /// Bins correspond to dot-product values −N, −N+2, …, N where `idx = (dot + N) / 2`.
     /// Empty when `n_pairs == 0`.
     pub overlap_histogram: Vec<Vec<u64>>,
-    /// Per-disorder-sample overlap histograms: `[n_disorder][n_temps][OVERLAP_HIST_BINS]`.
+    /// Per-disorder-sample overlap histograms: `[n_disorder][n_temps][n_spins + 1]`.
     /// Only populated by `aggregate()`; empty for single-realization results.
     pub per_sample_overlap_histogram: Vec<Vec<Vec<u64>>>,
     pub cluster_stats: ClusterStats,
@@ -92,7 +91,7 @@ impl SweepResult {
             overlap2: vec![0.0; n_overlap],
             overlap4: vec![0.0; n_overlap],
             overlap_histogram: (0..n_overlap_hist)
-                .map(|_| vec![0u64; OVERLAP_HIST_BINS])
+                .map(|_| vec![0u64; results[0].overlap_histogram[0].len()])
                 .collect(),
             per_sample_overlap_histogram: results
                 .iter()
