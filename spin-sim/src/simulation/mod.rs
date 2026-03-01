@@ -135,8 +135,29 @@ pub fn run_sweep_loop(
         vec![]
     };
 
+    let mut link_overlap_stat = Statistics::new(n_temps, 1);
+    let mut link_overlap2_stat = Statistics::new(n_temps, 1);
+    let mut link_overlap4_stat = Statistics::new(n_temps, 1);
+
     let mut overlap_hist: Vec<Vec<u64>> = if n_pairs > 0 {
         (0..n_temps).map(|_| vec![0u64; n_spins + 1]).collect()
+    } else {
+        vec![]
+    };
+
+    let mut ql_at_q_sum: Vec<Vec<f64>> = if n_pairs > 0 {
+        (0..n_temps).map(|_| vec![0.0f64; n_spins + 1]).collect()
+    } else {
+        vec![]
+    };
+    let mut ql2_at_q_sum: Vec<Vec<f64>> = if n_pairs > 0 {
+        (0..n_temps).map(|_| vec![0.0f64; n_spins + 1]).collect()
+    } else {
+        vec![]
+    };
+
+    let mut diag_ql_buf = if equil_diag {
+        vec![0.0f32; n_temps]
     } else {
         vec![]
     };
@@ -148,6 +169,9 @@ pub fn run_sweep_loop(
     let mut overlaps_buf = vec![0.0f32; n_temps];
     let mut overlaps2_buf = vec![0.0f32; n_temps];
     let mut overlaps4_buf = vec![0.0f32; n_temps];
+    let mut link_overlaps_buf = vec![0.0f32; n_temps];
+    let mut link_overlaps2_buf = vec![0.0f32; n_temps];
+    let mut link_overlaps4_buf = vec![0.0f32; n_temps];
 
     for sweep_id in 0..n_sweeps {
         if interrupted.load(Ordering::Relaxed) {
@@ -244,23 +268,105 @@ pub fn run_sweep_loop(
             for v in diag_e_buf.iter_mut() {
                 *v *= inv;
             }
+        }
 
-            let link_overlaps = if n_pairs > 0 {
-                spins::energy::compute_link_overlaps(
-                    lattice,
-                    &real.spins,
-                    &real.system_ids,
-                    n_replicas,
-                    n_temps,
-                )
+        let need_pairs = (equil_diag || record) && n_pairs > 0;
+
+        if need_pairs {
+            if equil_diag {
+                diag_ql_buf.fill(0.0);
+            }
+            if collect_q2_ac && record {
+                q2_ac_buf.fill(0.0);
+            }
+
+            let n_bonds = n_spins * lattice.n_neighbors;
+
+            for pair_idx in 0..n_pairs {
+                let r_a = 2 * pair_idx;
+                let r_b = 2 * pair_idx + 1;
+
+                for t in 0..n_temps {
+                    let sys_a = real.system_ids[r_a * n_temps + t];
+                    let sys_b = real.system_ids[r_b * n_temps + t];
+                    let base_a = sys_a * n_spins;
+                    let base_b = sys_b * n_spins;
+
+                    let mut dot_spin = 0i64;
+                    let mut dot_link = 0i64;
+                    for j in 0..n_spins {
+                        let sa = real.spins[base_a + j] as i64;
+                        let sb = real.spins[base_b + j] as i64;
+                        dot_spin += sa * sb;
+                        for d in 0..lattice.n_neighbors {
+                            let k = lattice.neighbor_fwd(j, d);
+                            dot_link += (sa * real.spins[base_a + k] as i64)
+                                * (sb * real.spins[base_b + k] as i64);
+                        }
+                    }
+
+                    let ql = dot_link as f32 / n_bonds as f32;
+
+                    if equil_diag {
+                        diag_ql_buf[t] += ql;
+                    }
+                    if !record {
+                        continue;
+                    }
+
+                    let q = dot_spin as f32 / n_spins as f32;
+                    let q2 = q * q;
+                    overlaps_buf[t] = q;
+                    overlaps2_buf[t] = q2;
+                    overlaps4_buf[t] = q2 * q2;
+
+                    let ql2 = ql * ql;
+                    link_overlaps_buf[t] = ql;
+                    link_overlaps2_buf[t] = ql2;
+                    link_overlaps4_buf[t] = ql2 * ql2;
+
+                    let idx = ((dot_spin + n_spins as i64) / 2) as usize;
+                    overlap_hist[t][idx] += 1;
+                    ql_at_q_sum[t][idx] += ql as f64;
+                    ql2_at_q_sum[t][idx] += (ql * ql) as f64;
+                }
+
+                if !record {
+                    continue;
+                }
+
+                if collect_q2_ac {
+                    for t in 0..n_temps {
+                        q2_ac_buf[t] += overlaps2_buf[t] as f64;
+                    }
+                }
+
+                overlap_stat.update(&overlaps_buf);
+                overlap2_stat.update(&overlaps2_buf);
+                overlap4_stat.update(&overlaps4_buf);
+                link_overlap_stat.update(&link_overlaps_buf);
+                link_overlap2_stat.update(&link_overlaps2_buf);
+                link_overlap4_stat.update(&link_overlaps4_buf);
+            }
+
+            if equil_diag {
+                let inv = 1.0 / n_pairs as f32;
+                for v in diag_ql_buf.iter_mut() {
+                    *v *= inv;
+                }
+            }
+        }
+
+        if equil_diag {
+            if n_pairs > 0 {
+                equil_accum
+                    .as_mut()
+                    .unwrap()
+                    .push(&diag_e_buf, &diag_ql_buf);
             } else {
-                vec![0.0f32; n_temps]
-            };
-
-            equil_accum
-                .as_mut()
-                .unwrap()
-                .push(&diag_e_buf, &link_overlaps);
+                let zeros = vec![0.0f32; n_temps];
+                equil_accum.as_mut().unwrap().push(&diag_e_buf, &zeros);
+            }
         }
 
         if record {
@@ -311,48 +417,6 @@ pub fn run_sweep_loop(
                     *v *= inv;
                 }
                 acc.push(&m2_ac_buf);
-            }
-
-            if collect_q2_ac {
-                q2_ac_buf.fill(0.0);
-            }
-
-            for pair_idx in 0..n_pairs {
-                let r_a = 2 * pair_idx;
-                let r_b = 2 * pair_idx + 1;
-                for t in 0..n_temps {
-                    overlaps_buf[t] = 0.0;
-                    overlaps2_buf[t] = 0.0;
-                    overlaps4_buf[t] = 0.0;
-                }
-
-                for t in 0..n_temps {
-                    let sys_a = real.system_ids[r_a * n_temps + t];
-                    let sys_b = real.system_ids[r_b * n_temps + t];
-                    let base_a = sys_a * n_spins;
-                    let base_b = sys_b * n_spins;
-                    let mut dot = 0i64;
-                    for j in 0..n_spins {
-                        dot += (real.spins[base_a + j] as i64) * (real.spins[base_b + j] as i64);
-                    }
-                    let q = dot as f32 / n_spins as f32;
-                    let q2 = q * q;
-                    overlaps_buf[t] = q;
-                    overlaps2_buf[t] = q2;
-                    overlaps4_buf[t] = q2 * q2;
-                    let idx = ((dot + n_spins as i64) / 2) as usize;
-                    overlap_hist[t][idx] += 1;
-                }
-
-                if collect_q2_ac {
-                    for t in 0..n_temps {
-                        q2_ac_buf[t] += overlaps2_buf[t] as f64;
-                    }
-                }
-
-                overlap_stat.update(&overlaps_buf);
-                overlap2_stat.update(&overlaps2_buf);
-                overlap4_stat.update(&overlaps4_buf);
             }
 
             if let Some(ref mut acc) = q2_accum {
@@ -499,7 +563,24 @@ pub fn run_sweep_loop(
         } else {
             vec![]
         },
+        link_overlap: if n_pairs > 0 {
+            link_overlap_stat.average()
+        } else {
+            vec![]
+        },
+        link_overlap2: if n_pairs > 0 {
+            link_overlap2_stat.average()
+        } else {
+            vec![]
+        },
+        link_overlap4: if n_pairs > 0 {
+            link_overlap4_stat.average()
+        } else {
+            vec![]
+        },
         overlap_histogram: overlap_hist,
+        ql_at_q_sum,
+        ql2_at_q_sum,
         per_sample_overlap_histogram: vec![],
         cluster_stats: ClusterStats {
             fk_csd: fk_csd_accum,
