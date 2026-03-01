@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::config::{OverlapClusterBuildMode, SimConfig, SweepMode};
 use crate::geometry::Lattice;
 use crate::statistics::{
-    sokal_tau, AutocorrAccum, ClusterStats, Diagnostics, EquilDiagnosticAccum, Statistics,
-    SweepResult, OVERLAP_HIST_BINS,
+    sokal_tau, AutocorrAccum, ClusterStats, Diagnostics, EquilDiagnosticAccum, OverlapAccum,
+    Statistics, SweepResult,
 };
 use crate::{clusters, mcmc, spins};
 use rayon::prelude::*;
@@ -80,7 +80,7 @@ pub fn run_sweep_loop(
     let collect_top = config
         .overlap_cluster
         .as_ref()
-        .is_some_and(|h| h.collect_top_clusters)
+        .is_some_and(|h| h.collect_stats)
         && n_pairs > 0;
 
     let mut top4_accum: Vec<[f64; 4]> = vec![[0.0; 4]; n_temps];
@@ -96,10 +96,6 @@ pub fn run_sweep_loop(
     let mut mags4_stat = Statistics::new(n_temps, 1);
     let mut energies_stat = Statistics::new(n_temps, 1);
     let mut energies2_stat = Statistics::new(n_temps, 2);
-    let mut overlap_stat = Statistics::new(n_temps, 1);
-    let mut overlap2_stat = Statistics::new(n_temps, 1);
-    let mut overlap4_stat = Statistics::new(n_temps, 1);
-
     let n_measurement_sweeps = n_sweeps.saturating_sub(warmup_sweeps);
     let ac_max_lag = config
         .autocorrelation_max_lag
@@ -117,11 +113,6 @@ pub fn run_sweep_loop(
     } else {
         vec![]
     };
-    let mut q2_ac_buf = if collect_q2_ac {
-        vec![0.0f64; n_temps]
-    } else {
-        vec![]
-    };
 
     let equil_diag = config.equilibration_diagnostic;
     let mut equil_accum = if equil_diag {
@@ -135,21 +126,19 @@ pub fn run_sweep_loop(
         vec![]
     };
 
-    let mut overlap_hist: Vec<Vec<u64>> = if n_pairs > 0 {
-        (0..n_temps)
-            .map(|_| vec![0u64; OVERLAP_HIST_BINS])
-            .collect()
-    } else {
-        vec![]
-    };
+    let mut ov_accum = OverlapAccum::new(
+        n_temps,
+        n_spins,
+        n_pairs,
+        lattice.n_neighbors,
+        equil_diag,
+        collect_q2_ac,
+    );
 
     let mut mags_buf = vec![0.0f32; n_temps];
     let mut mags2_buf = vec![0.0f32; n_temps];
     let mut mags4_buf = vec![0.0f32; n_temps];
     let mut energies_buf = vec![0.0f32; n_temps];
-    let mut overlaps_buf = vec![0.0f32; n_temps];
-    let mut overlaps2_buf = vec![0.0f32; n_temps];
-    let mut overlaps4_buf = vec![0.0f32; n_temps];
 
     for sweep_id in 0..n_sweeps {
         if interrupted.load(Ordering::Relaxed) {
@@ -187,7 +176,7 @@ pub fn run_sweep_loop(
         if do_cluster {
             let cluster_cfg = config.cluster_update.as_ref().unwrap();
             let wolff = cluster_cfg.mode == crate::config::ClusterMode::Wolff;
-            let csd_out = if cluster_cfg.collect_csd && record {
+            let csd_out = if cluster_cfg.collect_stats && record {
                 for buf in sw_csd_buf.iter_mut() {
                     buf.fill(0);
                 }
@@ -208,7 +197,7 @@ pub fn run_sweep_loop(
                 config.sequential,
             );
 
-            if cluster_cfg.collect_csd && record {
+            if cluster_cfg.collect_stats && record {
                 for (slot, buf) in sw_csd_buf.iter().enumerate() {
                     let accum = &mut fk_csd_accum[slot % n_temps];
                     for (a, &b) in accum.iter_mut().zip(buf.iter()) {
@@ -246,23 +235,22 @@ pub fn run_sweep_loop(
             for v in diag_e_buf.iter_mut() {
                 *v *= inv;
             }
+        }
 
-            let link_overlaps = if n_pairs > 0 {
-                spins::energy::compute_link_overlaps(
-                    lattice,
-                    &real.spins,
-                    &real.system_ids,
-                    n_replicas,
-                    n_temps,
-                )
+        if (equil_diag || record) && n_pairs > 0 {
+            ov_accum.collect(lattice, &real.spins, &real.system_ids, record);
+        }
+
+        if equil_diag {
+            if n_pairs > 0 {
+                equil_accum
+                    .as_mut()
+                    .unwrap()
+                    .push(&diag_e_buf, &ov_accum.diag_ql_buf);
             } else {
-                vec![0.0f32; n_temps]
-            };
-
-            equil_accum
-                .as_mut()
-                .unwrap()
-                .push(&diag_e_buf, &link_overlaps);
+                let zeros = vec![0.0f32; n_temps];
+                equil_accum.as_mut().unwrap().push(&diag_e_buf, &zeros);
+            }
         }
 
         if record {
@@ -315,61 +303,18 @@ pub fn run_sweep_loop(
                 acc.push(&m2_ac_buf);
             }
 
-            if collect_q2_ac {
-                q2_ac_buf.fill(0.0);
-            }
-
-            for pair_idx in 0..n_pairs {
-                let r_a = 2 * pair_idx;
-                let r_b = 2 * pair_idx + 1;
-                for t in 0..n_temps {
-                    overlaps_buf[t] = 0.0;
-                    overlaps2_buf[t] = 0.0;
-                    overlaps4_buf[t] = 0.0;
-                }
-
-                for t in 0..n_temps {
-                    let sys_a = real.system_ids[r_a * n_temps + t];
-                    let sys_b = real.system_ids[r_b * n_temps + t];
-                    let base_a = sys_a * n_spins;
-                    let base_b = sys_b * n_spins;
-                    let mut dot = 0i64;
-                    for j in 0..n_spins {
-                        dot += (real.spins[base_a + j] as i64) * (real.spins[base_b + j] as i64);
-                    }
-                    let q = dot as f32 / n_spins as f32;
-                    let q2 = q * q;
-                    overlaps_buf[t] = q;
-                    overlaps2_buf[t] = q2;
-                    overlaps4_buf[t] = q2 * q2;
-                    let bin = (((q + 1.0) * 0.5 * OVERLAP_HIST_BINS as f32) as usize)
-                        .min(OVERLAP_HIST_BINS - 1);
-                    overlap_hist[t][bin] += 1;
-                }
-
-                if collect_q2_ac {
-                    for t in 0..n_temps {
-                        q2_ac_buf[t] += overlaps2_buf[t] as f64;
-                    }
-                }
-
-                overlap_stat.update(&overlaps_buf);
-                overlap2_stat.update(&overlaps2_buf);
-                overlap4_stat.update(&overlaps4_buf);
-            }
-
             if let Some(ref mut acc) = q2_accum {
                 let inv = 1.0 / n_pairs as f64;
-                for v in q2_ac_buf.iter_mut() {
+                for v in ov_accum.q2_ac_buf.iter_mut() {
                     *v *= inv;
                 }
-                acc.push(&q2_ac_buf);
+                acc.push(&ov_accum.q2_ac_buf);
             }
         }
 
         if let Some(ref oc_cfg) = config.overlap_cluster {
             if sweep_id % oc_cfg.interval == 0 {
-                let ov_csd_out = if oc_cfg.collect_csd && record {
+                let ov_csd_out = if oc_cfg.collect_stats && record {
                     for buf in overlap_csd_buf.iter_mut() {
                         buf.fill(0);
                     }
@@ -405,7 +350,7 @@ pub fn run_sweep_loop(
                     config.sequential,
                 );
 
-                if oc_cfg.collect_csd && record {
+                if oc_cfg.collect_stats && record {
                     for (slot, buf) in overlap_csd_buf.iter().enumerate() {
                         let accum = &mut overlap_csd_accum[slot / n_pairs];
                         for (a, &b) in accum.iter_mut().zip(buf.iter()) {
@@ -487,23 +432,7 @@ pub fn run_sweep_loop(
         mags4: mags4_stat.average(),
         energies: energies_stat.average(),
         energies2: energies2_stat.average(),
-        overlap: if n_pairs > 0 {
-            overlap_stat.average()
-        } else {
-            vec![]
-        },
-        overlap2: if n_pairs > 0 {
-            overlap2_stat.average()
-        } else {
-            vec![]
-        },
-        overlap4: if n_pairs > 0 {
-            overlap4_stat.average()
-        } else {
-            vec![]
-        },
-        overlap_histogram: overlap_hist,
-        per_sample_overlap_histogram: vec![],
+        overlap_stats: ov_accum.finish(),
         cluster_stats: ClusterStats {
             fk_csd: fk_csd_accum,
             overlap_csd: overlap_csd_accum,

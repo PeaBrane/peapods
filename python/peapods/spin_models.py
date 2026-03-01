@@ -126,8 +126,7 @@ class Ising:
         overlap_cluster_build_mode="houdayer",
         overlap_cluster_mode="wolff",
         warmup_ratio=0.25,
-        collect_csd=False,
-        collect_top_clusters=False,
+        collect_cluster_stats=False,
         autocorrelation_max_lag=None,
         sequential=False,
         equilibration_diagnostic=False,
@@ -139,10 +138,11 @@ class Ising:
         - `binder_cumulant` — Binder cumulant per temperature.
         - `heat_capacity` — Heat capacity per temperature.
         - `sg_binder` — Spin glass Binder parameter (only with `n_replicas >= 2`).
-        - `fk_csd` — FK cluster size distribution (only with `collect_csd=True`).
+        - `fk_csd` — FK cluster size distribution (only with
+          `collect_cluster_stats=True`).
         - `top_cluster_sizes` — Average relative sizes of the 4 largest overlap
           clusters per temperature, shape `(n_temps, 4)` (only with
-          `collect_top_clusters=True`).
+          `collect_cluster_stats=True`).
 
         Args:
             n_sweeps: Total number of Monte Carlo sweeps (including warmup).
@@ -164,10 +164,8 @@ class Ising:
                 `"wolff"` or `"sw"`.
             warmup_ratio: Fraction of sweeps discarded as warmup before
                 collecting statistics. Default 0.25.
-            collect_csd: If `True`, collect the Fortuin-Kasteleyn cluster size
-                distribution.
-            collect_top_clusters: If `True`, collect average relative sizes of
-                the 4 largest overlap clusters per temperature.
+            collect_cluster_stats: If `True`, collect FK cluster size
+                distribution and top-4 overlap cluster sizes.
             sequential: If `True`, disable inner-loop parallelism over
                 replicas/temperatures. Use when outer-level parallelism over
                 disorder realizations already saturates all physical cores.
@@ -186,8 +184,7 @@ class Ising:
             overlap_cluster_build_mode=overlap_cluster_build_mode if oci else None,
             overlap_cluster_mode=overlap_cluster_mode if oci else None,
             warmup_ratio=warmup_ratio,
-            collect_csd=collect_csd,
-            collect_top_clusters=collect_top_clusters,
+            collect_cluster_stats=collect_cluster_stats,
             autocorrelation_max_lag=autocorrelation_max_lag,
             sequential=sequential,
             equilibration_diagnostic=equilibration_diagnostic,
@@ -210,12 +207,26 @@ class Ising:
             self.overlap2 = result["overlap2"]
             self.overlap4 = result["overlap4"]
             self.sg_binder = 1 - self.overlap4 / (3 * self.overlap2**2)
+            self.link_overlap = result["link_overlap"]
+            self.link_overlap2 = result["link_overlap2"]
+            self.link_overlap4 = result["link_overlap4"]
+            self.link_overlap_binder = 1 - self.link_overlap4 / (
+                3 * self.link_overlap2**2
+            )
 
         if "overlap_histogram" in result:
             self.overlap_histogram = result["overlap_histogram"]
 
+        if "ql_at_q_sum" in result:
+            self.ql_at_q_sum = result["ql_at_q_sum"]
+            self.ql2_at_q_sum = result["ql2_at_q_sum"]
+
         if "per_sample_overlap_histogram" in result:
             self.per_sample_overlap_histogram = result["per_sample_overlap_histogram"]
+
+        if "per_sample_ql_at_q_sum" in result:
+            self.per_sample_ql_at_q_sum = result["per_sample_ql_at_q_sum"]
+            self.per_sample_ql2_at_q_sum = result["per_sample_ql2_at_q_sum"]
 
         if "fk_csd" in result:
             self.fk_csd = result["fk_csd"]

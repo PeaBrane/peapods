@@ -101,8 +101,7 @@ impl IsingSimulation {
         overlap_cluster_build_mode=None,
         overlap_cluster_mode=None,
         warmup_ratio=None,
-        collect_csd=None,
-        collect_top_clusters=None,
+        collect_cluster_stats=None,
         autocorrelation_max_lag=None,
         sequential=None,
         equilibration_diagnostic=None,
@@ -120,16 +119,14 @@ impl IsingSimulation {
         overlap_cluster_build_mode: Option<&str>,
         overlap_cluster_mode: Option<&str>,
         warmup_ratio: Option<f64>,
-        collect_csd: Option<bool>,
-        collect_top_clusters: Option<bool>,
+        collect_cluster_stats: Option<bool>,
         autocorrelation_max_lag: Option<usize>,
         sequential: Option<bool>,
         equilibration_diagnostic: Option<bool>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let warmup = warmup_ratio.unwrap_or(0.25);
         let warmup_sweeps = (n_sweeps as f64 * warmup).round() as usize;
-        let collect_csd = collect_csd.unwrap_or(false);
-        let collect_top_clusters = collect_top_clusters.unwrap_or(false);
+        let collect_cluster_stats = collect_cluster_stats.unwrap_or(false);
 
         let sweep_mode_enum =
             SweepMode::try_from(sweep_mode).map_err(pyo3::exceptions::PyValueError::new_err)?;
@@ -142,7 +139,7 @@ impl IsingSimulation {
                 mode.map(|m| ClusterConfig {
                     interval,
                     mode: m,
-                    collect_csd,
+                    collect_stats: collect_cluster_stats,
                 })
             })
             .transpose()?;
@@ -161,8 +158,7 @@ impl IsingSimulation {
                     interval,
                     mode: build_mode,
                     cluster_mode: oc_mode,
-                    collect_csd,
-                    collect_top_clusters,
+                    collect_stats: collect_cluster_stats,
                 })
             })
             .transpose()?;
@@ -237,32 +233,74 @@ impl IsingSimulation {
         dict.set_item("energies", Array1::from(agg.energies).into_pyarray(py))?;
         dict.set_item("energies2", Array1::from(agg.energies2).into_pyarray(py))?;
 
-        if !agg.overlap.is_empty() {
-            dict.set_item("overlap", Array1::from(agg.overlap).into_pyarray(py))?;
-            dict.set_item("overlap2", Array1::from(agg.overlap2).into_pyarray(py))?;
-            dict.set_item("overlap4", Array1::from(agg.overlap4).into_pyarray(py))?;
-        }
+        let ov = agg.overlap_stats;
+        if !ov.overlap.is_empty() {
+            dict.set_item("overlap", Array1::from(ov.overlap).into_pyarray(py))?;
+            dict.set_item("overlap2", Array1::from(ov.overlap2).into_pyarray(py))?;
+            dict.set_item("overlap4", Array1::from(ov.overlap4).into_pyarray(py))?;
+            dict.set_item(
+                "link_overlap",
+                Array1::from(ov.link_overlap).into_pyarray(py),
+            )?;
+            dict.set_item(
+                "link_overlap2",
+                Array1::from(ov.link_overlap2).into_pyarray(py),
+            )?;
+            dict.set_item(
+                "link_overlap4",
+                Array1::from(ov.link_overlap4).into_pyarray(py),
+            )?;
 
-        if !agg.overlap_histogram.is_empty() {
-            let hist_py: Vec<_> = agg
-                .overlap_histogram
-                .into_iter()
-                .map(|hist| Array1::from(hist).into_pyarray(py))
-                .collect();
-            dict.set_item("overlap_histogram", hist_py)?;
-        }
+            if !ov.histogram.is_empty() {
+                let hist_py: Vec<_> = ov
+                    .histogram
+                    .into_iter()
+                    .map(|hist| Array1::from(hist).into_pyarray(py))
+                    .collect();
+                dict.set_item("overlap_histogram", hist_py)?;
+            }
 
-        if !agg.per_sample_overlap_histogram.is_empty() {
-            let n_real = agg.per_sample_overlap_histogram.len();
-            let n_hist_temps = agg.per_sample_overlap_histogram[0].len();
-            let n_bins = agg.per_sample_overlap_histogram[0]
-                .first()
-                .map_or(0, |v| v.len());
-            let arr = Array3::from_shape_fn((n_real, n_hist_temps, n_bins), |(r, t, b)| {
-                agg.per_sample_overlap_histogram[r][t][b]
-            })
-            .into_pyarray(py);
-            dict.set_item("per_sample_overlap_histogram", arr)?;
+            if !ov.ql_at_q_sum.is_empty() {
+                let n_ql_temps = ov.ql_at_q_sum.len();
+                let n_ql_bins = ov.ql_at_q_sum[0].len();
+                let arr =
+                    Array2::from_shape_fn((n_ql_temps, n_ql_bins), |(t, b)| ov.ql_at_q_sum[t][b])
+                        .into_pyarray(py);
+                dict.set_item("ql_at_q_sum", arr)?;
+
+                let arr2 =
+                    Array2::from_shape_fn((n_ql_temps, n_ql_bins), |(t, b)| ov.ql2_at_q_sum[t][b])
+                        .into_pyarray(py);
+                dict.set_item("ql2_at_q_sum", arr2)?;
+            }
+
+            if !ov.per_sample_histogram.is_empty() {
+                let n_real = ov.per_sample_histogram.len();
+                let n_hist_temps = ov.per_sample_histogram[0].len();
+                let n_bins = ov.per_sample_histogram[0].first().map_or(0, |v| v.len());
+                let arr = Array3::from_shape_fn((n_real, n_hist_temps, n_bins), |(r, t, b)| {
+                    ov.per_sample_histogram[r][t][b]
+                })
+                .into_pyarray(py);
+                dict.set_item("per_sample_overlap_histogram", arr)?;
+            }
+
+            if !ov.per_sample_ql_at_q_sum.is_empty() {
+                let n_real = ov.per_sample_ql_at_q_sum.len();
+                let n_ps_temps = ov.per_sample_ql_at_q_sum[0].len();
+                let n_ps_bins = ov.per_sample_ql_at_q_sum[0].first().map_or(0, |v| v.len());
+                let arr = Array3::from_shape_fn((n_real, n_ps_temps, n_ps_bins), |(r, t, b)| {
+                    ov.per_sample_ql_at_q_sum[r][t][b]
+                })
+                .into_pyarray(py);
+                dict.set_item("per_sample_ql_at_q_sum", arr)?;
+
+                let arr2 = Array3::from_shape_fn((n_real, n_ps_temps, n_ps_bins), |(r, t, b)| {
+                    ov.per_sample_ql2_at_q_sum[r][t][b]
+                })
+                .into_pyarray(py);
+                dict.set_item("per_sample_ql2_at_q_sum", arr2)?;
+            }
         }
 
         if agg

@@ -30,7 +30,7 @@ results = ising.sample(
     overlap_cluster_build_mode="houdayer",
     overlap_cluster_mode="wolff",
     pt_interval=1,
-    collect_csd=True,
+    collect_cluster_stats=True,
 )
 
 fig, ax = plt.subplots(figsize=(6, 4))
