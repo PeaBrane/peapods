@@ -34,8 +34,7 @@ build_modes = ["houdayer", "cmr"]
 cluster_mode = "sw"
 
 [diagnostics]
-collect_csd = false
-collect_top_clusters = false
+collect_cluster_stats = false
 
 [diagnostics.autocorrelation]
 max_lag = 2000

@@ -15,7 +15,7 @@ result = ising.sample(
     warmup_ratio=0.1,
     cluster_update_interval=1,
     pt_interval=1,
-    collect_csd=True,
+    collect_cluster_stats=True,
 )
 
 n_spins = 32**2

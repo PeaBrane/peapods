@@ -1,4 +1,6 @@
-use super::utils::{bfs_cluster, find, find_seed, top4_sizes, uf_bonds};
+use super::utils::{
+    bfs_cluster, find, find_seed, top4_sizes, uf_bonds, uf_flatten_counts, uf_histogram,
+};
 use crate::geometry::Lattice;
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -102,37 +104,26 @@ pub fn overlap_update(
         };
 
         if use_uf {
-            let csd_slot = if has_csd {
-                let slot = &mut *(cp as *mut Vec<u64>).add(t * n_pairs + g);
-                Some(slot.as_mut_slice())
-            } else {
-                None
-            };
-
-            let (mut parent, _) = uf_bonds(
-                lattice,
-                |i, d| {
-                    let j = lattice.neighbor_fwd(i, d);
-                    if restrict_to_negative {
-                        if !is_active(i) || !is_active(j) {
-                            return false;
-                        }
-                    } else if is_active(i) != is_active(j) {
+            let (mut parent, _) = uf_bonds(lattice, |i, d| {
+                let j = lattice.neighbor_fwd(i, d);
+                if restrict_to_negative {
+                    if !is_active(i) || !is_active(j) {
                         return false;
                     }
-                    if !stochastic {
-                        return true;
-                    }
-                    let inter = *sp_ptr.add(bases[0] + i) as f32
-                        * *sp_ptr.add(bases[0] + j) as f32
-                        * couplings[i * n_neighbors + d];
-                    if inter <= 0.0 {
-                        return false;
-                    }
-                    rng.gen::<f32>() < 1.0 - (-4.0 * inter / temp).exp()
-                },
-                csd_slot,
-            );
+                } else if is_active(i) != is_active(j) {
+                    return false;
+                }
+                if !stochastic {
+                    return true;
+                }
+                let inter = *sp_ptr.add(bases[0] + i) as f32
+                    * *sp_ptr.add(bases[0] + j) as f32
+                    * couplings[i * n_neighbors + d];
+                if inter <= 0.0 {
+                    return false;
+                }
+                rng.gen::<f32>() < 1.0 - (-4.0 * inter / temp).exp()
+            });
 
             if wolff {
                 let Some(seed) = find_seed(n_spins, rng, |i| {
@@ -153,16 +144,25 @@ pub fn overlap_update(
                         }
                     }
                 }
-            } else {
-                // SW: flatten parents, compute counts, operate on all non-singletons
-                for i in 0..n_spins {
-                    parent[i] = find(&mut parent, i as u32);
-                }
-                let mut counts = vec![0usize; n_spins];
-                for i in 0..n_spins {
-                    counts[parent[i] as usize] += 1;
-                }
 
+                if has_csd || has_top4 {
+                    let counts = uf_flatten_counts(&mut parent);
+                    if has_csd {
+                        let csd_slot = &mut *(cp as *mut Vec<u64>).add(t * n_pairs + g);
+                        uf_histogram(&counts, csd_slot.as_mut_slice());
+                    }
+                    if has_top4 {
+                        let out = &mut *(tp as *mut [u32; 4]).add(t * n_pairs + g);
+                        *out = top4_sizes(&counts);
+                    }
+                }
+            } else {
+                let counts = uf_flatten_counts(&mut parent);
+
+                if has_csd {
+                    let csd_slot = &mut *(cp as *mut Vec<u64>).add(t * n_pairs + g);
+                    uf_histogram(&counts, csd_slot.as_mut_slice());
+                }
                 if has_top4 {
                     let out = &mut *(tp as *mut [u32; 4]).add(t * n_pairs + g);
                     *out = top4_sizes(&counts);

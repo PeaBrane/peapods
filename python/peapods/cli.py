@@ -64,9 +64,9 @@ def _add_common_args(parser):
         help="Overlap cluster move every N sweeps (requires n_replicas >= 2)",
     )
     parser.add_argument(
-        "--collect-top-clusters",
+        "--collect-cluster-stats",
         action="store_true",
-        help="Collect top-4 overlap cluster sizes per temperature",
+        help="Collect FK cluster size distribution and top-4 overlap cluster sizes",
     )
     parser.add_argument(
         "--autocorrelation-max-lag",
@@ -150,10 +150,10 @@ def _add_sweep_common_args(parser):
         help="Overlap cluster move every N sweeps (requires n_replicas >= 2)",
     )
     parser.add_argument(
-        "--collect-top-clusters",
+        "--collect-cluster-stats",
         action="store_true",
         default=None,
-        help="Collect top-4 overlap cluster sizes per temperature",
+        help="Collect FK cluster size distribution and top-4 overlap cluster sizes",
     )
     parser.add_argument(
         "--autocorrelation-max-lag",
@@ -211,12 +211,6 @@ def _add_sweep_args(parser):
     _add_sweep_common_args(parser)
     parser.add_argument("--warmup-ratio", type=float, default=None)
     parser.add_argument(
-        "--collect-csd",
-        action="store_true",
-        default=None,
-        help="Collect FK cluster size distribution",
-    )
-    parser.add_argument(
         "--autocorrelation-plot-temp",
         type=float,
         default=None,
@@ -260,7 +254,7 @@ def sample_kwargs(args):
         overlap_cluster_update_interval=args.overlap_cluster_update_interval,
         overlap_cluster_build_mode=args.overlap_cluster_build_mode,
         overlap_cluster_mode=args.overlap_cluster_mode,
-        collect_top_clusters=args.collect_top_clusters,
+        collect_cluster_stats=args.collect_cluster_stats,
         autocorrelation_max_lag=args.autocorrelation_max_lag,
         equilibration_diagnostic=args.equilibration_diagnostic,
     )
@@ -292,8 +286,7 @@ _SWEEP_DEFAULTS = dict(
     overlap_cluster_build_mode=("houdayer",),
     overlap_cluster_mode=("wolff",),
     warmup_ratio=0.25,
-    collect_csd=False,
-    collect_top_clusters=False,
+    collect_cluster_stats=False,
     autocorrelation_max_lag=None,
     autocorrelation_plot_temp=None,
     equilibration_diagnostic=False,
@@ -377,10 +370,8 @@ def _load_sweep_config(path):
             )
     if "diagnostics" in cfg:
         d = cfg["diagnostics"]
-        if "collect_csd" in d:
-            kw["collect_csd"] = d["collect_csd"]
-        if "collect_top_clusters" in d:
-            kw["collect_top_clusters"] = d["collect_top_clusters"]
+        if "collect_cluster_stats" in d:
+            kw["collect_cluster_stats"] = d["collect_cluster_stats"]
         if "autocorrelation" in d:
             ac = d["autocorrelation"]
             if "max_lag" in ac:
@@ -427,8 +418,7 @@ def run_sweep_cli(args):
         "overlap_cluster_build_mode": args.overlap_cluster_build_mode,
         "overlap_cluster_mode": args.overlap_cluster_mode,
         "warmup_ratio": args.warmup_ratio,
-        "collect_csd": args.collect_csd,
-        "collect_top_clusters": args.collect_top_clusters,
+        "collect_cluster_stats": args.collect_cluster_stats,
         "autocorrelation_max_lag": args.autocorrelation_max_lag,
         "autocorrelation_plot_temp": args.autocorrelation_plot_temp,
         "equilibration_diagnostic": args.equilibration_diagnostic,
@@ -486,8 +476,7 @@ def run_sweep_cli(args):
         overlap_cluster_build_modes=tuple(kw["overlap_cluster_build_mode"]),
         overlap_cluster_modes=tuple(kw["overlap_cluster_mode"]),
         warmup_ratio=kw["warmup_ratio"],
-        collect_csd=kw["collect_csd"],
-        collect_top_clusters=kw["collect_top_clusters"],
+        collect_cluster_stats=kw["collect_cluster_stats"],
         autocorrelation_max_lag=kw["autocorrelation_max_lag"],
         autocorrelation_plot_temp=kw["autocorrelation_plot_temp"],
         equilibration_diagnostic=kw["equilibration_diagnostic"],
@@ -510,9 +499,9 @@ def build_parser():
     add_simulation_args(sim)
     sim.add_argument("--warmup-ratio", type=float, default=0.25)
     sim.add_argument(
-        "--collect-csd",
+        "--collect-cluster-stats",
         action="store_true",
-        help="Collect FK cluster size distribution",
+        help="Collect FK cluster size distribution and top-4 overlap cluster sizes",
     )
     sim.add_argument(
         "-o", "--output", type=str, default=None, help="Save full results to .npz file"
@@ -536,7 +525,7 @@ def run_simulate(args):
         args.n_sweeps,
         **sample_kwargs(args),
         warmup_ratio=args.warmup_ratio,
-        collect_csd=args.collect_csd,
+        collect_cluster_stats=args.collect_cluster_stats,
         equilibration_diagnostic=args.equilibration_diagnostic,
     )
 

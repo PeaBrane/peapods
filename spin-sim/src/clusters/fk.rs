@@ -1,4 +1,4 @@
-use super::utils::{bfs_cluster, find, uf_bonds};
+use super::utils::{bfs_cluster, uf_bonds, uf_flatten_counts, uf_histogram};
 use crate::geometry::Lattice;
 use crate::parallel::par_over_replicas;
 use rand::Rng;
@@ -95,31 +95,21 @@ pub fn fk_update(
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(system_id);
         let temp = temperatures[temp_id];
 
-        let csd_slot = if has_csd {
-            let slot = &mut *(cp as *mut Vec<u64>).add(temp_id);
-            Some(slot.as_mut_slice())
-        } else {
-            None
-        };
-
-        let (mut parent, _) = uf_bonds(
-            lattice,
-            |i, d| {
-                let j = lattice.neighbor_fwd(i, d);
-                let inter =
-                    spin_slice[i] as f32 * spin_slice[j] as f32 * couplings[i * n_neighbors + d];
-                if inter <= 0.0 {
-                    return false;
-                }
-                rng.gen::<f32>() < 1.0 - (-2.0 * inter / temp).exp()
-            },
-            csd_slot,
-        );
-
-        if !has_csd {
-            for i in 0..n_spins {
-                parent[i] = find(&mut parent, i as u32);
+        let (mut parent, _) = uf_bonds(lattice, |i, d| {
+            let j = lattice.neighbor_fwd(i, d);
+            let inter =
+                spin_slice[i] as f32 * spin_slice[j] as f32 * couplings[i * n_neighbors + d];
+            if inter <= 0.0 {
+                return false;
             }
+            rng.gen::<f32>() < 1.0 - (-2.0 * inter / temp).exp()
+        });
+
+        let counts = uf_flatten_counts(&mut parent);
+
+        if has_csd {
+            let csd_slot = &mut *(cp as *mut Vec<u64>).add(temp_id);
+            uf_histogram(&counts, csd_slot.as_mut_slice());
         }
 
         if wolff {

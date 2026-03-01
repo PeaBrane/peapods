@@ -90,14 +90,11 @@ pub(super) fn bfs_cluster(
 
 /// Activate forward bonds via union-find. `should_bond(site, dim)` decides
 /// whether to activate the bond from `site` to its forward neighbor in `dim`.
-/// Returns `(parent, rank)`. When `csd` is `Some`, parent is flattened in-place
-/// and cluster sizes are histogrammed into the slice (`hist[s]` += 1 for each
-/// cluster of size `s`).
+/// Returns `(parent, rank)`.
 #[inline]
 pub(super) fn uf_bonds(
     lattice: &Lattice,
     mut should_bond: impl FnMut(usize, usize) -> bool,
-    csd: Option<&mut [u64]>,
 ) -> (Vec<u32>, Vec<u8>) {
     let n_spins = lattice.n_spins;
     let mut parent: Vec<u32> = (0..n_spins as u32).collect();
@@ -112,29 +109,38 @@ pub(super) fn uf_bonds(
         }
     }
 
-    if let Some(hist) = csd {
-        for i in 0..n_spins {
-            parent[i] = find(&mut parent, i as u32);
-        }
-        let mut counts = vec![0u32; n_spins];
-        for i in 0..n_spins {
-            counts[parent[i] as usize] += 1;
-        }
-        for &c in &counts {
-            if c > 0 {
-                hist[c as usize] += 1;
-            }
-        }
-    }
-
     (parent, rank)
 }
 
-pub(super) fn top4_sizes(counts: &[usize]) -> [u32; 4] {
+/// Flatten UF parent array in-place and return per-root counts.
+#[inline]
+pub(super) fn uf_flatten_counts(parent: &mut [u32]) -> Vec<u32> {
+    let n = parent.len();
+    for i in 0..n {
+        parent[i] = find(parent, i as u32);
+    }
+    let mut counts = vec![0u32; n];
+    for i in 0..n {
+        counts[parent[i] as usize] += 1;
+    }
+    counts
+}
+
+/// Histogram cluster sizes into `hist[s] += 1`.
+#[inline]
+pub(super) fn uf_histogram(counts: &[u32], hist: &mut [u64]) {
+    for &c in counts {
+        if c > 0 {
+            hist[c as usize] += 1;
+        }
+    }
+}
+
+pub(super) fn top4_sizes(counts: &[u32]) -> [u32; 4] {
     let mut top = [0u32; 4]; // ascending; top[0] = current minimum of top-4
     for &c in counts {
-        if c as u32 > top[0] {
-            top[0] = c as u32;
+        if c > top[0] {
+            top[0] = c;
             top.sort_unstable();
         }
     }
@@ -305,7 +311,7 @@ mod tests {
         let n = lattice.n_spins;
         let bonds = bond_set();
 
-        let (mut parent, _) = uf_bonds(&lattice, |i, d| bonds.contains(&(i, d)), None);
+        let (mut parent, _) = uf_bonds(&lattice, |i, d| bonds.contains(&(i, d)));
 
         // Flatten parents for easy inspection
         for i in 0..n {
@@ -342,7 +348,7 @@ mod tests {
         let n = lattice.n_spins;
         let sites = active_sites();
 
-        let (mut parent, _) = uf_bonds(&lattice, |i, _d| sites.contains(&i), None);
+        let (mut parent, _) = uf_bonds(&lattice, |i, _d| sites.contains(&i));
 
         for i in 0..n {
             parent[i] = find(&mut parent, i as u32);
@@ -376,8 +382,10 @@ mod tests {
         let n = lattice.n_spins;
         let bonds = bond_set();
 
+        let (mut parent, _) = uf_bonds(&lattice, |i, d| bonds.contains(&(i, d)));
+        let counts = uf_flatten_counts(&mut parent);
         let mut hist = vec![0u64; n + 1];
-        let _ = uf_bonds(&lattice, |i, d| bonds.contains(&(i, d)), Some(&mut hist));
+        uf_histogram(&counts, &mut hist);
 
         // Clusters: size 4 ×1, size 3 ×1, size 1 ×9
         assert_eq!(hist[1], 9);
@@ -392,8 +400,10 @@ mod tests {
         let n = lattice.n_spins;
         let sites = active_sites();
 
+        let (mut parent, _) = uf_bonds(&lattice, |i, _d| sites.contains(&i));
+        let counts = uf_flatten_counts(&mut parent);
         let mut hist = vec![0u64; n + 1];
-        let _ = uf_bonds(&lattice, |i, _d| sites.contains(&i), Some(&mut hist));
+        uf_histogram(&counts, &mut hist);
 
         // Clusters: size 5 ×1, size 3 ×1, size 1 ×8
         assert_eq!(hist[1], 8);
