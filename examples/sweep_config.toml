@@ -30,7 +30,7 @@ interval = 1
 
 [overlap_cluster]
 interval = 1
-build_modes = ["cmr", "cmr3"]
+build_modes = ["cmr", "houd4"]
 cluster_mode = "sw"
 
 [diagnostics]

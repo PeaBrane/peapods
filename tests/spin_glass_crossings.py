@@ -89,8 +89,8 @@ def spin_glass_3d_cmr_free():
     )
 
 
-def spin_glass_3d_cmr3():
-    name = "3D EA spin glass (CMR3 free)"
+def spin_glass_3d_houd4():
+    name = "3D EA spin glass (Houdayer-4)"
     temps = np.linspace(0.8, 1.4, 12).astype(np.float32)
     sizes = [8, 10]
 
@@ -104,7 +104,7 @@ def spin_glass_3d_cmr3():
             (L, L, L),
             couplings="bimodal",
             temperatures=temps,
-            n_replicas=3,
+            n_replicas=4,
             n_disorder=25,
         )
         model.sample(
@@ -112,7 +112,7 @@ def spin_glass_3d_cmr3():
             sweep_mode="metropolis",
             pt_interval=1,
             overlap_cluster_update_interval=1,
-            overlap_cluster_build_mode="cmr3",
+            overlap_cluster_build_mode="houd4",
             overlap_cluster_mode="sw",
             warmup_ratio=0.25,
         )
@@ -125,14 +125,55 @@ def spin_glass_3d_cmr3():
         TC_EA_3D,
         ylabel="SG Binder ratio",
         title=f"{name} Binder crossing",
-        out_path=OUT_DIR / "3d_ea_spin_glass_cmr3.png",
+        out_path=OUT_DIR / "3d_ea_spin_glass_houd4.png",
+    )
+
+
+def spin_glass_3d_houd6():
+    name = "3D EA spin glass (Houdayer-6)"
+    temps = np.linspace(0.8, 1.4, 12).astype(np.float32)
+    sizes = [8, 10]
+
+    print(f"\n{'=' * 60}")
+    print(f"  {name}  (T_c = {TC_EA_3D:.4f})")
+    print(f"{'=' * 60}")
+
+    results = {}
+    for L in sizes:
+        model = Ising(
+            (L, L, L),
+            couplings="bimodal",
+            temperatures=temps,
+            n_replicas=6,
+            n_disorder=25,
+        )
+        model.sample(
+            N_SWEEPS,
+            sweep_mode="metropolis",
+            pt_interval=1,
+            overlap_cluster_update_interval=1,
+            overlap_cluster_build_mode="houd6",
+            overlap_cluster_mode="sw",
+            warmup_ratio=0.25,
+        )
+        results[f"L={L}"] = model.sg_binder
+
+    assert_crossing(temps, results, TC_EA_3D, tol=0.3)
+    plot_crossing(
+        temps,
+        results,
+        TC_EA_3D,
+        ylabel="SG Binder ratio",
+        title=f"{name} Binder crossing",
+        out_path=OUT_DIR / "3d_ea_spin_glass_houd6.png",
     )
 
 
 def run():
     spin_glass_3d()
     spin_glass_3d_cmr_free()
-    spin_glass_3d_cmr3()
+    spin_glass_3d_houd4()
+    spin_glass_3d_houd6()
 
 
 if __name__ == "__main__":
