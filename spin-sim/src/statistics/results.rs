@@ -48,6 +48,9 @@ pub struct SweepResult {
     /// Overlap histogram P(q) per temperature: `[n_temps][OVERLAP_HIST_BINS]`.
     /// Empty when `n_pairs == 0`.
     pub overlap_histogram: Vec<Vec<u64>>,
+    /// Per-disorder-sample overlap histograms: `[n_disorder][n_temps][OVERLAP_HIST_BINS]`.
+    /// Only populated by `aggregate()`; empty for single-realization results.
+    pub per_sample_overlap_histogram: Vec<Vec<Vec<u64>>>,
     pub cluster_stats: ClusterStats,
     pub diagnostics: Diagnostics,
 }
@@ -90,6 +93,10 @@ impl SweepResult {
             overlap4: vec![0.0; n_overlap],
             overlap_histogram: (0..n_overlap_hist)
                 .map(|_| vec![0u64; OVERLAP_HIST_BINS])
+                .collect(),
+            per_sample_overlap_histogram: results
+                .iter()
+                .map(|r| r.overlap_histogram.clone())
                 .collect(),
             cluster_stats: ClusterStats {
                 fk_csd: (0..n_fk_csd).map(|_| vec![0u64; fk_len]).collect(),

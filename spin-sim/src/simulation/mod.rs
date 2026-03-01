@@ -503,6 +503,7 @@ pub fn run_sweep_loop(
             vec![]
         },
         overlap_histogram: overlap_hist,
+        per_sample_overlap_histogram: vec![],
         cluster_stats: ClusterStats {
             fk_csd: fk_csd_accum,
             overlap_csd: overlap_csd_accum,

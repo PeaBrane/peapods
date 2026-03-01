@@ -570,6 +570,10 @@ def run_simulate(args):
             save_dict["fk_csd"] = model.fk_csd
         if hasattr(model, "top_cluster_sizes"):
             save_dict["top_cluster_sizes"] = model.top_cluster_sizes
+        if hasattr(model, "per_sample_overlap_histogram"):
+            save_dict["per_sample_overlap_histogram"] = (
+                model.per_sample_overlap_histogram
+            )
         np.savez(args.output, **save_dict)
         print(f"\nResults saved to {args.output}")
 
