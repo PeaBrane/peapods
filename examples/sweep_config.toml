@@ -32,7 +32,6 @@ interval = 1
 interval = 1
 build_modes = ["cmr", "cmr3"]
 cluster_mode = "sw"
-update_modes = ["free"]
 
 [diagnostics]
 collect_csd = false

@@ -10,7 +10,6 @@ from peapods import Ising
 from peapods.sweep import run_sweep
 
 COUPLING_CHOICES = ["ferro", "bimodal", "gaussian"]
-OVERLAP_UPDATE_CHOICES = ["swap", "free"]
 OVERLAP_CLUSTER_CHOICES = ["wolff", "sw"]
 
 
@@ -102,12 +101,6 @@ def add_simulation_args(parser):
     )
     parser.add_argument(
         "--overlap-cluster-mode", default="wolff", choices=OVERLAP_CLUSTER_CHOICES
-    )
-    parser.add_argument(
-        "--overlap-update-mode",
-        default="swap",
-        choices=OVERLAP_UPDATE_CHOICES,
-        help="Overlap cluster update mode (default: swap)",
     )
     _add_common_args(parser)
 
@@ -215,12 +208,6 @@ def _add_sweep_args(parser):
         default=None,
         choices=OVERLAP_CLUSTER_CHOICES,
     )
-    parser.add_argument(
-        "--overlap-update-mode",
-        nargs="+",
-        default=None,
-        choices=OVERLAP_UPDATE_CHOICES,
-    )
     _add_sweep_common_args(parser)
     parser.add_argument("--warmup-ratio", type=float, default=None)
     parser.add_argument(
@@ -273,7 +260,6 @@ def sample_kwargs(args):
         overlap_cluster_update_interval=args.overlap_cluster_update_interval,
         overlap_cluster_build_mode=args.overlap_cluster_build_mode,
         overlap_cluster_mode=args.overlap_cluster_mode,
-        overlap_update_mode=args.overlap_update_mode,
         collect_top_clusters=args.collect_top_clusters,
         autocorrelation_max_lag=args.autocorrelation_max_lag,
         equilibration_diagnostic=args.equilibration_diagnostic,
@@ -305,7 +291,6 @@ _SWEEP_DEFAULTS = dict(
     overlap_cluster_update_interval=None,
     overlap_cluster_build_mode=("houdayer",),
     overlap_cluster_mode=("wolff",),
-    overlap_update_mode=("swap",),
     warmup_ratio=0.25,
     collect_csd=False,
     collect_top_clusters=False,
@@ -390,9 +375,6 @@ def _load_sweep_config(path):
                 if isinstance(oc["cluster_mode"], list)
                 else [oc["cluster_mode"]]
             )
-        if "update_modes" in oc:
-            kw["overlap_update_mode"] = tuple(oc["update_modes"])
-
     if "diagnostics" in cfg:
         d = cfg["diagnostics"]
         if "collect_csd" in d:
@@ -444,7 +426,6 @@ def run_sweep_cli(args):
         "overlap_cluster_update_interval": args.overlap_cluster_update_interval,
         "overlap_cluster_build_mode": args.overlap_cluster_build_mode,
         "overlap_cluster_mode": args.overlap_cluster_mode,
-        "overlap_update_mode": args.overlap_update_mode,
         "warmup_ratio": args.warmup_ratio,
         "collect_csd": args.collect_csd,
         "collect_top_clusters": args.collect_top_clusters,
@@ -504,7 +485,6 @@ def run_sweep_cli(args):
         overlap_cluster_update_interval=kw["overlap_cluster_update_interval"],
         overlap_cluster_build_modes=tuple(kw["overlap_cluster_build_mode"]),
         overlap_cluster_modes=tuple(kw["overlap_cluster_mode"]),
-        overlap_update_modes=tuple(kw["overlap_update_mode"]),
         warmup_ratio=kw["warmup_ratio"],
         collect_csd=kw["collect_csd"],
         collect_top_clusters=kw["collect_top_clusters"],

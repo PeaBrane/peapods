@@ -127,7 +127,6 @@ class Ising:
         overlap_cluster_mode="wolff",
         warmup_ratio=0.25,
         collect_csd=False,
-        overlap_update_mode="swap",
         collect_top_clusters=False,
         autocorrelation_max_lag=None,
         sequential=False,
@@ -158,16 +157,13 @@ class Ising:
             overlap_cluster_build_mode: Overlap cluster algorithm. `"houdayer"`,
                 `"jorg"`, or `"cmrN"` where N >= 2 is the group size (e.g.
                 `"cmr"`, `"cmr2"`, `"cmr3"`). CMR-N with N >= 3 requires
-                `n_replicas >= N` and `overlap_update_mode="free"`.
+                `n_replicas >= N`.
             overlap_cluster_mode: Cluster type used inside the overlap move.
                 `"wolff"` or `"sw"`.
             warmup_ratio: Fraction of sweeps discarded as warmup before
                 collecting statistics. Default 0.25.
             collect_csd: If `True`, collect the Fortuin-Kasteleyn cluster size
                 distribution.
-            overlap_update_mode: How overlap clusters are applied. `"swap"`
-                exchanges spins between replicas; `"free"` independently flips
-                each replica (requires `overlap_cluster_build_mode="cmrN"`).
             collect_top_clusters: If `True`, collect average relative sizes of
                 the 4 largest overlap clusters per temperature.
             sequential: If `True`, disable inner-loop parallelism over
@@ -189,7 +185,6 @@ class Ising:
             overlap_cluster_mode=overlap_cluster_mode if oci else None,
             warmup_ratio=warmup_ratio,
             collect_csd=collect_csd,
-            overlap_update_mode=overlap_update_mode if oci else None,
             collect_top_clusters=collect_top_clusters,
             autocorrelation_max_lag=autocorrelation_max_lag,
             sequential=sequential,

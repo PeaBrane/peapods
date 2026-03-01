@@ -48,7 +48,6 @@ fn main() {
             interval: 1,
             mode: OverlapClusterBuildMode::Cmr(2),
             cluster_mode: ClusterMode::Sw,
-            update_mode: OverlapUpdateMode::Free,
             collect_csd: false,
             collect_top_clusters: false,
         }),
@@ -60,7 +59,7 @@ fn main() {
         "Lattice: {}x{}  |  Temps: {}  |  Replicas: {}  |  Sweeps: {}  |  Realizations: {}",
         L, L, N_TEMPS, N_REPLICAS, N_SWEEPS, N_REALIZATIONS
     );
-    println!("Config: bimodal, CMR free, SW overlap, PT every sweep");
+    println!("Config: bimodal, CMR, SW overlap, PT every sweep");
     println!("{}", "-".repeat(70));
 
     let t0 = Instant::now();
