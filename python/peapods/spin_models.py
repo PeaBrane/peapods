@@ -157,7 +157,8 @@ class Ising:
             overlap_cluster_build_mode: Overlap cluster algorithm. `"houdayer"`,
                 `"jorg"`, or `"cmrN"` where N >= 2 is the group size (e.g.
                 `"cmr"`, `"cmr2"`, `"cmr3"`). CMR-N with N >= 3 requires
-                `n_replicas >= N`.
+                `n_replicas >= N`. **Note:** N >= 3 is experimental and likely
+                does not satisfy detailed balance; under active revision.
             overlap_cluster_mode: Cluster type used inside the overlap move.
                 `"wolff"` or `"sw"`.
             warmup_ratio: Fraction of sweeps discarded as warmup before
