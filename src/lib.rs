@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use indicatif::{ProgressBar, ProgressStyle};
-use numpy::ndarray::{Array1, Array2};
+use numpy::ndarray::{Array1, Array2, Array3};
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -250,6 +250,19 @@ impl IsingSimulation {
                 .map(|hist| Array1::from(hist).into_pyarray(py))
                 .collect();
             dict.set_item("overlap_histogram", hist_py)?;
+        }
+
+        if !agg.per_sample_overlap_histogram.is_empty() {
+            let n_real = agg.per_sample_overlap_histogram.len();
+            let n_hist_temps = agg.per_sample_overlap_histogram[0].len();
+            let n_bins = agg.per_sample_overlap_histogram[0]
+                .first()
+                .map_or(0, |v| v.len());
+            let arr = Array3::from_shape_fn((n_real, n_hist_temps, n_bins), |(r, t, b)| {
+                agg.per_sample_overlap_histogram[r][t][b]
+            })
+            .into_pyarray(py);
+            dict.set_item("per_sample_overlap_histogram", arr)?;
         }
 
         if agg

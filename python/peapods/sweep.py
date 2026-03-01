@@ -8,6 +8,39 @@ import numpy as np
 from peapods.spin_models import Ising
 
 
+def _cumulative_overlap_ratio(per_sample_hist):
+    """Compute I(q)/X(q) from per-sample overlap histograms (Billoire et al. 2014).
+
+    per_sample_hist: array of shape (n_disorder, n_temps, n_bins)
+    Returns: (q_grid, ratio, x_mean, x_median) where ratio has shape (n_temps, n_q)
+    """
+    n_bins = per_sample_hist.shape[2]
+    bin_edges = np.linspace(-1, 1, n_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    center = n_bins // 2
+    n_disorder, n_temps, _ = per_sample_hist.shape
+
+    positive_bins = bin_centers[center:]
+    n_q = len(positive_bins)
+
+    x_samples = np.zeros((n_disorder, n_temps, n_q))
+    for qi in range(n_q):
+        lo = center - qi
+        hi = center + qi + 1
+        x_samples[:, :, qi] = per_sample_hist[:, :, lo:hi].sum(axis=2)
+
+    totals = per_sample_hist.sum(axis=2, keepdims=True)
+    totals = np.where(totals == 0, 1, totals)
+    x_samples /= totals
+
+    x_mean = x_samples.mean(axis=0)
+    x_median = np.median(x_samples, axis=0)
+
+    ratio = np.where(x_mean > 0, x_median / x_mean, 0.0)
+    return positive_bins, ratio, x_mean, x_median
+
+
 def _config_label(coupling, h_mode, oc_mode):
     parts = [coupling]
     if h_mode != "houdayer":
@@ -46,6 +79,15 @@ def _save_data(models, config_label, temperatures, output_dir):
         if hasattr(model, "overlap_histogram"):
             hist = np.array([h for h in model.overlap_histogram])
             save_dict[f"{prefix}_overlap_histogram"] = hist
+        if hasattr(model, "per_sample_overlap_histogram"):
+            save_dict[f"{prefix}_per_sample_overlap_histogram"] = (
+                model.per_sample_overlap_histogram
+            )
+            q_grid, ratio, _, _ = _cumulative_overlap_ratio(
+                model.per_sample_overlap_histogram
+            )
+            save_dict[f"{prefix}_cumulative_overlap_q"] = q_grid
+            save_dict[f"{prefix}_cumulative_overlap_ratio"] = ratio
         if hasattr(model, "mags2_tau"):
             save_dict[f"{prefix}_mags2_tau"] = model.mags2_tau
         if hasattr(model, "overlap2_tau"):
@@ -157,6 +199,32 @@ def _plot_overlap_histogram(model, size_label, config_label, temperatures, outpu
     ax.set_title(f"Overlap distribution — {size_label}, {config_label}")
 
     path = Path(output_dir) / f"pq_{size_label}_{config_label}.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Plot saved to {path}")
+
+
+def _plot_cumulative_overlap_ratio(
+    model, size_label, config_label, temperatures, output_dir
+):
+    import matplotlib.pyplot as plt
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+
+    q_grid, ratio, _, _ = _cumulative_overlap_ratio(model.per_sample_overlap_histogram)
+    norm = Normalize(vmin=temperatures.min(), vmax=temperatures.max())
+    cmap = plt.get_cmap("viridis")
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    for t_idx in range(ratio.shape[0]):
+        ax.plot(q_grid, ratio[t_idx], color=cmap(norm(temperatures[t_idx])), alpha=0.7)
+    fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), ax=ax, label="Temperature")
+    ax.axhline(1.0, ls="--", color="gray", lw=0.8)
+    ax.set_xlabel("$q$")
+    ax.set_ylabel("$I(q) / X(q)$")
+    ax.set_title(f"Cumulative overlap ratio — {size_label}, {config_label}")
+
+    path = Path(output_dir) / f"iq_xq_{size_label}_{config_label}.png"
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  Plot saved to {path}")
@@ -350,6 +418,11 @@ def run_sweep(
             for slabel, model in models.items():
                 if hasattr(model, "overlap_histogram"):
                     _plot_overlap_histogram(
+                        model, slabel, label, temperatures, output_dir
+                    )
+            for slabel, model in models.items():
+                if hasattr(model, "per_sample_overlap_histogram"):
+                    _plot_cumulative_overlap_ratio(
                         model, slabel, label, temperatures, output_dir
                     )
             if collect_csd:
