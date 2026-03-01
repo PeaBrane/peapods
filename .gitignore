@@ -24,5 +24,6 @@ dist/
 # Project-specific
 **/playground*
 refs/
+notes/
 *.sh
 /sweep*.toml
