@@ -21,6 +21,9 @@ use rayon::prelude::*;
 /// `p = 1 - exp(-4 * J * σ_i * σ_j / T)` on satisfied bonds (group_size=2) or
 /// `p = 1 - exp(-2N * |J| / T)` on N-fold satisfied bonds (group_size=N>=3).
 ///
+/// **Note:** `group_size >= 3` is experimental and likely does not satisfy
+/// detailed balance. The bond criterion and flip rule are under active revision.
+///
 /// When `restrict_to_negative` is true (Houdayer/Jörg), only negative-overlap
 /// sites are eligible. When false (CMR-N), all same-sign overlap sites are
 /// bonded (group_size=2) or all sites are eligible (group_size>=3).
