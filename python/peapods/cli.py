@@ -499,11 +499,6 @@ def build_parser():
     add_simulation_args(sim)
     sim.add_argument("--warmup-ratio", type=float, default=0.25)
     sim.add_argument(
-        "--collect-cluster-stats",
-        action="store_true",
-        help="Collect FK cluster size distribution and top-4 overlap cluster sizes",
-    )
-    sim.add_argument(
         "-o", "--output", type=str, default=None, help="Save full results to .npz file"
     )
 
