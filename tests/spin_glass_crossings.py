@@ -50,8 +50,8 @@ def spin_glass_3d():
     )
 
 
-def spin_glass_3d_cmr_free():
-    name = "3D EA spin glass (CMR free)"
+def spin_glass_3d_cmr():
+    name = "3D EA spin glass (CMR)"
     temps = np.linspace(0.8, 1.4, 12).astype(np.float32)
     sizes = [8, 10]
 
@@ -87,7 +87,7 @@ def spin_glass_3d_cmr_free():
         TC_EA_3D,
         ylabel="SG Binder ratio",
         title=f"{name} Binder crossing",
-        out_path=OUT_DIR / "3d_ea_spin_glass_cmr_free.png",
+        out_path=OUT_DIR / "3d_ea_spin_glass_cmr.png",
     )
 
 
@@ -175,7 +175,7 @@ def spin_glass_3d_cmr_houd4():
 
 def run():
     spin_glass_3d()
-    spin_glass_3d_cmr_free()
+    spin_glass_3d_cmr()
     spin_glass_3d_jorg()
     spin_glass_3d_cmr_houd4()
 
