@@ -4,7 +4,7 @@ pub use realization::Realization;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::config::{OverlapClusterBuildMode, SimConfig, SweepMode};
+use crate::config::{SimConfig, SweepMode};
 use crate::geometry::Lattice;
 use crate::statistics::{
     sokal_tau, AutocorrAccum, ClusterStats, Diagnostics, EquilDiagnosticAccum, OverlapAccum,
@@ -40,30 +40,15 @@ pub fn run_sweep_loop(
     let n_sweeps = config.n_sweeps;
     let warmup_sweeps = config.warmup_sweeps;
 
-    let overlap_wolff = config
-        .overlap_cluster
-        .as_ref()
-        .is_some_and(|h| h.cluster_mode == crate::config::ClusterMode::Wolff);
+    let n_modes = config.overlap_cluster.as_ref().map_or(0, |h| h.modes.len());
 
-    let (stochastic, restrict_to_negative) =
-        config
-            .overlap_cluster
-            .as_ref()
-            .map_or((false, true), |h| match h.mode {
-                OverlapClusterBuildMode::Houdayer(_) => (false, true),
-                OverlapClusterBuildMode::Jorg => (true, true),
-                OverlapClusterBuildMode::Cmr => (true, false),
-            });
-
-    let group_size = config
-        .overlap_cluster
-        .as_ref()
-        .map_or(2, |h| h.mode.group_size());
-
-    if config.overlap_cluster.is_some() && n_replicas < group_size {
-        return Err(format!(
-            "overlap cluster requires n_replicas >= group_size ({n_replicas} < {group_size})"
-        ));
+    if let Some(ref oc_cfg) = config.overlap_cluster {
+        let max_gs = oc_cfg.max_group_size();
+        if n_replicas < max_gs {
+            return Err(format!(
+                "overlap cluster requires n_replicas >= max group_size ({n_replicas} < {max_gs})"
+            ));
+        }
     }
 
     let n_pairs = n_replicas / 2;
@@ -71,8 +56,9 @@ pub fn run_sweep_loop(
     let mut fk_csd_accum: Vec<Vec<u64>> = (0..n_temps).map(|_| vec![0u64; n_spins + 1]).collect();
     let mut sw_csd_buf: Vec<Vec<u64>> = (0..n_systems).map(|_| vec![0u64; n_spins + 1]).collect();
 
-    let mut overlap_csd_accum: Vec<Vec<u64>> =
-        (0..n_temps).map(|_| vec![0u64; n_spins + 1]).collect();
+    let mut overlap_csd_accum: Vec<Vec<Vec<u64>>> = (0..n_modes)
+        .map(|_| (0..n_temps).map(|_| vec![0u64; n_spins + 1]).collect())
+        .collect();
     let mut overlap_csd_buf: Vec<Vec<u64>> = (0..n_temps * n_pairs)
         .map(|_| vec![0u64; n_spins + 1])
         .collect();
@@ -83,13 +69,16 @@ pub fn run_sweep_loop(
         .is_some_and(|h| h.collect_stats)
         && n_pairs > 0;
 
-    let mut top4_accum: Vec<[f64; 4]> = vec![[0.0; 4]; n_temps];
-    let mut top4_n: usize = 0;
+    let mut top4_accum: Vec<Vec<[f64; 4]>> =
+        (0..n_modes).map(|_| vec![[0.0; 4]; n_temps]).collect();
+    let mut top4_n: Vec<usize> = vec![0; n_modes];
     let mut top4_buf: Vec<[u32; 4]> = if collect_top {
         vec![[0u32; 4]; n_temps * n_pairs]
     } else {
         vec![]
     };
+
+    let mut overlap_call_count: usize = 0;
 
     let mut mags_stat = Statistics::new(n_temps, 1);
     let mut mags2_stat = Statistics::new(n_temps, 1);
@@ -314,6 +303,9 @@ pub fn run_sweep_loop(
 
         if let Some(ref oc_cfg) = config.overlap_cluster {
             if sweep_id % oc_cfg.interval == 0 {
+                let mode_idx = overlap_call_count % n_modes;
+                let mode = &oc_cfg.modes[mode_idx];
+
                 let ov_csd_out = if oc_cfg.collect_stats && record {
                     for buf in overlap_csd_buf.iter_mut() {
                         buf.fill(0);
@@ -341,10 +333,8 @@ pub fn run_sweep_loop(
                     n_replicas,
                     n_temps,
                     &mut real.pair_rngs,
-                    stochastic,
-                    restrict_to_negative,
-                    overlap_wolff,
-                    group_size,
+                    mode,
+                    oc_cfg.cluster_mode,
                     ov_csd_out,
                     top4_out,
                     config.sequential,
@@ -352,7 +342,7 @@ pub fn run_sweep_loop(
 
                 if oc_cfg.collect_stats && record {
                     for (slot, buf) in overlap_csd_buf.iter().enumerate() {
-                        let accum = &mut overlap_csd_accum[slot / n_pairs];
+                        let accum = &mut overlap_csd_accum[mode_idx][slot / n_pairs];
                         for (a, &b) in accum.iter_mut().zip(buf.iter()) {
                             *a += b;
                         }
@@ -364,12 +354,14 @@ pub fn run_sweep_loop(
                         for p in 0..n_pairs {
                             let raw = top4_buf[t * n_pairs + p];
                             for (k, &v) in raw.iter().enumerate() {
-                                top4_accum[t][k] += v as f64 / n_spins as f64;
+                                top4_accum[mode_idx][t][k] += v as f64 / n_spins as f64;
                             }
                         }
                     }
-                    top4_n += 1;
+                    top4_n[mode_idx] += 1;
                 }
+
+                overlap_call_count += 1;
             }
         }
 
@@ -398,17 +390,26 @@ pub fn run_sweep_loop(
         }
     }
 
-    let top_cluster_sizes = if collect_top && top4_n > 0 {
-        let denom = (top4_n * n_pairs) as f64;
+    let top_cluster_sizes: Vec<Vec<[f64; 4]>> = if collect_top {
         top4_accum
             .iter()
-            .map(|arr| {
-                [
-                    arr[0] / denom,
-                    arr[1] / denom,
-                    arr[2] / denom,
-                    arr[3] / denom,
-                ]
+            .zip(top4_n.iter())
+            .map(|(mode_accum, &count)| {
+                if count == 0 {
+                    return vec![];
+                }
+                let denom = (count * n_pairs) as f64;
+                mode_accum
+                    .iter()
+                    .map(|arr| {
+                        [
+                            arr[0] / denom,
+                            arr[1] / denom,
+                            arr[2] / denom,
+                            arr[3] / denom,
+                        ]
+                    })
+                    .collect()
             })
             .collect()
     } else {

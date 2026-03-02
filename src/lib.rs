@@ -149,14 +149,14 @@ impl IsingSimulation {
                 let build_mode_str = overlap_cluster_build_mode.unwrap_or("houdayer");
                 let oc_mode_str = overlap_cluster_mode.unwrap_or("wolff");
 
-                let build_mode = OverlapClusterBuildMode::try_from(build_mode_str)
+                let modes = spin_sim::config::parse_overlap_modes(build_mode_str)
                     .map_err(pyo3::exceptions::PyValueError::new_err)?;
                 let oc_mode = ClusterMode::try_from(oc_mode_str)
                     .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
                 Ok::<_, PyErr>(OverlapClusterConfig {
                     interval,
-                    mode: build_mode,
+                    modes,
                     cluster_mode: oc_mode,
                     collect_stats: collect_cluster_stats,
                 })
@@ -318,27 +318,42 @@ impl IsingSimulation {
             dict.set_item("fk_csd", csd_py)?;
         }
 
-        if agg
+        let has_any_ov_csd = agg
             .cluster_stats
             .overlap_csd
             .iter()
-            .any(|h| h.iter().any(|&c| c > 0))
-        {
-            let csd_py: Vec<_> = agg
+            .any(|mode| mode.iter().any(|h| h.iter().any(|&c| c > 0)));
+        if has_any_ov_csd {
+            let csd_py: Vec<Vec<_>> = agg
                 .cluster_stats
                 .overlap_csd
                 .into_iter()
-                .map(|hist| Array1::from(hist).into_pyarray(py))
+                .map(|mode_csd| {
+                    mode_csd
+                        .into_iter()
+                        .map(|hist| Array1::from(hist).into_pyarray(py))
+                        .collect()
+                })
                 .collect();
             dict.set_item("overlap_csd", csd_py)?;
         }
 
-        if !agg.cluster_stats.top_cluster_sizes.is_empty() {
-            let arr = Array2::from_shape_fn((n_temps, 4), |(t, k)| {
-                agg.cluster_stats.top_cluster_sizes[t][k]
-            })
-            .into_pyarray(py);
-            dict.set_item("top_cluster_sizes", arr)?;
+        let has_any_top = agg
+            .cluster_stats
+            .top_cluster_sizes
+            .iter()
+            .any(|mode| !mode.is_empty());
+        if has_any_top {
+            let top_py: Vec<_> = agg
+                .cluster_stats
+                .top_cluster_sizes
+                .iter()
+                .map(|mode_tops| {
+                    let n_t = mode_tops.len();
+                    Array2::from_shape_fn((n_t, 4), |(t, k)| mode_tops[t][k]).into_pyarray(py)
+                })
+                .collect();
+            dict.set_item("top_cluster_sizes", top_py)?;
         }
 
         if !agg.diagnostics.mags2_tau.is_empty() {

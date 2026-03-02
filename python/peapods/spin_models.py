@@ -140,8 +140,9 @@ class Ising:
         - `sg_binder` — Spin glass Binder parameter (only with `n_replicas >= 2`).
         - `fk_csd` — FK cluster size distribution (only with
           `collect_cluster_stats=True`).
-        - `top_cluster_sizes` — Average relative sizes of the 4 largest overlap
-          clusters per temperature, shape `(n_temps, 4)` (only with
+        - `top_cluster_sizes` — List of arrays (one per overlap mode), each
+          shape `(n_temps, 4)`, giving average relative sizes of the 4 largest
+          overlap clusters per temperature (only with
           `collect_cluster_stats=True`).
 
         Args:
@@ -158,8 +159,9 @@ class Ising:
                 (deterministic, group_size=2), `"houdN"` where N is even >= 2
                 (e.g. `"houd4"`, `"houd6"` — isoenergetic balanced-site
                 criterion, requires `n_replicas >= N`), `"jorg"` (stochastic
-                FK bonds, group_size=2), or `"cmr"` (stochastic, unrestricted,
-                group_size=2).
+                FK bonds, group_size=2), or `"cmr"` (two-phase grey+blue,
+                group_size=2). Multiple modes can be alternated with `+`,
+                e.g. `"cmr+houdayer"` round-robins each overlap update call.
             overlap_cluster_mode: Cluster type used inside the overlap move.
                 `"wolff"` or `"sw"`.
             warmup_ratio: Fraction of sweeps discarded as warmup before
