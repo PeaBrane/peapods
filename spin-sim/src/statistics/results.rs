@@ -4,11 +4,10 @@ use super::overlap::OverlapStats;
 pub struct ClusterStats {
     /// FK cluster size histogram per temperature: `hist[s]` = count of size-`s` clusters.
     pub fk_csd: Vec<Vec<u64>>,
-    /// Overlap cluster size histogram per temperature: `hist[s]` = count of size-`s` clusters.
-    pub overlap_csd: Vec<Vec<u64>>,
-    /// Average relative size of k-th largest blue cluster per temperature.
-    /// Shape: [n_temps][4]. Empty if collect_stats=false.
-    pub top_cluster_sizes: Vec<[f64; 4]>,
+    /// Per-mode overlap cluster size histogram: `[n_modes][n_temps][n_spins+1]`.
+    pub overlap_csd: Vec<Vec<Vec<u64>>>,
+    /// Per-mode average relative size of k-th largest overlap cluster: `[n_modes][n_temps][4]`.
+    pub top_cluster_sizes: Vec<Vec<[f64; 4]>>,
 }
 
 pub struct Diagnostics {
@@ -49,20 +48,32 @@ impl SweepResult {
         let n = results.len() as f64;
         let n_temps = results[0].mags.len();
         let n_fk_csd = results[0].cluster_stats.fk_csd.len();
-        let n_ov_csd = results[0].cluster_stats.overlap_csd.len();
 
         let fk_len = results[0]
             .cluster_stats
             .fk_csd
             .first()
             .map_or(0, |v| v.len());
-        let ov_len = results[0]
+
+        let n_modes = results[0].cluster_stats.overlap_csd.len();
+        let ov_inner_len = results[0]
+            .cluster_stats
+            .overlap_csd
+            .first()
+            .and_then(|v| v.first())
+            .map_or(0, |v| v.len());
+        let ov_inner_temps = results[0]
             .cluster_stats
             .overlap_csd
             .first()
             .map_or(0, |v| v.len());
 
-        let n_top = results[0].cluster_stats.top_cluster_sizes.len();
+        let n_top_modes = results[0].cluster_stats.top_cluster_sizes.len();
+        let n_top_temps = results[0]
+            .cluster_stats
+            .top_cluster_sizes
+            .first()
+            .map_or(0, |v| v.len());
 
         let m2_tau_len = results[0].diagnostics.mags2_tau.len();
         let q2_tau_len = results[0].diagnostics.overlap2_tau.len();
@@ -80,8 +91,16 @@ impl SweepResult {
             overlap_stats,
             cluster_stats: ClusterStats {
                 fk_csd: (0..n_fk_csd).map(|_| vec![0u64; fk_len]).collect(),
-                overlap_csd: (0..n_ov_csd).map(|_| vec![0u64; ov_len]).collect(),
-                top_cluster_sizes: vec![[0.0; 4]; n_top],
+                overlap_csd: (0..n_modes)
+                    .map(|_| {
+                        (0..ov_inner_temps)
+                            .map(|_| vec![0u64; ov_inner_len])
+                            .collect()
+                    })
+                    .collect(),
+                top_cluster_sizes: (0..n_top_modes)
+                    .map(|_| vec![[0.0; 4]; n_top_temps])
+                    .collect(),
             },
             diagnostics: Diagnostics {
                 mags2_tau: vec![0.0; m2_tau_len],
@@ -122,24 +141,28 @@ impl SweepResult {
                     *ah += sh;
                 }
             }
-            for (a, s) in agg
+            for (am, sm) in agg
                 .cluster_stats
                 .overlap_csd
                 .iter_mut()
                 .zip(r.cluster_stats.overlap_csd.iter())
             {
-                for (ah, &sh) in a.iter_mut().zip(s.iter()) {
-                    *ah += sh;
+                for (a, s) in am.iter_mut().zip(sm.iter()) {
+                    for (ah, &sh) in a.iter_mut().zip(s.iter()) {
+                        *ah += sh;
+                    }
                 }
             }
-            for (a, &s) in agg
+            for (am, sm) in agg
                 .cluster_stats
                 .top_cluster_sizes
                 .iter_mut()
                 .zip(r.cluster_stats.top_cluster_sizes.iter())
             {
-                for k in 0..4 {
-                    a[k] += s[k];
+                for (a, &s) in am.iter_mut().zip(sm.iter()) {
+                    for k in 0..4 {
+                        a[k] += s[k];
+                    }
                 }
             }
             for (a, &v) in agg
@@ -188,9 +211,11 @@ impl SweepResult {
             *v /= n;
         }
 
-        for arr in agg.cluster_stats.top_cluster_sizes.iter_mut() {
-            for v in arr.iter_mut() {
-                *v /= n;
+        for mode_tops in agg.cluster_stats.top_cluster_sizes.iter_mut() {
+            for arr in mode_tops.iter_mut() {
+                for v in arr.iter_mut() {
+                    *v /= n;
+                }
             }
         }
 

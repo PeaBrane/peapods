@@ -91,9 +91,21 @@ pub struct ClusterConfig {
 #[derive(Debug)]
 pub struct OverlapClusterConfig {
     pub interval: usize,
-    pub mode: OverlapClusterBuildMode,
+    pub modes: Vec<OverlapClusterBuildMode>,
     pub cluster_mode: ClusterMode,
     pub collect_stats: bool,
+}
+
+impl OverlapClusterConfig {
+    pub fn max_group_size(&self) -> usize {
+        self.modes.iter().map(|m| m.group_size()).max().unwrap_or(2)
+    }
+}
+
+pub fn parse_overlap_modes(s: &str) -> Result<Vec<OverlapClusterBuildMode>, String> {
+    s.split('+')
+        .map(|part| OverlapClusterBuildMode::try_from(part.trim()))
+        .collect()
 }
 
 fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
