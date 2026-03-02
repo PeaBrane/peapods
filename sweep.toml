@@ -30,7 +30,7 @@ build_modes = ["houdayer", "cmr", "cmr+houdayer", "cmr+houd4", "cmr+houd6"]
 cluster_mode = "wolff"
 
 [diagnostics]
-collect_top_clusters = true
+collect_cluster_stats = true
 equilibration_diagnostic = true
 
 [output]
