@@ -12,10 +12,6 @@ A Python library for simulating Ising spin systems with modern Monte Carlo metho
 The core simulation loop is written in Rust (via PyO3) for performance, with a thin Python wrapper for ease of use.
 Currently focused on spin glass simulation, where the combination of parallel tempering, replica cluster moves, and overlap statistics is of particular interest.
 
-<div style="text-align:center">
-  <img src="./docs/csd.png" alt="CSD" style="width:70%"/>
-</div>
-
 ## Features
 
 - Ising ferromagnets and spin glasses on periodic Bravais lattices (hypercubic, triangular, or any custom neighbor offsets)
