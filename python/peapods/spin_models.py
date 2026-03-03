@@ -158,7 +158,9 @@ class Ising:
             overlap_cluster_build_mode: Overlap cluster algorithm. `"houdayer"`
                 (deterministic, group_size=2), `"houdN"` where N is even >= 2
                 (e.g. `"houd4"`, `"houd6"` — isoenergetic balanced-site
-                criterion, requires `n_replicas >= N`), `"jorg"` (stochastic
+                criterion, requires `n_replicas >= N`;
+                **experimental for N > 2: very likely does not satisfy
+                detailed balance**), `"jorg"` (stochastic
                 FK bonds, group_size=2), or `"cmr"` (two-phase grey+blue,
                 group_size=2). Multiple modes can be alternated with `+`,
                 e.g. `"cmr+houdayer"` round-robins each overlap update call.

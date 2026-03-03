@@ -72,6 +72,12 @@ impl TryFrom<&str> for OverlapClusterBuildMode {
                         "Houdayer group size must be even and >= 2, got {n}"
                     ));
                 }
+                if n > 2 {
+                    eprintln!(
+                        "WARNING: houd{n} (group_size > 2) is experimental and very likely \
+                         does not satisfy detailed balance"
+                    );
+                }
                 Ok(Self::Houdayer(n))
             }
             _ => Err(format!(
