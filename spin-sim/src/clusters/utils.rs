@@ -32,8 +32,8 @@ pub(super) fn union(parent: &mut [u32], rank: &mut [u8], x: u32, y: u32) {
 
 // --- Generic cluster helpers ---
 //
-// `bfs_cluster` and `uf_bonds` factor out the two cluster-building patterns
-// (BFS single-cluster and union-find global decomposition). Each takes a
+// `dfs_cluster` and `uf_bonds` factor out the two cluster-building patterns
+// (DFS single-cluster and union-find global decomposition). Each takes a
 // closure for the algorithm-specific activation logic. The closure is
 // `impl FnMut`, so it is monomorphized at each call site — zero overhead
 // vs hand-inlined code. The closure can capture mutable state (e.g. an RNG
@@ -58,11 +58,11 @@ pub(super) fn find_seed(
     None
 }
 
-/// Grow a BFS cluster from `seed`. `should_add(site, neighbor, dim, forward)`
+/// Grow a DFS cluster from `seed`. `should_add(site, neighbor, dim, forward)`
 /// decides whether to add each not-yet-visited neighbor.
 /// Caller owns buffers: `in_cluster` must be all-false, `stack` must be empty.
 #[inline]
-pub(super) fn bfs_cluster(
+pub(super) fn dfs_cluster(
     lattice: &Lattice,
     seed: usize,
     in_cluster: &mut [bool],
@@ -110,6 +110,24 @@ pub(super) fn uf_bonds(
     }
 
     (parent, rank)
+}
+
+/// Extend an existing union-find by activating additional forward bonds.
+#[inline]
+pub(super) fn uf_bonds_extend(
+    parent: &mut [u32],
+    rank: &mut [u8],
+    lattice: &Lattice,
+    mut should_bond: impl FnMut(usize, usize) -> bool,
+) {
+    for i in 0..lattice.n_spins {
+        for d in 0..lattice.n_neighbors {
+            if should_bond(i, d) {
+                let j = lattice.neighbor_fwd(i, d);
+                union(parent, rank, i as u32, j as u32);
+            }
+        }
+    }
 }
 
 /// Flatten UF parent array in-place and return per-root counts.
@@ -188,7 +206,7 @@ mod tests {
             .collect()
     }
 
-    fn bfs_bond_closure(
+    fn dfs_bond_closure(
         bonds: &HashSet<(usize, usize)>,
     ) -> impl FnMut(usize, usize, usize, bool) -> bool + '_ {
         |site, nb, d, fwd| {
@@ -198,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bfs_bond_based() {
+    fn test_dfs_bond_based() {
         let lattice = lattice_4x4();
         let n = lattice.n_spins;
         let bonds = bond_set();
@@ -206,12 +224,12 @@ mod tests {
         // Seed at 0 — should grow {0, 1, 3, 4}
         let mut in_cluster = vec![false; n];
         let mut stack = Vec::new();
-        bfs_cluster(
+        dfs_cluster(
             &lattice,
             0,
             &mut in_cluster,
             &mut stack,
-            bfs_bond_closure(&bonds),
+            dfs_bond_closure(&bonds),
         );
         let cluster: HashSet<usize> = (0..n).filter(|&i| in_cluster[i]).collect();
         assert_eq!(cluster, [0, 1, 3, 4].into_iter().collect());
@@ -219,12 +237,12 @@ mod tests {
         // Seed at 10 — should grow {10, 11, 14}
         in_cluster.fill(false);
         stack.clear();
-        bfs_cluster(
+        dfs_cluster(
             &lattice,
             10,
             &mut in_cluster,
             &mut stack,
-            bfs_bond_closure(&bonds),
+            dfs_bond_closure(&bonds),
         );
         let cluster: HashSet<usize> = (0..n).filter(|&i| in_cluster[i]).collect();
         assert_eq!(cluster, [10, 11, 14].into_iter().collect());
@@ -232,12 +250,12 @@ mod tests {
         // Seed at 7 — isolated singleton
         in_cluster.fill(false);
         stack.clear();
-        bfs_cluster(
+        dfs_cluster(
             &lattice,
             7,
             &mut in_cluster,
             &mut stack,
-            bfs_bond_closure(&bonds),
+            dfs_bond_closure(&bonds),
         );
         let cluster: HashSet<usize> = (0..n).filter(|&i| in_cluster[i]).collect();
         assert_eq!(cluster, [7].into_iter().collect());
@@ -263,7 +281,7 @@ mod tests {
         [0, 3, 10].into_iter().collect()
     }
 
-    fn bfs_site_closure(
+    fn dfs_site_closure(
         sites: &HashSet<usize>,
     ) -> impl FnMut(usize, usize, usize, bool) -> bool + '_ {
         |site, nb, _d, fwd| {
@@ -273,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bfs_site_based() {
+    fn test_dfs_site_based() {
         let lattice = lattice_4x4();
         let n = lattice.n_spins;
         let sites = active_sites();
@@ -281,12 +299,12 @@ mod tests {
         // Seed at 0 — should grow {0, 1, 3, 4, 7} (3→7 adds site 7)
         let mut in_cluster = vec![false; n];
         let mut stack = Vec::new();
-        bfs_cluster(
+        dfs_cluster(
             &lattice,
             0,
             &mut in_cluster,
             &mut stack,
-            bfs_site_closure(&sites),
+            dfs_site_closure(&sites),
         );
         let cluster: HashSet<usize> = (0..n).filter(|&i| in_cluster[i]).collect();
         assert_eq!(cluster, [0, 1, 3, 4, 7].into_iter().collect());
@@ -294,12 +312,12 @@ mod tests {
         // Seed at 10 — should grow {10, 11, 14}
         in_cluster.fill(false);
         stack.clear();
-        bfs_cluster(
+        dfs_cluster(
             &lattice,
             10,
             &mut in_cluster,
             &mut stack,
-            bfs_site_closure(&sites),
+            dfs_site_closure(&sites),
         );
         let cluster: HashSet<usize> = (0..n).filter(|&i| in_cluster[i]).collect();
         assert_eq!(cluster, [10, 11, 14].into_iter().collect());
