@@ -1,5 +1,6 @@
 use super::utils::{
-    bfs_cluster, find, find_seed, top4_sizes, uf_bonds, uf_flatten_counts, uf_histogram,
+    dfs_cluster, find, find_seed, top4_sizes, uf_bonds, uf_bonds_extend, uf_flatten_counts,
+    uf_histogram,
 };
 use crate::config::{ClusterMode, OverlapClusterBuildMode};
 use crate::geometry::Lattice;
@@ -207,7 +208,7 @@ fn houdayer_step(
             };
             let mut in_cluster = vec![false; n_spins];
             let mut stack = Vec::with_capacity(n_spins);
-            bfs_cluster(
+            dfs_cluster(
                 lattice,
                 seed,
                 &mut in_cluster,
@@ -344,7 +345,7 @@ fn jorg_step(
             };
             let mut in_cluster = vec![false; n_spins];
             let mut stack = Vec::with_capacity(n_spins);
-            bfs_cluster(
+            dfs_cluster(
                 lattice,
                 seed,
                 &mut in_cluster,
@@ -383,22 +384,27 @@ fn jorg_step(
     }
 }
 
-/// CMR two-phase overlap cluster update.
+/// CMR two-phase overlap cluster update (Machta-Newman-Stein 2007, eqs 10-11).
 ///
-/// Phase A — Grey cluster randomization:
-/// 1. Grey bond: union of two per-replica FK graphs with bond prob 1-r
-///    where r = exp(-2|J_ij|/T). Bond if (a_sat AND rand < 1-r) OR (b_sat AND rand < 1-r).
-/// 2. SW: flip each replica independently with prob 1/2 per non-singleton cluster.
-///    Wolff: pick random seed, grow grey cluster, pick k ∈ {1,2,3} uniformly,
-///    flip replica a if k&1, flip replica b if k&2.
+/// Phase 1 — Blue clusters:
+/// 1. Blue bond: doubly-satisfied edges (both replicas satisfied) with prob 1-r²
+///    where r = exp(-2|J_ij|/T).
+/// 2. SW: flip each non-singleton blue cluster (both replicas) with prob 1/2.
+///    Wolff: flip seed's blue cluster (both replicas, always).
+/// 3. CSD/top4 from blue clusters.
 ///
-/// Phase B — Blue cluster flip (same as Jörg but on updated spins):
-/// 3. Re-evaluate is_active: σ_i ≠ τ_i after phase A.
-/// 4. Blue bond: stochastic, both endpoints same active status,
-///    p = 1 - exp(-4 J σ_i σ_j / T) on satisfied bonds.
-/// 5. SW: flip each non-singleton blue cluster (both replicas) with prob 1/2.
-///    Wolff: grow from same seed as phase A, flip both replicas.
-/// 6. CSD/top4 from blue clusters only.
+/// Phase 2 — Grey clusters (extend blue UF with red bonds):
+/// 4. Red bond: singly-satisfied edges (exactly one replica satisfied, evaluated on
+///    post-blue-flip spins) with prob 1-r. Blue flips negate both replicas, which
+///    swaps which replica is satisfied on a singly-satisfied edge but preserves the
+///    singly-satisfied classification. So red bonds can be evaluated on post-blue-flip
+///    spins.
+/// 5. Grey = Blue ∪ Red (blue ⊂ grey always).
+/// 6. SW: flip each non-singleton grey cluster with k ∈ {0,1,2,3}.
+///    Wolff: flip seed's grey cluster with k ∈ {1,2,3}.
+///
+/// Grey clusters are supersets of blue clusters; sites in blue clusters receive both
+/// the blue flip and the grey flip. This composition is the correct CMR update.
 #[allow(clippy::too_many_arguments)]
 fn cmr_step(
     lattice: &Lattice,
@@ -423,7 +429,7 @@ fn cmr_step(
 
     let sp = spins.as_mut_ptr() as usize;
     let rp = rngs.as_mut_ptr() as usize;
-    let use_uf_blue = !wolff || csd_out.is_some() || top4_out.is_some();
+    let use_uf = !wolff || csd_out.is_some() || top4_out.is_some();
 
     let cp = csd_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_csd = csd_out.is_some();
@@ -437,19 +443,132 @@ fn cmr_step(
         let base_b = systems[1] * n_spins;
         let sp_ptr = sp as *mut i8;
 
-        // === Phase A: Grey cluster randomization ===
-        let grey_seed: usize;
-
-        if wolff {
-            // Wolff grey: BFS from random seed, flip with k ∈ {1,2,3}
-            let Some(seed) = find_seed(n_spins, rng, |_| true) else {
-                return;
+        if use_uf {
+            let seed = if wolff {
+                rng.gen_range(0..n_spins)
+            } else {
+                0 // unused
             };
-            grey_seed = seed;
 
+            // === Phase 1: Blue clusters ===
+            // Blue bond: doubly-satisfied edges with prob 1 - r²
+            let (mut parent, mut rank) = uf_bonds(lattice, |i, d| {
+                let j = lattice.neighbor_fwd(i, d);
+                let coupling = couplings[i * n_neighbors + d];
+                let j_abs = coupling.abs();
+                let r = (-2.0 * j_abs / temp).exp();
+
+                let a_sat =
+                    *sp_ptr.add(base_a + i) as f32 * *sp_ptr.add(base_a + j) as f32 * coupling
+                        > 0.0;
+                let b_sat =
+                    *sp_ptr.add(base_b + i) as f32 * *sp_ptr.add(base_b + j) as f32 * coupling
+                        > 0.0;
+
+                a_sat && b_sat && rng.gen::<f32>() < 1.0 - r * r
+            });
+
+            let counts = uf_flatten_counts(&mut parent);
+            if has_csd {
+                let csd_slot = &mut *(cp as *mut Vec<u64>).add(t * n_pairs + g);
+                uf_histogram(&counts, csd_slot.as_mut_slice());
+            }
+            if has_top4 {
+                let out = &mut *(tp as *mut [u32; 4]).add(t * n_pairs + g);
+                *out = top4_sizes(&counts);
+            }
+
+            // Flip blue clusters (both replicas jointly)
+            if wolff {
+                let seed_root = parent[seed] as usize;
+                for (i, &p) in parent.iter().enumerate().take(n_spins) {
+                    if p as usize == seed_root {
+                        *sp_ptr.add(base_a + i) *= -1;
+                        *sp_ptr.add(base_b + i) *= -1;
+                    }
+                }
+            } else {
+                let mut do_flip = vec![u8::MAX; n_spins];
+                for &p in parent.iter().take(n_spins) {
+                    let root = p as usize;
+                    if counts[root] > 1 && do_flip[root] == u8::MAX {
+                        do_flip[root] = u8::from(rng.gen::<f32>() < 0.5);
+                    }
+                }
+                for (i, &p) in parent.iter().enumerate().take(n_spins) {
+                    if do_flip[p as usize] == 1 {
+                        *sp_ptr.add(base_a + i) *= -1;
+                        *sp_ptr.add(base_b + i) *= -1;
+                    }
+                }
+            }
+
+            // === Phase 2: Grey clusters (extend blue UF with red bonds) ===
+            // Red bond: singly-satisfied edges on post-flip spins, prob 1 - r.
+            // No clone needed: blue flips preserve the singly-satisfied classification.
+            uf_bonds_extend(&mut parent, &mut rank, lattice, |i, d| {
+                let j = lattice.neighbor_fwd(i, d);
+                let coupling = couplings[i * n_neighbors + d];
+                let j_abs = coupling.abs();
+                let r = (-2.0 * j_abs / temp).exp();
+
+                let a_sat =
+                    *sp_ptr.add(base_a + i) as f32 * *sp_ptr.add(base_a + j) as f32 * coupling
+                        > 0.0;
+                let b_sat =
+                    *sp_ptr.add(base_b + i) as f32 * *sp_ptr.add(base_b + j) as f32 * coupling
+                        > 0.0;
+
+                a_sat != b_sat && rng.gen::<f32>() < 1.0 - r
+            });
+
+            let grey_counts = uf_flatten_counts(&mut parent);
+
+            // Flip grey clusters (each replica independently)
+            if wolff {
+                let seed_root = parent[seed] as usize;
+                let k: u8 = rng.gen_range(1..=3);
+                let flip_a = k & 1 != 0;
+                let flip_b = k & 2 != 0;
+                for (i, &p) in parent.iter().enumerate().take(n_spins) {
+                    if p as usize == seed_root {
+                        if flip_a {
+                            *sp_ptr.add(base_a + i) *= -1;
+                        }
+                        if flip_b {
+                            *sp_ptr.add(base_b + i) *= -1;
+                        }
+                    }
+                }
+            } else {
+                let mut cluster_k = vec![u8::MAX; n_spins];
+                for &p in parent.iter().take(n_spins) {
+                    let root = p as usize;
+                    if grey_counts[root] > 1 && cluster_k[root] == u8::MAX {
+                        cluster_k[root] = rng.gen_range(0..=3);
+                    }
+                }
+                for (i, &p) in parent.iter().enumerate().take(n_spins) {
+                    let k = cluster_k[p as usize];
+                    if k == 0 || k == u8::MAX {
+                        continue;
+                    }
+                    if k & 1 != 0 {
+                        *sp_ptr.add(base_a + i) *= -1;
+                    }
+                    if k & 2 != 0 {
+                        *sp_ptr.add(base_b + i) *= -1;
+                    }
+                }
+            }
+        } else {
+            // Pure Wolff BFS two-phase (no stats needed)
+            let seed = rng.gen_range(0..n_spins);
+
+            // === Phase 1: Blue cluster BFS ===
             let mut in_cluster = vec![false; n_spins];
             let mut stack = Vec::with_capacity(n_spins);
-            bfs_cluster(
+            dfs_cluster(
                 lattice,
                 seed,
                 &mut in_cluster,
@@ -460,24 +579,87 @@ fn cmr_step(
                     } else {
                         nb * n_neighbors + d
                     };
-                    let j_abs = couplings[coupling_idx].abs();
+                    let coupling = couplings[coupling_idx];
+                    let j_abs = coupling.abs();
                     let r = (-2.0 * j_abs / temp).exp();
 
-                    let a_sat_site = *sp_ptr.add(base_a + site) as f32
+                    let a_sat = *sp_ptr.add(base_a + site) as f32
                         * *sp_ptr.add(base_a + nb) as f32
-                        * couplings[coupling_idx]
+                        * coupling
                         > 0.0;
-                    let b_sat_site = *sp_ptr.add(base_b + site) as f32
+                    let b_sat = *sp_ptr.add(base_b + site) as f32
                         * *sp_ptr.add(base_b + nb) as f32
-                        * couplings[coupling_idx]
+                        * coupling
                         > 0.0;
 
-                    (a_sat_site && rng.gen::<f32>() < 1.0 - r)
-                        || (b_sat_site && rng.gen::<f32>() < 1.0 - r)
+                    a_sat && b_sat && rng.gen::<f32>() < 1.0 - r * r
                 },
             );
 
-            // Pick k ∈ {1,2,3}: flip replica a if k&1, replica b if k&2
+            // Flip blue cluster (both replicas always)
+            for (i, &in_c) in in_cluster.iter().enumerate() {
+                if in_c {
+                    *sp_ptr.add(base_a + i) *= -1;
+                    *sp_ptr.add(base_b + i) *= -1;
+                }
+            }
+
+            // === Phase 2: Grey cluster (extend from blue frontier) ===
+            // Re-seed BFS from all blue sites; in_cluster prevents re-adding them.
+            for (i, &in_c) in in_cluster.iter().enumerate() {
+                if in_c {
+                    stack.push(i);
+                }
+            }
+
+            // Continue BFS with red bond rule (singly-satisfied, prob 1-r)
+            while let Some(site) = stack.pop() {
+                for d in 0..lattice.n_neighbors {
+                    let fwd = lattice.neighbor_fwd(site, d);
+                    if !in_cluster[fwd] {
+                        let coupling = couplings[site * n_neighbors + d];
+                        let j_abs = coupling.abs();
+                        let r = (-2.0 * j_abs / temp).exp();
+
+                        let a_sat = *sp_ptr.add(base_a + site) as f32
+                            * *sp_ptr.add(base_a + fwd) as f32
+                            * coupling
+                            > 0.0;
+                        let b_sat = *sp_ptr.add(base_b + site) as f32
+                            * *sp_ptr.add(base_b + fwd) as f32
+                            * coupling
+                            > 0.0;
+
+                        if a_sat != b_sat && rng.gen::<f32>() < 1.0 - r {
+                            in_cluster[fwd] = true;
+                            stack.push(fwd);
+                        }
+                    }
+
+                    let bwd = lattice.neighbor_bwd(site, d);
+                    if !in_cluster[bwd] {
+                        let coupling = couplings[bwd * n_neighbors + d];
+                        let j_abs = coupling.abs();
+                        let r = (-2.0 * j_abs / temp).exp();
+
+                        let a_sat = *sp_ptr.add(base_a + site) as f32
+                            * *sp_ptr.add(base_a + bwd) as f32
+                            * coupling
+                            > 0.0;
+                        let b_sat = *sp_ptr.add(base_b + site) as f32
+                            * *sp_ptr.add(base_b + bwd) as f32
+                            * coupling
+                            > 0.0;
+
+                        if a_sat != b_sat && rng.gen::<f32>() < 1.0 - r {
+                            in_cluster[bwd] = true;
+                            stack.push(bwd);
+                        }
+                    }
+                }
+            }
+
+            // Flip grey cluster with k ∈ {1,2,3}
             let k: u8 = rng.gen_range(1..=3);
             let flip_a = k & 1 != 0;
             let flip_b = k & 2 != 0;
@@ -489,149 +671,6 @@ fn cmr_step(
                     if flip_b {
                         *sp_ptr.add(base_b + i) *= -1;
                     }
-                }
-            }
-        } else {
-            // SW grey: UF decomposition, flip each replica independently with prob 1/2
-            grey_seed = rng.gen_range(0..n_spins);
-
-            let (mut parent, _) = uf_bonds(lattice, |i, d| {
-                let j = lattice.neighbor_fwd(i, d);
-                let j_abs = couplings[i * n_neighbors + d].abs();
-                let r = (-2.0 * j_abs / temp).exp();
-
-                let a_sat = *sp_ptr.add(base_a + i) as f32
-                    * *sp_ptr.add(base_a + j) as f32
-                    * couplings[i * n_neighbors + d]
-                    > 0.0;
-                let b_sat = *sp_ptr.add(base_b + i) as f32
-                    * *sp_ptr.add(base_b + j) as f32
-                    * couplings[i * n_neighbors + d]
-                    > 0.0;
-
-                (a_sat && rng.gen::<f32>() < 1.0 - r) || (b_sat && rng.gen::<f32>() < 1.0 - r)
-            });
-
-            let counts = uf_flatten_counts(&mut parent);
-
-            // For each non-singleton grey cluster, flip each replica independently with prob 1/2
-            // Generate one random per cluster root (2 bits: flip_a, flip_b)
-            let mut cluster_flip = vec![0u8; n_spins];
-            for (i, &p) in parent.iter().enumerate().take(n_spins) {
-                let root = p as usize;
-                if counts[root] > 1 && root == i {
-                    cluster_flip[root] = rng.gen_range(0..=3);
-                }
-            }
-
-            for (i, &p) in parent.iter().enumerate().take(n_spins) {
-                let k = cluster_flip[p as usize];
-                if k == 0 {
-                    continue;
-                }
-                if k & 1 != 0 {
-                    *sp_ptr.add(base_a + i) *= -1;
-                }
-                if k & 2 != 0 {
-                    *sp_ptr.add(base_b + i) *= -1;
-                }
-            }
-        }
-
-        // === Phase B: Blue cluster flip ===
-        let is_active = |i: usize| -> bool { *sp_ptr.add(base_a + i) != *sp_ptr.add(base_b + i) };
-
-        if use_uf_blue {
-            let (mut parent, _) = uf_bonds(lattice, |i, d| {
-                let j = lattice.neighbor_fwd(i, d);
-                if is_active(i) != is_active(j) {
-                    return false;
-                }
-                let inter = *sp_ptr.add(base_a + i) as f32
-                    * *sp_ptr.add(base_a + j) as f32
-                    * couplings[i * n_neighbors + d];
-                if inter <= 0.0 {
-                    return false;
-                }
-                rng.gen::<f32>() < 1.0 - (-4.0 * inter / temp).exp()
-            });
-
-            if wolff {
-                // Grow blue cluster from same seed as grey
-                let seed_root = find(&mut parent, grey_seed as u32);
-                for i in 0..n_spins {
-                    if find(&mut parent, i as u32) == seed_root {
-                        *sp_ptr.add(base_a + i) *= -1;
-                        *sp_ptr.add(base_b + i) *= -1;
-                    }
-                }
-                if has_csd || has_top4 {
-                    let counts = uf_flatten_counts(&mut parent);
-                    if has_csd {
-                        let csd_slot = &mut *(cp as *mut Vec<u64>).add(t * n_pairs + g);
-                        uf_histogram(&counts, csd_slot.as_mut_slice());
-                    }
-                    if has_top4 {
-                        let out = &mut *(tp as *mut [u32; 4]).add(t * n_pairs + g);
-                        *out = top4_sizes(&counts);
-                    }
-                }
-            } else {
-                let counts = uf_flatten_counts(&mut parent);
-                if has_csd {
-                    let csd_slot = &mut *(cp as *mut Vec<u64>).add(t * n_pairs + g);
-                    uf_histogram(&counts, csd_slot.as_mut_slice());
-                }
-                if has_top4 {
-                    let out = &mut *(tp as *mut [u32; 4]).add(t * n_pairs + g);
-                    *out = top4_sizes(&counts);
-                }
-                // SW: flip each non-singleton blue cluster with prob 1/2
-                let mut cluster_do_flip = vec![u8::MAX; n_spins]; // sentinel = not decided
-                for &p in parent.iter().take(n_spins) {
-                    let root = p as usize;
-                    if counts[root] > 1 && cluster_do_flip[root] == u8::MAX {
-                        cluster_do_flip[root] = rng.gen_range(0..=1);
-                    }
-                }
-                for (i, &p) in parent.iter().enumerate().take(n_spins) {
-                    if cluster_do_flip[p as usize] == 1 {
-                        *sp_ptr.add(base_a + i) *= -1;
-                        *sp_ptr.add(base_b + i) *= -1;
-                    }
-                }
-            }
-        } else {
-            // Pure Wolff blue without stats — grow BFS from grey_seed
-            let mut in_cluster = vec![false; n_spins];
-            let mut stack = Vec::with_capacity(n_spins);
-            bfs_cluster(
-                lattice,
-                grey_seed,
-                &mut in_cluster,
-                &mut stack,
-                |site, nb, d, fwd| {
-                    if is_active(site) != is_active(nb) {
-                        return false;
-                    }
-                    let coupling = if fwd {
-                        couplings[site * n_neighbors + d]
-                    } else {
-                        couplings[nb * n_neighbors + d]
-                    };
-                    let inter = *sp_ptr.add(base_a + site) as f32
-                        * *sp_ptr.add(base_a + nb) as f32
-                        * coupling;
-                    if inter <= 0.0 {
-                        return false;
-                    }
-                    rng.gen::<f32>() < 1.0 - (-4.0 * inter / temp).exp()
-                },
-            );
-            for (i, &in_c) in in_cluster.iter().enumerate() {
-                if in_c {
-                    *sp_ptr.add(base_a + i) *= -1;
-                    *sp_ptr.add(base_b + i) *= -1;
                 }
             }
         }

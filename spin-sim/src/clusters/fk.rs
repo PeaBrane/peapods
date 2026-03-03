@@ -1,4 +1,4 @@
-use super::utils::{bfs_cluster, uf_bonds, uf_flatten_counts, uf_histogram};
+use super::utils::{dfs_cluster, uf_bonds, uf_flatten_counts, uf_histogram};
 use crate::geometry::Lattice;
 use crate::parallel::par_over_replicas;
 use rand::Rng;
@@ -49,7 +49,7 @@ pub fn fk_update(
                 let mut in_cluster = vec![false; n_spins];
                 let mut stack = Vec::with_capacity(n_spins);
 
-                bfs_cluster(
+                dfs_cluster(
                     lattice,
                     seed,
                     &mut in_cluster,

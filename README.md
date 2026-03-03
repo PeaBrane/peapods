@@ -6,13 +6,11 @@
 [![docs.rs](https://docs.rs/spin-sim/badge.svg)](https://docs.rs/spin-sim)
 [![docs](https://img.shields.io/badge/docs-mkdocs-blue)](https://peabrane.github.io/peapods/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![arXiv](https://img.shields.io/badge/arXiv-2602.19045-b31b1b.svg)](https://arxiv.org/abs/2602.19045)
 
 A Python library for simulating Ising spin systems with modern Monte Carlo methods.
 The core simulation loop is written in Rust (via PyO3) for performance, with a thin Python wrapper for ease of use.
-
-<div style="text-align:center">
-  <img src="./docs/csd.png" alt="CSD" style="width:70%"/>
-</div>
+Currently focused on spin glass simulation, where the combination of parallel tempering, replica cluster moves, and overlap statistics is of particular interest.
 
 ## Features
 
