@@ -186,8 +186,15 @@ fn houdayer_step(
                     let out = &mut *(tp as *mut [u32; 4]).add(t * n_pairs + g);
                     *out = top4_sizes(&counts);
                 }
+                let mut do_flip = vec![u8::MAX; n_spins];
+                for &p in parent.iter().take(n_spins) {
+                    let root = p as usize;
+                    if counts[root] > 1 && do_flip[root] == u8::MAX {
+                        do_flip[root] = u8::from(rng.gen::<f32>() < 0.5);
+                    }
+                }
                 for (i, &p) in parent.iter().enumerate().take(n_spins) {
-                    if counts[p as usize] > 1 {
+                    if do_flip[p as usize] == 1 {
                         for &base in &bases {
                             *sp_ptr.add(base + i) *= -1;
                         }
@@ -317,8 +324,15 @@ fn jorg_step(
                     let out = &mut *(tp as *mut [u32; 4]).add(t * n_pairs + g);
                     *out = top4_sizes(&counts);
                 }
+                let mut do_flip = vec![u8::MAX; n_spins];
+                for &p in parent.iter().take(n_spins) {
+                    let root = p as usize;
+                    if counts[root] > 1 && do_flip[root] == u8::MAX {
+                        do_flip[root] = u8::from(rng.gen::<f32>() < 0.5);
+                    }
+                }
                 for (i, &p) in parent.iter().enumerate().take(n_spins) {
-                    if counts[p as usize] > 1 {
+                    if do_flip[p as usize] == 1 {
                         *sp_ptr.add(base_a + i) *= -1;
                         *sp_ptr.add(base_b + i) *= -1;
                     }
@@ -500,13 +514,13 @@ fn cmr_step(
 
             let counts = uf_flatten_counts(&mut parent);
 
-            // For each non-singleton grey cluster, flip each replica with prob 1/2
+            // For each non-singleton grey cluster, flip each replica independently with prob 1/2
             // Generate one random per cluster root (2 bits: flip_a, flip_b)
             let mut cluster_flip = vec![0u8; n_spins];
             for (i, &p) in parent.iter().enumerate().take(n_spins) {
                 let root = p as usize;
                 if counts[root] > 1 && root == i {
-                    cluster_flip[root] = rng.gen_range(1..=3);
+                    cluster_flip[root] = rng.gen_range(0..=3);
                 }
             }
 
