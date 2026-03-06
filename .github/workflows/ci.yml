@@ -31,6 +31,42 @@ jobs:
       - run: cargo clippy -- -D warnings
       - run: cargo test
 
+  test-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build and install
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv pip install maturin numpy pytest pytest-codeblocks
+          maturin develop --release
+
+      - name: README Python examples
+        run: source .venv/bin/activate && pytest --codeblocks README.md -v
+
+      - name: README CLI examples
+        run: |
+          source .venv/bin/activate
+          peapods simulate --shape 8 8 --temp-min 1.5 --temp-max 3.0 \
+              --n-sweeps 100 --cluster-interval 1 --pt-interval 1 --n-replicas 2
+          peapods simulate --shape 4 4 4 --couplings bimodal \
+              --temp-min 0.8 --temp-max 1.4 --n-temps 8 --n-sweeps 100 \
+              --pt-interval 1 --overlap-cluster-update-interval 1 --n-replicas 4
+          peapods simulate --shape 8 8 --temp-min 1.5 --temp-max 3.0 \
+              --n-sweeps 100 --pt-interval 1 --n-replicas 2 -o results.npz
+
   test-ferromagnets:
     runs-on: ubuntu-latest
     steps:
