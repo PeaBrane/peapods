@@ -32,6 +32,7 @@ The following algorithms are currently supported:
 
 Run simulations directly from the terminal:
 
+<!--pytest-codeblocks:skip-->
 ```bash
 # 2D ferromagnet with cluster updates and parallel tempering
 peapods simulate --shape 32 32 --temp-min 1.5 --temp-max 3.0 \
@@ -67,6 +68,7 @@ For a more complete example, check out [examples/energy_vs_temperature.py](examp
 
 We recommend [uv](https://docs.astral.sh/uv/) for package management. Bare `pip` works too (if you don't mind using a worse management tool).
 
+<!--pytest-codeblocks:skip-->
 ```bash
 uv venv
 source .venv/bin/activate
@@ -79,6 +81,7 @@ Pre-built wheels are available for Linux (x86_64, aarch64), macOS (Intel, Apple 
 
 Requires a Rust toolchain and [maturin](https://www.maturin.rs/):
 
+<!--pytest-codeblocks:skip-->
 ```bash
 uv pip install maturin numpy
 maturin develop --release
