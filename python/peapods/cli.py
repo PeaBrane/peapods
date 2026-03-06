@@ -520,8 +520,6 @@ def run_simulate(args):
         args.n_sweeps,
         **sample_kwargs(args),
         warmup_ratio=args.warmup_ratio,
-        collect_cluster_stats=args.collect_cluster_stats,
-        equilibration_diagnostic=args.equilibration_diagnostic,
     )
 
     has_overlap = hasattr(model, "sg_binder")
