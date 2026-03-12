@@ -178,6 +178,12 @@ def _add_sweep_common_args(parser):
             "own L1 cache."
         ),
     )
+    parser.add_argument(
+        "--snapshot-interval",
+        type=int,
+        default=None,
+        help="Save cluster snapshots every N sweeps (must be multiple of overlap_cluster interval)",
+    )
 
 
 def _add_sweep_args(parser):
@@ -294,6 +300,7 @@ _SWEEP_DEFAULTS = dict(
     save_data=False,
     output_dir=".",
     sequential=False,
+    snapshot_interval=None,
 )
 
 
@@ -368,6 +375,8 @@ def _load_sweep_config(path):
                 if isinstance(oc["cluster_mode"], list)
                 else [oc["cluster_mode"]]
             )
+        if "snapshot_interval" in oc:
+            kw["snapshot_interval"] = oc["snapshot_interval"]
     if "diagnostics" in cfg:
         d = cfg["diagnostics"]
         if "collect_cluster_stats" in d:
@@ -426,6 +435,7 @@ def run_sweep_cli(args):
         "save_data": args.save_data,
         "output_dir": args.output_dir,
         "sequential": args.sequential,
+        "snapshot_interval": args.snapshot_interval,
     }
     for key, val in cli_map.items():
         if val is not None:
@@ -484,6 +494,7 @@ def run_sweep_cli(args):
         save_data=kw["save_data"],
         output_dir=kw["output_dir"],
         sequential=kw["sequential"],
+        snapshot_interval=kw["snapshot_interval"],
     )
 
 

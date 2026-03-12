@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::config::{SimConfig, SweepMode};
 use crate::geometry::Lattice;
 use crate::statistics::{
-    sokal_tau, AutocorrAccum, ClusterStats, Diagnostics, EquilDiagnosticAccum, OverlapAccum,
-    Statistics, SweepResult,
+    sokal_tau, AutocorrAccum, ClusterSnapshot, ClusterStats, Diagnostics, EquilDiagnosticAccum,
+    OverlapAccum, Statistics, SweepResult,
 };
 use crate::{clusters, mcmc, spins};
 use rayon::prelude::*;
@@ -24,6 +24,7 @@ use validator::Validate;
 /// 5. Optional parallel tempering (every `pt_interval` sweeps)
 ///
 /// `on_sweep` is called once per sweep (useful for progress bars).
+#[allow(clippy::too_many_arguments)]
 pub fn run_sweep_loop(
     lattice: &Lattice,
     real: &mut Realization,
@@ -32,6 +33,7 @@ pub fn run_sweep_loop(
     config: &SimConfig,
     interrupted: &AtomicBool,
     on_sweep: &(dyn Fn() + Sync),
+    realization_idx: usize,
 ) -> Result<SweepResult, String> {
     config.validate().map_err(|e| format!("{e}"))?;
 
@@ -79,6 +81,41 @@ pub fn run_sweep_loop(
     };
 
     let mut overlap_call_count: usize = 0;
+
+    let snapshot_interval = if realization_idx == 0 {
+        config
+            .overlap_cluster
+            .as_ref()
+            .and_then(|oc| oc.snapshot_interval)
+    } else {
+        None
+    };
+    let n_pair_slots = n_temps * n_pairs;
+    let mut snap_buf: Vec<Vec<u32>> = if snapshot_interval.is_some() {
+        (0..n_pair_slots)
+            .map(|_| Vec::with_capacity(n_spins))
+            .collect()
+    } else {
+        vec![]
+    };
+    let mut blue_snap_buf: Vec<Vec<u32>> = if snapshot_interval.is_some() {
+        (0..n_pair_slots)
+            .map(|_| Vec::with_capacity(n_spins))
+            .collect()
+    } else {
+        vec![]
+    };
+    let mut spin_snap_buf: Vec<Vec<[Vec<i8>; 2]>> = if snapshot_interval.is_some() {
+        (0..n_pair_slots).map(|_| Vec::new()).collect()
+    } else {
+        vec![]
+    };
+    let mut sid_snap_buf: Vec<Vec<[usize; 2]>> = if snapshot_interval.is_some() {
+        (0..n_pair_slots).map(|_| Vec::new()).collect()
+    } else {
+        vec![]
+    };
+    let mut cluster_snapshots: Vec<ClusterSnapshot> = Vec::new();
 
     let mut mags_stat = Statistics::new(n_temps, 1);
     let mut mags2_stat = Statistics::new(n_temps, 1);
@@ -324,6 +361,38 @@ pub fn run_sweep_loop(
                     None
                 };
 
+                let take_snapshot =
+                    snapshot_interval.is_some_and(|si| sweep_id % si == 0) && record;
+
+                let is_cmr = matches!(mode, crate::config::OverlapClusterBuildMode::Cmr);
+
+                let snap = if take_snapshot {
+                    for buf in spin_snap_buf.iter_mut() {
+                        buf.clear();
+                    }
+                    for buf in sid_snap_buf.iter_mut() {
+                        buf.clear();
+                    }
+                    Some(snap_buf.as_mut_slice())
+                } else {
+                    None
+                };
+                let blue_snap = if take_snapshot && is_cmr {
+                    Some(blue_snap_buf.as_mut_slice())
+                } else {
+                    None
+                };
+                let spin_snap = if take_snapshot {
+                    Some(spin_snap_buf.as_mut_slice())
+                } else {
+                    None
+                };
+                let sid_snap = if take_snapshot {
+                    Some(sid_snap_buf.as_mut_slice())
+                } else {
+                    None
+                };
+
                 clusters::overlap_update(
                     lattice,
                     &mut real.spins,
@@ -338,7 +407,45 @@ pub fn run_sweep_loop(
                     ov_csd_out,
                     top4_out,
                     config.sequential,
+                    snap,
+                    blue_snap,
+                    spin_snap,
+                    sid_snap,
                 );
+
+                if take_snapshot {
+                    let ids: Vec<Vec<u32>> = (0..n_temps)
+                        .map(|t| snap_buf[t * n_pairs].clone())
+                        .collect();
+                    let blue = if is_cmr {
+                        Some(
+                            (0..n_temps)
+                                .map(|t| blue_snap_buf[t * n_pairs].clone())
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    };
+                    let spins: Vec<[Vec<i8>; 2]> = (0..n_temps)
+                        .map(|t| {
+                            spin_snap_buf[t * n_pairs]
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| [vec![], vec![]])
+                        })
+                        .collect();
+                    let sids: Vec<[usize; 2]> = (0..n_temps)
+                        .map(|t| sid_snap_buf[t * n_pairs].first().copied().unwrap_or([0, 0]))
+                        .collect();
+                    cluster_snapshots.push(ClusterSnapshot {
+                        sweep_id,
+                        mode_idx,
+                        cluster_ids: ids,
+                        blue_ids: blue,
+                        spins,
+                        system_ids: sids,
+                    });
+                }
 
                 if oc_cfg.collect_stats && record {
                     for (slot, buf) in overlap_csd_buf.iter().enumerate() {
@@ -444,6 +551,7 @@ pub fn run_sweep_loop(
             overlap2_tau,
             equil_checkpoints,
         },
+        cluster_snapshots,
     })
 }
 
@@ -470,12 +578,14 @@ pub fn run_sweep_parallel(
             config,
             interrupted,
             on_sweep,
+            0,
         );
     }
 
     let results: Vec<Result<SweepResult, String>> = realizations
         .par_iter_mut()
-        .map(|real| {
+        .enumerate()
+        .map(|(idx, real)| {
             run_sweep_loop(
                 lattice,
                 real,
@@ -484,10 +594,14 @@ pub fn run_sweep_parallel(
                 config,
                 interrupted,
                 on_sweep,
+                idx,
             )
         })
         .collect();
 
-    let results: Vec<SweepResult> = results.into_iter().collect::<Result<Vec<_>, _>>()?;
-    Ok(SweepResult::aggregate(&results))
+    let mut results: Vec<SweepResult> = results.into_iter().collect::<Result<Vec<_>, _>>()?;
+    let snapshots = std::mem::take(&mut results[0].cluster_snapshots);
+    let mut agg = SweepResult::aggregate(&results);
+    agg.cluster_snapshots = snapshots;
+    Ok(agg)
 }

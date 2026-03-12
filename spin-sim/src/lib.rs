@@ -46,7 +46,7 @@
 //! use std::sync::atomic::AtomicBool;
 //! let interrupted = AtomicBool::new(false);
 //! let result = run_sweep_loop(
-//!     &lattice, &mut real, 2, temps.len(), &config, &interrupted, &|| {},
+//!     &lattice, &mut real, 2, temps.len(), &config, &interrupted, &|| {}, 0,
 //! ).unwrap();
 //! ```
 //!
@@ -64,4 +64,4 @@ mod parallel;
 
 pub use geometry::Lattice;
 pub use simulation::{run_sweep_loop, run_sweep_parallel, Realization};
-pub use statistics::{ClusterStats, Diagnostics, EquilCheckpoint, SweepResult};
+pub use statistics::{ClusterSnapshot, ClusterStats, Diagnostics, EquilCheckpoint, SweepResult};

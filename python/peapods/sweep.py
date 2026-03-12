@@ -314,6 +314,7 @@ def run_sweep(
     save_data=False,
     output_dir=".",
     sequential=False,
+    snapshot_interval=None,
 ):
     """Run a parameter sweep over sizes and configurations.
 
@@ -399,6 +400,7 @@ def run_sweep(
                 autocorrelation_max_lag=autocorrelation_max_lag,
                 sequential=sequential,
                 equilibration_diagnostic=equilibration_diagnostic,
+                snapshot_interval=snapshot_interval,
             )
             elapsed = time.perf_counter() - t0
             print(f"  {elapsed:.2f}s")

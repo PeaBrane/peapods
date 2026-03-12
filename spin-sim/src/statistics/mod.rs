@@ -7,5 +7,5 @@ mod stats;
 pub use autocorrelation::{sokal_tau, AutocorrAccum};
 pub use equilibration::{EquilCheckpoint, EquilDiagnosticAccum};
 pub use overlap::{OverlapAccum, OverlapStats};
-pub use results::{ClusterStats, Diagnostics, SweepResult};
+pub use results::{ClusterSnapshot, ClusterStats, Diagnostics, SweepResult};
 pub use stats::Statistics;

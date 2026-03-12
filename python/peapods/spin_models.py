@@ -130,6 +130,7 @@ class Ising:
         autocorrelation_max_lag=None,
         sequential=False,
         equilibration_diagnostic=False,
+        snapshot_interval=None,
     ):
         """Run Monte Carlo sampling and compute observables.
 
@@ -192,6 +193,7 @@ class Ising:
             autocorrelation_max_lag=autocorrelation_max_lag,
             sequential=sequential,
             equilibration_diagnostic=equilibration_diagnostic,
+            snapshot_interval=snapshot_interval if oci else None,
         )
         self.mags = result["mags"]
         self.mags2 = result["mags2"]
@@ -254,6 +256,9 @@ class Ising:
             self._equil_sweeps = result["equil_sweeps"]
             self._equil_energy_avg = result["equil_energy_avg"]
             self._equil_link_overlap_avg = result["equil_link_overlap_avg"]
+
+        if "cluster_snapshots" in result:
+            self.cluster_snapshots = result["cluster_snapshots"]
 
         return result
 

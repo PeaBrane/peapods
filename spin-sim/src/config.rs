@@ -100,6 +100,7 @@ pub struct OverlapClusterConfig {
     pub modes: Vec<OverlapClusterBuildMode>,
     pub cluster_mode: ClusterMode,
     pub collect_stats: bool,
+    pub snapshot_interval: Option<usize>,
 }
 
 impl OverlapClusterConfig {
@@ -131,6 +132,13 @@ fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
             return Err(ValidationError::new(
                 "overlap_cluster interval must be >= 1",
             ));
+        }
+        if let Some(si) = h.snapshot_interval {
+            if si < 1 || si % h.interval != 0 {
+                return Err(ValidationError::new(
+                    "snapshot_interval must be a positive multiple of overlap_cluster interval",
+                ));
+            }
         }
     }
     Ok(())
