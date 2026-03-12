@@ -32,6 +32,7 @@ interval = 1
 interval = 1
 build_modes = ["houdayer", "cmr"]
 cluster_mode = "sw"
+# snapshot_interval = 10000  # save cluster IDs every 10k sweeps
 
 [diagnostics]
 collect_cluster_stats = false

@@ -54,6 +54,10 @@ pub fn overlap_update(
     csd_out: Option<&mut [Vec<u64>]>,
     top4_out: Option<&mut [[u32; 4]]>,
     sequential: bool,
+    snap_out: Option<&mut [Vec<u32>]>,
+    blue_snap_out: Option<&mut [Vec<u32>]>,
+    spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
+    sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
 ) {
     match mode {
         OverlapClusterBuildMode::Houdayer(group_size) => houdayer_step(
@@ -68,6 +72,9 @@ pub fn overlap_update(
             csd_out,
             top4_out,
             sequential,
+            snap_out,
+            spin_snap_out,
+            sid_snap_out,
         ),
         OverlapClusterBuildMode::Jorg => jorg_step(
             lattice,
@@ -82,6 +89,9 @@ pub fn overlap_update(
             csd_out,
             top4_out,
             sequential,
+            snap_out,
+            spin_snap_out,
+            sid_snap_out,
         ),
         OverlapClusterBuildMode::Cmr => cmr_step(
             lattice,
@@ -96,6 +106,10 @@ pub fn overlap_update(
             csd_out,
             top4_out,
             sequential,
+            snap_out,
+            blue_snap_out,
+            spin_snap_out,
+            sid_snap_out,
         ),
     }
 }
@@ -119,6 +133,9 @@ fn houdayer_step(
     csd_out: Option<&mut [Vec<u64>]>,
     top4_out: Option<&mut [[u32; 4]]>,
     sequential: bool,
+    snap_out: Option<&mut [Vec<u32>]>,
+    spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
+    sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
 ) {
     let n_spins = lattice.n_spins;
     let n_pairs = n_replicas / 2;
@@ -128,17 +145,40 @@ fn houdayer_step(
 
     let sp = spins.as_mut_ptr() as usize;
     let rp = rngs.as_mut_ptr() as usize;
-    let use_uf = !wolff || csd_out.is_some() || top4_out.is_some();
+    let use_uf = !wolff || csd_out.is_some() || top4_out.is_some() || snap_out.is_some();
 
     let cp = csd_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_csd = csd_out.is_some();
     let tp = top4_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_top4 = top4_out.is_some();
+    let snp = snap_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
+    let has_snap = snap_out.is_some();
+    let spp = spin_snap_out
+        .as_ref()
+        .map(|s| s.as_ptr() as usize)
+        .unwrap_or(0);
+    let sidp = sid_snap_out
+        .as_ref()
+        .map(|s| s.as_ptr() as usize)
+        .unwrap_or(0);
 
     let work = |(t, g, systems): &(usize, usize, Vec<usize>)| unsafe {
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(t * n_pairs + g);
         let bases: Vec<usize> = systems.iter().map(|&s| s * n_spins).collect();
         let sp_ptr = sp as *mut i8;
+        let slot = t * n_pairs + g;
+
+        if has_snap && systems.len() >= 2 {
+            let base_a = bases[0];
+            let base_b = bases[1];
+            let spin_slot = &mut *(spp as *mut Vec<[Vec<i8>; 2]>).add(slot);
+            spin_slot.push([
+                std::slice::from_raw_parts(sp_ptr.add(base_a), n_spins).to_vec(),
+                std::slice::from_raw_parts(sp_ptr.add(base_b), n_spins).to_vec(),
+            ]);
+            let sid_slot = &mut *(sidp as *mut Vec<[usize; 2]>).add(slot);
+            sid_slot.push([systems[0], systems[1]]);
+        }
 
         let is_active = |i: usize| -> bool {
             let mut sum: i32 = 0;
@@ -166,26 +206,36 @@ fn houdayer_step(
                         }
                     }
                 }
-                if has_csd || has_top4 {
+                if has_csd || has_top4 || has_snap {
                     let counts = uf_flatten_counts(&mut parent);
                     if has_csd {
-                        let csd_slot = &mut *(cp as *mut Vec<u64>).add(t * n_pairs + g);
+                        let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
                         uf_histogram(&counts, csd_slot.as_mut_slice());
                     }
                     if has_top4 {
-                        let out = &mut *(tp as *mut [u32; 4]).add(t * n_pairs + g);
+                        let out = &mut *(tp as *mut [u32; 4]).add(slot);
                         *out = top4_sizes(&counts);
+                    }
+                    if has_snap {
+                        let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
+                        snap_slot.clear();
+                        snap_slot.extend_from_slice(&parent[..n_spins]);
                     }
                 }
             } else {
                 let counts = uf_flatten_counts(&mut parent);
                 if has_csd {
-                    let csd_slot = &mut *(cp as *mut Vec<u64>).add(t * n_pairs + g);
+                    let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
                     uf_histogram(&counts, csd_slot.as_mut_slice());
                 }
                 if has_top4 {
-                    let out = &mut *(tp as *mut [u32; 4]).add(t * n_pairs + g);
+                    let out = &mut *(tp as *mut [u32; 4]).add(slot);
                     *out = top4_sizes(&counts);
+                }
+                if has_snap {
+                    let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
+                    snap_slot.clear();
+                    snap_slot.extend_from_slice(&parent[..n_spins]);
                 }
                 let mut do_flip = vec![u8::MAX; n_spins];
                 for &p in parent.iter().take(n_spins) {
@@ -252,6 +302,9 @@ fn jorg_step(
     csd_out: Option<&mut [Vec<u64>]>,
     top4_out: Option<&mut [[u32; 4]]>,
     sequential: bool,
+    snap_out: Option<&mut [Vec<u32>]>,
+    spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
+    sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
 ) {
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
@@ -262,12 +315,22 @@ fn jorg_step(
 
     let sp = spins.as_mut_ptr() as usize;
     let rp = rngs.as_mut_ptr() as usize;
-    let use_uf = !wolff || csd_out.is_some() || top4_out.is_some();
+    let use_uf = !wolff || csd_out.is_some() || top4_out.is_some() || snap_out.is_some();
 
     let cp = csd_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_csd = csd_out.is_some();
     let tp = top4_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_top4 = top4_out.is_some();
+    let snp = snap_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
+    let has_snap = snap_out.is_some();
+    let spp = spin_snap_out
+        .as_ref()
+        .map(|s| s.as_ptr() as usize)
+        .unwrap_or(0);
+    let sidp = sid_snap_out
+        .as_ref()
+        .map(|s| s.as_ptr() as usize)
+        .unwrap_or(0);
 
     let work = |(t, g, systems): &(usize, usize, Vec<usize>)| unsafe {
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(t * n_pairs + g);
@@ -275,6 +338,17 @@ fn jorg_step(
         let base_a = systems[0] * n_spins;
         let base_b = systems[1] * n_spins;
         let sp_ptr = sp as *mut i8;
+        let slot = t * n_pairs + g;
+
+        if has_snap {
+            let spin_slot = &mut *(spp as *mut Vec<[Vec<i8>; 2]>).add(slot);
+            spin_slot.push([
+                std::slice::from_raw_parts(sp_ptr.add(base_a), n_spins).to_vec(),
+                std::slice::from_raw_parts(sp_ptr.add(base_b), n_spins).to_vec(),
+            ]);
+            let sid_slot = &mut *(sidp as *mut Vec<[usize; 2]>).add(slot);
+            sid_slot.push([systems[0], systems[1]]);
+        }
 
         let is_active = |i: usize| -> bool { *sp_ptr.add(base_a + i) != *sp_ptr.add(base_b + i) };
 
@@ -304,26 +378,36 @@ fn jorg_step(
                         *sp_ptr.add(base_b + i) *= -1;
                     }
                 }
-                if has_csd || has_top4 {
+                if has_csd || has_top4 || has_snap {
                     let counts = uf_flatten_counts(&mut parent);
                     if has_csd {
-                        let csd_slot = &mut *(cp as *mut Vec<u64>).add(t * n_pairs + g);
+                        let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
                         uf_histogram(&counts, csd_slot.as_mut_slice());
                     }
                     if has_top4 {
-                        let out = &mut *(tp as *mut [u32; 4]).add(t * n_pairs + g);
+                        let out = &mut *(tp as *mut [u32; 4]).add(slot);
                         *out = top4_sizes(&counts);
+                    }
+                    if has_snap {
+                        let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
+                        snap_slot.clear();
+                        snap_slot.extend_from_slice(&parent[..n_spins]);
                     }
                 }
             } else {
                 let counts = uf_flatten_counts(&mut parent);
                 if has_csd {
-                    let csd_slot = &mut *(cp as *mut Vec<u64>).add(t * n_pairs + g);
+                    let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
                     uf_histogram(&counts, csd_slot.as_mut_slice());
                 }
                 if has_top4 {
-                    let out = &mut *(tp as *mut [u32; 4]).add(t * n_pairs + g);
+                    let out = &mut *(tp as *mut [u32; 4]).add(slot);
                     *out = top4_sizes(&counts);
+                }
+                if has_snap {
+                    let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
+                    snap_slot.clear();
+                    snap_slot.extend_from_slice(&parent[..n_spins]);
                 }
                 let mut do_flip = vec![u8::MAX; n_spins];
                 for &p in parent.iter().take(n_spins) {
@@ -419,6 +503,10 @@ fn cmr_step(
     csd_out: Option<&mut [Vec<u64>]>,
     top4_out: Option<&mut [[u32; 4]]>,
     sequential: bool,
+    snap_out: Option<&mut [Vec<u32>]>,
+    blue_snap_out: Option<&mut [Vec<u32>]>,
+    spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
+    sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
 ) {
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
@@ -429,12 +517,27 @@ fn cmr_step(
 
     let sp = spins.as_mut_ptr() as usize;
     let rp = rngs.as_mut_ptr() as usize;
-    let use_uf = !wolff || csd_out.is_some() || top4_out.is_some();
+    let use_uf = !wolff || csd_out.is_some() || top4_out.is_some() || snap_out.is_some();
 
     let cp = csd_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_csd = csd_out.is_some();
     let tp = top4_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_top4 = top4_out.is_some();
+    let snp = snap_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
+    let has_snap = snap_out.is_some();
+    let bsnp = blue_snap_out
+        .as_ref()
+        .map(|s| s.as_ptr() as usize)
+        .unwrap_or(0);
+    let has_blue_snap = blue_snap_out.is_some();
+    let spp = spin_snap_out
+        .as_ref()
+        .map(|s| s.as_ptr() as usize)
+        .unwrap_or(0);
+    let sidp = sid_snap_out
+        .as_ref()
+        .map(|s| s.as_ptr() as usize)
+        .unwrap_or(0);
 
     let work = |(t, g, systems): &(usize, usize, Vec<usize>)| unsafe {
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(t * n_pairs + g);
@@ -442,6 +545,17 @@ fn cmr_step(
         let base_a = systems[0] * n_spins;
         let base_b = systems[1] * n_spins;
         let sp_ptr = sp as *mut i8;
+        let slot = t * n_pairs + g;
+
+        if has_snap {
+            let spin_slot = &mut *(spp as *mut Vec<[Vec<i8>; 2]>).add(slot);
+            spin_slot.push([
+                std::slice::from_raw_parts(sp_ptr.add(base_a), n_spins).to_vec(),
+                std::slice::from_raw_parts(sp_ptr.add(base_b), n_spins).to_vec(),
+            ]);
+            let sid_slot = &mut *(sidp as *mut Vec<[usize; 2]>).add(slot);
+            sid_slot.push([systems[0], systems[1]]);
+        }
 
         if use_uf {
             let seed = if wolff {
@@ -470,12 +584,17 @@ fn cmr_step(
 
             let counts = uf_flatten_counts(&mut parent);
             if has_csd {
-                let csd_slot = &mut *(cp as *mut Vec<u64>).add(t * n_pairs + g);
+                let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
                 uf_histogram(&counts, csd_slot.as_mut_slice());
             }
             if has_top4 {
-                let out = &mut *(tp as *mut [u32; 4]).add(t * n_pairs + g);
+                let out = &mut *(tp as *mut [u32; 4]).add(slot);
                 *out = top4_sizes(&counts);
+            }
+            if has_blue_snap {
+                let blue_slot = &mut *(bsnp as *mut Vec<u32>).add(slot);
+                blue_slot.clear();
+                blue_slot.extend_from_slice(&parent[..n_spins]);
             }
 
             // Flip blue clusters (both replicas jointly)
@@ -523,6 +642,12 @@ fn cmr_step(
             });
 
             let grey_counts = uf_flatten_counts(&mut parent);
+
+            if has_snap {
+                let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
+                snap_slot.clear();
+                snap_slot.extend_from_slice(&parent[..n_spins]);
+            }
 
             // Flip grey clusters (each replica independently)
             if wolff {

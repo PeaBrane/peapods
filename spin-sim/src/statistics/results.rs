@@ -1,6 +1,15 @@
 use super::equilibration::EquilCheckpoint;
 use super::overlap::OverlapStats;
 
+pub struct ClusterSnapshot {
+    pub sweep_id: usize,
+    pub mode_idx: usize,
+    pub cluster_ids: Vec<Vec<u32>>,
+    pub blue_ids: Option<Vec<Vec<u32>>>,
+    pub spins: Vec<[Vec<i8>; 2]>,
+    pub system_ids: Vec<[usize; 2]>,
+}
+
 pub struct ClusterStats {
     /// FK cluster size histogram per temperature: `hist[s]` = count of size-`s` clusters.
     pub fk_csd: Vec<Vec<u64>>,
@@ -40,6 +49,7 @@ pub struct SweepResult {
     pub overlap_stats: OverlapStats,
     pub cluster_stats: ClusterStats,
     pub diagnostics: Diagnostics,
+    pub cluster_snapshots: Vec<ClusterSnapshot>,
 }
 
 impl SweepResult {
@@ -113,6 +123,7 @@ impl SweepResult {
                     })
                     .collect(),
             },
+            cluster_snapshots: Vec::new(),
         };
 
         for r in results {

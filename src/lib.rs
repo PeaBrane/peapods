@@ -105,6 +105,7 @@ impl IsingSimulation {
         autocorrelation_max_lag=None,
         sequential=None,
         equilibration_diagnostic=None,
+        snapshot_interval=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn sample<'py>(
@@ -123,6 +124,7 @@ impl IsingSimulation {
         autocorrelation_max_lag: Option<usize>,
         sequential: Option<bool>,
         equilibration_diagnostic: Option<bool>,
+        snapshot_interval: Option<usize>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let warmup = warmup_ratio.unwrap_or(0.25);
         let warmup_sweeps = (n_sweeps as f64 * warmup).round() as usize;
@@ -159,6 +161,7 @@ impl IsingSimulation {
                     modes,
                     cluster_mode: oc_mode,
                     collect_stats: collect_cluster_stats,
+                    snapshot_interval,
                 })
             })
             .transpose()?;
@@ -385,6 +388,47 @@ impl IsingSimulation {
                 Array2::from_shape_fn((n_ckpts, n_temps), |(i, t)| ckpts[i].link_overlap_avg[t])
                     .into_pyarray(py);
             dict.set_item("equil_link_overlap_avg", equil_link_overlap_avg)?;
+        }
+
+        if !agg.cluster_snapshots.is_empty() {
+            let n_spins = self.lattice.n_spins;
+            let snaps: Vec<Bound<'py, PyDict>> = agg
+                .cluster_snapshots
+                .iter()
+                .map(|s| {
+                    let d = PyDict::new(py);
+                    d.set_item("sweep_id", s.sweep_id)?;
+                    d.set_item("mode_idx", s.mode_idx)?;
+
+                    let n_st = s.cluster_ids.len();
+                    let ids = Array2::from_shape_fn((n_st, n_spins), |(t, i)| {
+                        s.cluster_ids[t].get(i).copied().unwrap_or(0)
+                    })
+                    .into_pyarray(py);
+                    d.set_item("cluster_ids", ids)?;
+
+                    if let Some(ref blue) = s.blue_ids {
+                        let blue_arr = Array2::from_shape_fn((n_st, n_spins), |(t, i)| {
+                            blue[t].get(i).copied().unwrap_or(0)
+                        })
+                        .into_pyarray(py);
+                        d.set_item("blue_ids", blue_arr)?;
+                    }
+
+                    let sp = Array3::from_shape_fn((n_st, 2, n_spins), |(t, r, i)| {
+                        s.spins[t][r].get(i).copied().unwrap_or(0)
+                    })
+                    .into_pyarray(py);
+                    d.set_item("spins", sp)?;
+
+                    let sid = Array2::from_shape_fn((n_st, 2), |(t, r)| s.system_ids[t][r] as u64)
+                        .into_pyarray(py);
+                    d.set_item("system_ids", sid)?;
+
+                    Ok(d)
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            dict.set_item("cluster_snapshots", snaps)?;
         }
 
         Ok(dict)
