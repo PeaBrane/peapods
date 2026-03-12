@@ -97,6 +97,27 @@ def _save_data(models, config_label, temperatures, output_dir):
             save_dict[f"{prefix}_equil_link_overlap_avg"] = (
                 model._equil_link_overlap_avg
             )
+        if hasattr(model, "cluster_snapshots"):
+            snaps = model.cluster_snapshots
+            save_dict[f"{prefix}_snapshot_sweep_ids"] = np.array(
+                [s["sweep_id"] for s in snaps], dtype=np.int64
+            )
+            save_dict[f"{prefix}_snapshot_mode_idxs"] = np.array(
+                [s["mode_idx"] for s in snaps], dtype=np.int64
+            )
+            save_dict[f"{prefix}_snapshot_cluster_ids"] = np.stack(
+                [s["cluster_ids"] for s in snaps]
+            )
+            save_dict[f"{prefix}_snapshot_spins"] = np.stack(
+                [s["spins"] for s in snaps]
+            )
+            save_dict[f"{prefix}_snapshot_system_ids"] = np.stack(
+                [s["system_ids"] for s in snaps]
+            )
+            if "blue_ids" in snaps[0]:
+                save_dict[f"{prefix}_snapshot_blue_ids"] = np.stack(
+                    [s["blue_ids"] for s in snaps]
+                )
 
     path = Path(output_dir) / f"sweep_{config_label}.npz"
     np.savez(path, **save_dict)
