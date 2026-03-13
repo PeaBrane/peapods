@@ -46,12 +46,14 @@ fn main() {
         pt_interval: Some(1),
         overlap_cluster: Some(OverlapClusterConfig {
             interval: 1,
-            mode: OverlapClusterBuildMode::Cmr,
+            modes: vec![OverlapClusterBuildMode::Cmr],
             cluster_mode: ClusterMode::Sw,
             collect_stats: false,
+            snapshot_interval: None,
         }),
         autocorrelation_max_lag: None,
         sequential: false,
+        equilibration_diagnostic: false,
     };
 
     println!(
