@@ -66,6 +66,7 @@ def _save_data(models, config_label, temperatures, output_dir):
     save_dict = {"temperatures": temperatures}
     for size_label, model in models.items():
         prefix = size_label
+        save_dict[f"{prefix}_lattice_shape"] = np.array(model.lattice_shape)
         save_dict[f"{prefix}_binder_cumulant"] = model.binder_cumulant
         save_dict[f"{prefix}_heat_capacity"] = model.heat_capacity
         save_dict[f"{prefix}_energies"] = model.energies_avg
