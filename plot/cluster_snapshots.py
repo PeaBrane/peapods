@@ -12,6 +12,7 @@ Usage:
 import argparse
 import sys
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 
@@ -104,8 +105,6 @@ def main():
     parser.add_argument("--all-snaps", action="store_true")
     parser.add_argument("-o", "--output", default=None)
     args = parser.parse_args()
-
-    import matplotlib.pyplot as plt
 
     snaps = load_snapshots(args.npz)
     n_snaps = len(snaps["sweep_ids"])

@@ -1,7 +1,6 @@
 """Verify SW autocorrelation time scaling τ ~ L^z with z ≈ 0.25 for 2D Ising."""
 
 import numpy as np
-
 from peapods import Ising
 from utils import TC_SQUARE
 

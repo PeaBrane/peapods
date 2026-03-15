@@ -8,7 +8,6 @@ sys.path.insert(0, "tests")
 from peapods import Ising
 from utils import plot_bars
 
-
 LATTICE_SHAPE = (64, 64)
 N_TEMPS = 16
 N_SWEEPS = 50

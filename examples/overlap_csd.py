@@ -10,7 +10,6 @@ Reference: Pei, Di Ventra, arXiv:2105.01188
 
 import numpy as np
 from matplotlib import pyplot as plt
-
 from peapods import Ising
 
 L = 64
