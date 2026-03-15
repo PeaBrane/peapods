@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import numpy as np
-
 from peapods import Ising
 from utils import (
     TC_BCC,

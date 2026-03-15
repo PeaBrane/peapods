@@ -1,7 +1,7 @@
 import numpy as np
 from numpy.random import rand, randn
-from peapods._core import IsingSimulation
 
+from peapods._core import IsingSimulation
 
 GEOMETRIES = {
     "triangular": [[1, 0], [0, 1], [1, -1]],

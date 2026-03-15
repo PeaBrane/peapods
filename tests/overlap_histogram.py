@@ -1,7 +1,6 @@
 """Verify overlap histogram P(q) symmetry and thermalization for a Gaussian spin glass."""
 
 import numpy as np
-
 from peapods import Ising
 from peapods.sweep import _cumulative_overlap_ratio
 

@@ -1,6 +1,5 @@
 import numpy as np
 from matplotlib import pyplot as plt
-
 from peapods import Ising
 
 temperatures = np.geomspace(0.1, 10, 32)

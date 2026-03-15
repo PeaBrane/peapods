@@ -1,8 +1,7 @@
 from pathlib import Path
 
-import numpy as np
 import matplotlib.pyplot as plt
-
+import numpy as np
 from peapods import Ising
 
 TC_SQUARE = 2.0 / np.log(1 + np.sqrt(2))  # exact: 2.26918...
