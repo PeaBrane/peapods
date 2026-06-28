@@ -6,6 +6,7 @@ use std::time::Instant;
 use rand::{Rng, RngCore, SeedableRng};
 use rand_xoshiro::Xoshiro256StarStar;
 use spin_sim::config::*;
+use spin_sim::geometry::hypercubic;
 use spin_sim::{run_sweep_parallel, Lattice, Realization};
 
 const L: usize = 128;
@@ -16,8 +17,13 @@ const N_REALIZATIONS: usize = 100;
 
 fn main() {
     let sequential = env::var_os("PEAPODS_SEQUENTIAL").is_some();
+    let generic_lattice = env::var_os("PEAPODS_GENERIC_LATTICE").is_some();
     let mode = env::var("PEAPODS_MODE").unwrap_or_else(|_| "cmr".to_string());
-    let lattice = Lattice::new(vec![L, L]);
+    let lattice = if generic_lattice {
+        Lattice::with_offsets(vec![L, L], hypercubic(2))
+    } else {
+        Lattice::new(vec![L, L])
+    };
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
 
@@ -93,7 +99,9 @@ fn main() {
         "Lattice: {}x{}  |  Temps: {}  |  Replicas: {}  |  Sweeps: {}  |  Realizations: {}",
         L, L, N_TEMPS, N_REPLICAS, N_SWEEPS, N_REALIZATIONS
     );
-    println!("Config: bimodal, mode={mode}, sequential={sequential}");
+    println!(
+        "Config: bimodal, mode={mode}, sequential={sequential}, generic_lattice={generic_lattice}"
+    );
     println!("{}", "-".repeat(70));
 
     let t0 = Instant::now();
