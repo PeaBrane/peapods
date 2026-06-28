@@ -134,14 +134,20 @@ pub(super) fn uf_bonds_extend(
 #[inline]
 pub(super) fn uf_flatten_counts(parent: &mut [u32]) -> Vec<u32> {
     let n = parent.len();
-    for i in 0..n {
-        parent[i] = find(parent, i as u32);
-    }
+    uf_flatten(parent);
     let mut counts = vec![0u32; n];
-    for i in 0..n {
-        counts[parent[i] as usize] += 1;
+    for &root in parent.iter() {
+        counts[root as usize] += 1;
     }
     counts
+}
+
+/// Flatten a UF parent array in-place.
+#[inline]
+pub(super) fn uf_flatten(parent: &mut [u32]) {
+    for i in 0..parent.len() {
+        parent[i] = find(parent, i as u32);
+    }
 }
 
 /// Histogram cluster sizes into `hist[s] += 1`.

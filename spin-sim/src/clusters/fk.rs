@@ -1,4 +1,4 @@
-use super::utils::{dfs_cluster, uf_bonds, uf_flatten_counts, uf_histogram};
+use super::utils::{dfs_cluster, uf_bonds, uf_flatten, uf_flatten_counts, uf_histogram};
 use crate::geometry::Lattice;
 use crate::parallel::par_over_replicas;
 use rand::Rng;
@@ -80,22 +80,19 @@ pub fn fk_update(
     }
 
     // UF path: SW, or Wolff + CSD
-    let chunks: Vec<(usize, usize)> = (0..system_ids.len())
-        .map(|temp_id| (system_ids[temp_id], temp_id))
-        .collect();
-
     let sp = spins.as_mut_ptr() as usize;
     let rp = rngs.as_mut_ptr() as usize;
     let cp = csd_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_csd = csd_out.is_some();
 
-    let work = |&(system_id, temp_id): &(usize, usize)| unsafe {
+    let work = |temp_id: usize| unsafe {
+        let system_id = system_ids[temp_id];
         let spin_slice =
             std::slice::from_raw_parts_mut((sp as *mut i8).add(system_id * n_spins), n_spins);
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(system_id);
         let temp = temperatures[temp_id];
 
-        let (mut parent, _) = uf_bonds(lattice, |i, d| {
+        let (mut parent, mut scratch) = uf_bonds(lattice, |i, d| {
             let j = lattice.neighbor_fwd(i, d);
             let inter =
                 spin_slice[i] as f32 * spin_slice[j] as f32 * couplings[i * n_neighbors + d];
@@ -105,11 +102,12 @@ pub fn fk_update(
             rng.gen::<f32>() < 1.0 - (-2.0 * inter / temp).exp()
         });
 
-        let counts = uf_flatten_counts(&mut parent);
-
         if has_csd {
+            let counts = uf_flatten_counts(&mut parent);
             let csd_slot = &mut *(cp as *mut Vec<u64>).add(temp_id);
             uf_histogram(&counts, csd_slot.as_mut_slice());
+        } else {
+            uf_flatten(&mut parent);
         }
 
         if wolff {
@@ -121,13 +119,13 @@ pub fn fk_update(
                 }
             }
         } else {
-            let mut flip_decision = vec![2u8; n_spins]; // 2 = undecided
+            scratch.fill(2); // 2 = undecided
             for i in 0..n_spins {
                 let root = parent[i] as usize;
-                if flip_decision[root] == 2 {
-                    flip_decision[root] = u8::from(rng.gen::<f32>() < 0.5);
+                if scratch[root] == 2 {
+                    scratch[root] = u8::from(rng.gen::<f32>() < 0.5);
                 }
-                if flip_decision[root] == 1 {
+                if scratch[root] == 1 {
                     spin_slice[i] = -spin_slice[i];
                 }
             }
@@ -135,8 +133,8 @@ pub fn fk_update(
     };
 
     if sequential {
-        chunks.iter().for_each(work);
+        (0..system_ids.len()).for_each(work);
     } else {
-        chunks.par_iter().for_each(work);
+        (0..system_ids.len()).into_par_iter().for_each(work);
     }
 }

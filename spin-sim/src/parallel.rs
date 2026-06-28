@@ -21,14 +21,11 @@ pub fn par_over_replicas(
     sequential: bool,
     body: impl Fn(&mut [i8], &mut Xoshiro256StarStar, f32, usize) + Send + Sync,
 ) {
-    let chunks: Vec<(usize, usize)> = (0..system_ids.len())
-        .map(|temp_id| (system_ids[temp_id], temp_id))
-        .collect();
-
     let sp = spins.as_mut_ptr() as usize;
     let rp = rngs.as_mut_ptr() as usize;
 
-    let work = |&(system_id, temp_id): &(usize, usize)| unsafe {
+    let work = |temp_id: usize| unsafe {
+        let system_id = system_ids[temp_id];
         let spin_slice =
             std::slice::from_raw_parts_mut((sp as *mut i8).add(system_id * n_spins), n_spins);
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(system_id);
@@ -37,8 +34,8 @@ pub fn par_over_replicas(
     };
 
     if sequential {
-        chunks.iter().for_each(work);
+        (0..system_ids.len()).for_each(work);
     } else {
-        chunks.par_iter().for_each(work);
+        (0..system_ids.len()).into_par_iter().for_each(work);
     }
 }

@@ -69,8 +69,8 @@ impl Realization {
             ));
         }
 
-        let (energies, _) =
-            spins::energy::compute_energies(lattice, &spins, &couplings, n_systems, false);
+        let mut energies = vec![0.0; n_systems];
+        spins::energy::compute_energies_into(lattice, &spins, &couplings, &mut energies);
 
         Self {
             couplings,
@@ -107,13 +107,12 @@ impl Realization {
                 Xoshiro256StarStar::seed_from_u64(base_seed + n_systems as u64 + i as u64);
         }
 
-        let (energies, _) = spins::energy::compute_energies(
+        self.energies.resize(n_systems, 0.0);
+        spins::energy::compute_energies_into(
             lattice,
             &self.spins,
             &self.couplings,
-            n_systems,
-            false,
+            &mut self.energies,
         );
-        self.energies = energies;
     }
 }
