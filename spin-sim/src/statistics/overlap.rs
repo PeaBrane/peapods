@@ -57,6 +57,14 @@ impl OverlapStats {
     }
 
     pub fn aggregate(results: &[&Self]) -> Self {
+        Self::aggregate_impl(results, true)
+    }
+
+    pub(crate) fn aggregate_without_samples(results: &[&Self]) -> Self {
+        Self::aggregate_impl(results, false)
+    }
+
+    fn aggregate_impl(results: &[&Self], retain_samples: bool) -> Self {
         if results[0].overlap.is_empty() {
             return Self::empty();
         }
@@ -78,9 +86,21 @@ impl OverlapStats {
             histogram: (0..n_hist).map(|_| vec![0u64; hist_bins]).collect(),
             ql_at_q_sum: (0..n_ql).map(|_| vec![0.0; ql_bins]).collect(),
             ql2_at_q_sum: (0..n_ql).map(|_| vec![0.0; ql_bins]).collect(),
-            per_sample_histogram: results.iter().map(|r| r.histogram.clone()).collect(),
-            per_sample_ql_at_q_sum: results.iter().map(|r| r.ql_at_q_sum.clone()).collect(),
-            per_sample_ql2_at_q_sum: results.iter().map(|r| r.ql2_at_q_sum.clone()).collect(),
+            per_sample_histogram: if retain_samples {
+                results.iter().map(|r| r.histogram.clone()).collect()
+            } else {
+                vec![]
+            },
+            per_sample_ql_at_q_sum: if retain_samples {
+                results.iter().map(|r| r.ql_at_q_sum.clone()).collect()
+            } else {
+                vec![]
+            },
+            per_sample_ql2_at_q_sum: if retain_samples {
+                results.iter().map(|r| r.ql2_at_q_sum.clone()).collect()
+            } else {
+                vec![]
+            },
         };
 
         for r in results {
@@ -251,11 +271,12 @@ impl OverlapAccum {
                 for j in 0..self.n_spins {
                     let sa = spins[base_a + j] as i64;
                     let sb = spins[base_b + j] as i64;
-                    dot_spin += sa * sb;
+                    let q = sa * sb;
+                    dot_spin += q;
                     for d in 0..lattice.n_neighbors {
                         let k = lattice.neighbor_fwd(j, d);
-                        dot_link +=
-                            (sa * spins[base_a + k] as i64) * (sb * spins[base_b + k] as i64);
+                        let neighbor_q = spins[base_a + k] as i64 * spins[base_b + k] as i64;
+                        dot_link += q * neighbor_q;
                     }
                 }
 

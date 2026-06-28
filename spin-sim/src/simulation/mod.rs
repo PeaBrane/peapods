@@ -35,6 +35,31 @@ pub fn run_sweep_loop(
     on_sweep: &(dyn Fn() + Sync),
     realization_idx: usize,
 ) -> Result<SweepResult, String> {
+    run_sweep_loop_impl(
+        lattice,
+        real,
+        n_replicas,
+        n_temps,
+        config,
+        interrupted,
+        on_sweep,
+        realization_idx,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_sweep_loop_impl(
+    lattice: &Lattice,
+    real: &mut Realization,
+    n_replicas: usize,
+    n_temps: usize,
+    config: &SimConfig,
+    interrupted: &AtomicBool,
+    on_sweep: &(dyn Fn() + Sync),
+    realization_idx: usize,
+    materialize_disabled_stats: bool,
+) -> Result<SweepResult, String> {
     config.validate().map_err(|e| format!("{e}"))?;
 
     let n_spins = lattice.n_spins;
@@ -54,26 +79,55 @@ pub fn run_sweep_loop(
     }
 
     let n_pairs = n_replicas / 2;
-
-    let mut fk_csd_accum: Vec<Vec<u64>> = (0..n_temps).map(|_| vec![0u64; n_spins + 1]).collect();
-    let mut sw_csd_buf: Vec<Vec<u64>> = (0..n_systems).map(|_| vec![0u64; n_spins + 1]).collect();
-
-    let mut overlap_csd_accum: Vec<Vec<Vec<u64>>> = (0..n_modes)
-        .map(|_| (0..n_temps).map(|_| vec![0u64; n_spins + 1]).collect())
-        .collect();
-    let mut overlap_csd_buf: Vec<Vec<u64>> = (0..n_temps * n_pairs)
-        .map(|_| vec![0u64; n_spins + 1])
-        .collect();
-
-    let collect_top = config
+    let collect_fk = config
+        .cluster_update
+        .as_ref()
+        .is_some_and(|c| c.collect_stats);
+    let collect_overlap = config
         .overlap_cluster
         .as_ref()
         .is_some_and(|h| h.collect_stats)
         && n_pairs > 0;
 
-    let mut top4_accum: Vec<Vec<[f64; 4]>> =
-        (0..n_modes).map(|_| vec![[0.0; 4]; n_temps]).collect();
-    let mut top4_n: Vec<usize> = vec![0; n_modes];
+    let mut fk_csd_accum: Vec<Vec<u64>> = if collect_fk || materialize_disabled_stats {
+        (0..n_temps).map(|_| vec![0u64; n_spins + 1]).collect()
+    } else {
+        vec![]
+    };
+    let mut sw_csd_buf: Vec<Vec<u64>> = if collect_fk {
+        (0..n_systems).map(|_| vec![0u64; n_spins + 1]).collect()
+    } else {
+        vec![]
+    };
+
+    let mut overlap_csd_accum: Vec<Vec<Vec<u64>>> =
+        if collect_overlap || (materialize_disabled_stats && n_modes > 0) {
+            (0..n_modes)
+                .map(|_| (0..n_temps).map(|_| vec![0u64; n_spins + 1]).collect())
+                .collect()
+        } else {
+            vec![]
+        };
+    let mut overlap_csd_buf: Vec<Vec<u64>> = if collect_overlap {
+        (0..n_temps * n_pairs)
+            .map(|_| vec![0u64; n_spins + 1])
+            .collect()
+    } else {
+        vec![]
+    };
+
+    let collect_top = collect_overlap;
+
+    let mut top4_accum: Vec<Vec<[f64; 4]>> = if collect_top {
+        (0..n_modes).map(|_| vec![[0.0; 4]; n_temps]).collect()
+    } else {
+        vec![]
+    };
+    let mut top4_n: Vec<usize> = if collect_top {
+        vec![0; n_modes]
+    } else {
+        vec![]
+    };
     let mut top4_buf: Vec<[u32; 4]> = if collect_top {
         vec![[0u32; 4]; n_temps * n_pairs]
     } else {
@@ -165,6 +219,11 @@ pub fn run_sweep_loop(
     let mut mags2_buf = vec![0.0f32; n_temps];
     let mut mags4_buf = vec![0.0f32; n_temps];
     let mut energies_buf = vec![0.0f32; n_temps];
+    let mut magnetization_sums = if n_measurement_sweeps > 0 {
+        vec![0i64; n_systems]
+    } else {
+        vec![]
+    };
 
     for sweep_id in 0..n_sweeps {
         if interrupted.load(Ordering::Relaxed) {
@@ -238,13 +297,22 @@ pub fn run_sweep_loop(
             .is_some_and(|interval| sweep_id % interval == 0);
 
         if record || pt_this_sweep || equil_diag {
-            (real.energies, _) = spins::energy::compute_energies(
-                lattice,
-                &real.spins,
-                &real.couplings,
-                n_systems,
-                false,
-            );
+            if record {
+                spins::energy::compute_energies_and_magnetizations_into(
+                    lattice,
+                    &real.spins,
+                    &real.couplings,
+                    &mut real.energies,
+                    &mut magnetization_sums,
+                );
+            } else {
+                spins::energy::compute_energies_into(
+                    lattice,
+                    &real.spins,
+                    &real.couplings,
+                    &mut real.energies,
+                );
+            }
         }
 
         if equil_diag {
@@ -295,12 +363,7 @@ pub fn run_sweep_loop(
                 let offset = r * n_temps;
                 for t in 0..n_temps {
                     let system_id = real.system_ids[offset + t];
-                    let spin_base = system_id * n_spins;
-                    let mut sum = 0i64;
-                    for j in 0..n_spins {
-                        sum += real.spins[spin_base + j] as i64;
-                    }
-                    let mag = sum as f32 / n_spins as f32;
+                    let mag = magnetization_sums[system_id] as f32 / n_spins as f32;
                     let m2 = mag * mag;
                     mags_buf[t] = mag;
                     mags2_buf[t] = m2;
@@ -338,8 +401,10 @@ pub fn run_sweep_loop(
             }
         }
 
+        let mut did_overlap_update = false;
         if let Some(ref oc_cfg) = config.overlap_cluster {
             if sweep_id % oc_cfg.interval == 0 {
+                did_overlap_update = true;
                 let mode_idx = overlap_call_count % n_modes;
                 let mode = &oc_cfg.modes[mode_idx];
 
@@ -473,13 +538,12 @@ pub fn run_sweep_loop(
         }
 
         if pt_this_sweep {
-            if config.overlap_cluster.is_some() {
-                (real.energies, _) = spins::energy::compute_energies(
+            if did_overlap_update {
+                spins::energy::compute_energies_into(
                     lattice,
                     &real.spins,
                     &real.couplings,
-                    n_systems,
-                    false,
+                    &mut real.energies,
                 );
             }
             for r in 0..n_replicas {
@@ -586,7 +650,7 @@ pub fn run_sweep_parallel(
         .par_iter_mut()
         .enumerate()
         .map(|(idx, real)| {
-            run_sweep_loop(
+            run_sweep_loop_impl(
                 lattice,
                 real,
                 n_replicas,
@@ -595,13 +659,145 @@ pub fn run_sweep_parallel(
                 interrupted,
                 on_sweep,
                 idx,
+                false,
             )
         })
         .collect();
 
     let mut results: Vec<SweepResult> = results.into_iter().collect::<Result<Vec<_>, _>>()?;
     let snapshots = std::mem::take(&mut results[0].cluster_snapshots);
-    let mut agg = SweepResult::aggregate(&results);
+    let mut agg = SweepResult::aggregate_without_overlap_samples(&results);
+    if !agg.overlap_stats.overlap.is_empty() {
+        agg.overlap_stats.per_sample_histogram = results
+            .iter_mut()
+            .map(|r| std::mem::take(&mut r.overlap_stats.histogram))
+            .collect();
+        agg.overlap_stats.per_sample_ql_at_q_sum = results
+            .iter_mut()
+            .map(|r| std::mem::take(&mut r.overlap_stats.ql_at_q_sum))
+            .collect();
+        agg.overlap_stats.per_sample_ql2_at_q_sum = results
+            .iter_mut()
+            .map(|r| std::mem::take(&mut r.overlap_stats.ql2_at_q_sum))
+            .collect();
+    }
+    if agg.cluster_stats.fk_csd.is_empty() {
+        agg.cluster_stats.fk_csd = (0..n_temps)
+            .map(|_| vec![0u64; lattice.n_spins + 1])
+            .collect();
+    }
+    let n_modes = config.overlap_cluster.as_ref().map_or(0, |h| h.modes.len());
+    if n_modes > 0 && agg.cluster_stats.overlap_csd.is_empty() {
+        agg.cluster_stats.overlap_csd = (0..n_modes)
+            .map(|_| {
+                (0..n_temps)
+                    .map(|_| vec![0u64; lattice.n_spins + 1])
+                    .collect()
+            })
+            .collect();
+    }
     agg.cluster_snapshots = snapshots;
     Ok(agg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        ClusterConfig, ClusterMode, OverlapClusterBuildMode, OverlapClusterConfig,
+    };
+
+    fn run_with_cluster_stats(collect_stats: bool) -> SweepResult {
+        let lattice = Lattice::new(vec![4, 4]);
+        let couplings = vec![1.0; lattice.n_spins * lattice.n_neighbors];
+        let mut realization = Realization::new(&lattice, couplings, &[2.0], 1, 42);
+        let config = SimConfig {
+            n_sweeps: 1,
+            warmup_sweeps: 0,
+            sweep_mode: SweepMode::Metropolis,
+            cluster_update: Some(ClusterConfig {
+                interval: 1,
+                mode: ClusterMode::Sw,
+                collect_stats,
+            }),
+            pt_interval: None,
+            overlap_cluster: None,
+            autocorrelation_max_lag: None,
+            sequential: true,
+            equilibration_diagnostic: false,
+        };
+
+        run_sweep_loop(
+            &lattice,
+            &mut realization,
+            1,
+            1,
+            &config,
+            &AtomicBool::new(false),
+            &|| {},
+            0,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn disabled_cluster_histograms_preserve_public_shape() {
+        let without_stats = run_with_cluster_stats(false);
+        assert_eq!(without_stats.cluster_stats.fk_csd.len(), 1);
+        assert_eq!(without_stats.cluster_stats.fk_csd[0].iter().sum::<u64>(), 0);
+
+        let with_stats = run_with_cluster_stats(true);
+        assert_eq!(with_stats.cluster_stats.fk_csd.len(), 1);
+        assert!(with_stats.cluster_stats.fk_csd[0].iter().sum::<u64>() > 0);
+    }
+
+    #[test]
+    fn disabled_overlap_histograms_preserve_public_shape() {
+        let lattice = Lattice::new(vec![4, 4]);
+        let couplings = vec![1.0; lattice.n_spins * lattice.n_neighbors];
+
+        for collect_stats in [false, true] {
+            let mut realization = Realization::new(&lattice, couplings.clone(), &[2.0], 2, 42);
+            let config = SimConfig {
+                n_sweeps: 1,
+                warmup_sweeps: 0,
+                sweep_mode: SweepMode::Metropolis,
+                cluster_update: None,
+                pt_interval: None,
+                overlap_cluster: Some(OverlapClusterConfig {
+                    interval: 1,
+                    modes: vec![OverlapClusterBuildMode::Houdayer(2)],
+                    cluster_mode: ClusterMode::Sw,
+                    collect_stats,
+                    snapshot_interval: None,
+                }),
+                autocorrelation_max_lag: None,
+                sequential: true,
+                equilibration_diagnostic: false,
+            };
+
+            let result = run_sweep_loop(
+                &lattice,
+                &mut realization,
+                2,
+                1,
+                &config,
+                &AtomicBool::new(false),
+                &|| {},
+                0,
+            )
+            .unwrap();
+
+            if collect_stats {
+                assert_eq!(result.cluster_stats.overlap_csd.len(), 1);
+                assert!(result.cluster_stats.overlap_csd[0][0].iter().sum::<u64>() > 0);
+            } else {
+                assert_eq!(result.cluster_stats.overlap_csd.len(), 1);
+                assert_eq!(
+                    result.cluster_stats.overlap_csd[0][0].iter().sum::<u64>(),
+                    0
+                );
+            }
+        }
+    }
 }

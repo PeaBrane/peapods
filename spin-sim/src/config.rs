@@ -127,6 +127,9 @@ fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
             return Err(ValidationError::new("cluster_update interval must be >= 1"));
         }
     }
+    if cfg.pt_interval == Some(0) {
+        return Err(ValidationError::new("pt_interval must be >= 1"));
+    }
     if let Some(ref h) = cfg.overlap_cluster {
         if h.interval < 1 {
             return Err(ValidationError::new(
@@ -139,6 +142,11 @@ fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
                     "snapshot_interval must be a positive multiple of overlap_cluster interval",
                 ));
             }
+        }
+        if h.modes.is_empty() {
+            return Err(ValidationError::new(
+                "overlap_cluster modes must not be empty",
+            ));
         }
     }
     Ok(())
@@ -156,4 +164,43 @@ pub struct SimConfig {
     pub autocorrelation_max_lag: Option<usize>,
     pub sequential: bool,
     pub equilibration_diagnostic: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> SimConfig {
+        SimConfig {
+            n_sweeps: 1,
+            warmup_sweeps: 0,
+            sweep_mode: SweepMode::Metropolis,
+            cluster_update: None,
+            pt_interval: None,
+            overlap_cluster: None,
+            autocorrelation_max_lag: None,
+            sequential: true,
+            equilibration_diagnostic: false,
+        }
+    }
+
+    #[test]
+    fn rejects_zero_parallel_tempering_interval() {
+        let mut config = config();
+        config.pt_interval = Some(0);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_empty_overlap_mode_list() {
+        let mut config = config();
+        config.overlap_cluster = Some(OverlapClusterConfig {
+            interval: 1,
+            modes: vec![],
+            cluster_mode: ClusterMode::Sw,
+            collect_stats: false,
+            snapshot_interval: None,
+        });
+        assert!(config.validate().is_err());
+    }
 }

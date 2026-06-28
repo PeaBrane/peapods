@@ -55,6 +55,14 @@ pub struct SweepResult {
 impl SweepResult {
     /// Average [`SweepResult`]s across disorder realizations.
     pub fn aggregate(results: &[Self]) -> Self {
+        Self::aggregate_impl(results, true)
+    }
+
+    pub(crate) fn aggregate_without_overlap_samples(results: &[Self]) -> Self {
+        Self::aggregate_impl(results, false)
+    }
+
+    fn aggregate_impl(results: &[Self], retain_overlap_samples: bool) -> Self {
         let n = results.len() as f64;
         let n_temps = results[0].mags.len();
         let n_fk_csd = results[0].cluster_stats.fk_csd.len();
@@ -89,8 +97,12 @@ impl SweepResult {
         let q2_tau_len = results[0].diagnostics.overlap2_tau.len();
         let n_ckpts = results[0].diagnostics.equil_checkpoints.len();
 
-        let overlap_stats =
-            OverlapStats::aggregate(&results.iter().map(|r| &r.overlap_stats).collect::<Vec<_>>());
+        let overlap_results: Vec<_> = results.iter().map(|r| &r.overlap_stats).collect();
+        let overlap_stats = if retain_overlap_samples {
+            OverlapStats::aggregate(&overlap_results)
+        } else {
+            OverlapStats::aggregate_without_samples(&overlap_results)
+        };
 
         let mut agg = SweepResult {
             mags: vec![0.0; n_temps],

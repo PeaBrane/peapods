@@ -9,9 +9,29 @@ use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 use rayon::prelude::*;
 
-/// Build per-temperature group assignments: shuffle replicas and chunk into groups.
-///
-/// Returns `Vec<(temp_idx, group_idx, system_ids_in_group)>`.
+struct GroupTasks {
+    systems: Vec<usize>,
+    n_replicas: usize,
+    n_groups: usize,
+    group_size: usize,
+}
+
+impl GroupTasks {
+    #[inline]
+    fn len(&self) -> usize {
+        self.systems.len() / self.n_replicas * self.n_groups
+    }
+
+    #[inline]
+    fn group(&self, task_idx: usize) -> (usize, usize, &[usize]) {
+        let t = task_idx / self.n_groups;
+        let g = task_idx % self.n_groups;
+        let start = t * self.n_replicas + g * self.group_size;
+        (t, g, &self.systems[start..start + self.group_size])
+    }
+}
+
+/// Build shuffled per-temperature group assignments.
 fn build_tasks(
     system_ids: &[usize],
     n_replicas: usize,
@@ -19,19 +39,20 @@ fn build_tasks(
     group_size: usize,
     rngs: &mut [Xoshiro256StarStar],
     n_pairs: usize,
-) -> Vec<(usize, usize, Vec<usize>)> {
+) -> GroupTasks {
     let n_groups = n_replicas / group_size;
-    let mut tasks = Vec::with_capacity(n_temps * n_groups);
+    let mut systems = Vec::with_capacity(n_temps * n_replicas);
     for t in 0..n_temps {
-        let mut replica_systems: Vec<usize> = (0..n_replicas)
-            .map(|k| system_ids[k * n_temps + t])
-            .collect();
-        replica_systems.shuffle(&mut rngs[t * n_pairs]);
-        for (g, chunk) in replica_systems.chunks_exact(group_size).enumerate() {
-            tasks.push((t, g, chunk.to_vec()));
-        }
+        let start = systems.len();
+        systems.extend((0..n_replicas).map(|k| system_ids[k * n_temps + t]));
+        systems[start..].shuffle(&mut rngs[t * n_pairs]);
     }
-    tasks
+    GroupTasks {
+        systems,
+        n_replicas,
+        n_groups,
+        group_size,
+    }
 }
 
 /// Top-level overlap cluster update dispatcher.
@@ -162,15 +183,15 @@ fn houdayer_step(
         .map(|s| s.as_ptr() as usize)
         .unwrap_or(0);
 
-    let work = |(t, g, systems): &(usize, usize, Vec<usize>)| unsafe {
+    let work = |task_idx: usize| unsafe {
+        let (t, g, systems) = tasks.group(task_idx);
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(t * n_pairs + g);
-        let bases: Vec<usize> = systems.iter().map(|&s| s * n_spins).collect();
         let sp_ptr = sp as *mut i8;
         let slot = t * n_pairs + g;
 
         if has_snap && systems.len() >= 2 {
-            let base_a = bases[0];
-            let base_b = bases[1];
+            let base_a = systems[0] * n_spins;
+            let base_b = systems[1] * n_spins;
             let spin_slot = &mut *(spp as *mut Vec<[Vec<i8>; 2]>).add(slot);
             spin_slot.push([
                 std::slice::from_raw_parts(sp_ptr.add(base_a), n_spins).to_vec(),
@@ -182,14 +203,14 @@ fn houdayer_step(
 
         let is_active = |i: usize| -> bool {
             let mut sum: i32 = 0;
-            for &base in &bases {
-                sum += *sp_ptr.add(base + i) as i32;
+            for &system in systems {
+                sum += *sp_ptr.add(system * n_spins + i) as i32;
             }
             sum == 0
         };
 
         if use_uf {
-            let (mut parent, _) = uf_bonds(lattice, |i, d| {
+            let (mut parent, mut scratch) = uf_bonds(lattice, |i, d| {
                 let j = lattice.neighbor_fwd(i, d);
                 is_active(i) && is_active(j)
             });
@@ -201,8 +222,8 @@ fn houdayer_step(
                 let seed_root = find(&mut parent, seed as u32);
                 for i in 0..n_spins {
                     if find(&mut parent, i as u32) == seed_root {
-                        for &base in &bases {
-                            *sp_ptr.add(base + i) *= -1;
+                        for &system in systems {
+                            *sp_ptr.add(system * n_spins + i) *= -1;
                         }
                     }
                 }
@@ -237,17 +258,17 @@ fn houdayer_step(
                     snap_slot.clear();
                     snap_slot.extend_from_slice(&parent[..n_spins]);
                 }
-                let mut do_flip = vec![u8::MAX; n_spins];
+                scratch.fill(u8::MAX);
                 for &p in parent.iter().take(n_spins) {
                     let root = p as usize;
-                    if counts[root] > 1 && do_flip[root] == u8::MAX {
-                        do_flip[root] = u8::from(rng.gen::<f32>() < 0.5);
+                    if counts[root] > 1 && scratch[root] == u8::MAX {
+                        scratch[root] = u8::from(rng.gen::<f32>() < 0.5);
                     }
                 }
                 for (i, &p) in parent.iter().enumerate().take(n_spins) {
-                    if do_flip[p as usize] == 1 {
-                        for &base in &bases {
-                            *sp_ptr.add(base + i) *= -1;
+                    if scratch[p as usize] == 1 {
+                        for &system in systems {
+                            *sp_ptr.add(system * n_spins + i) *= -1;
                         }
                     }
                 }
@@ -267,8 +288,8 @@ fn houdayer_step(
             );
             for (i, &in_c) in in_cluster.iter().enumerate() {
                 if in_c {
-                    for &base in &bases {
-                        *sp_ptr.add(base + i) *= -1;
+                    for &system in systems {
+                        *sp_ptr.add(system * n_spins + i) *= -1;
                     }
                 }
             }
@@ -276,9 +297,9 @@ fn houdayer_step(
     };
 
     if sequential {
-        tasks.iter().for_each(work);
+        (0..tasks.len()).for_each(work);
     } else {
-        tasks.par_iter().for_each(work);
+        (0..tasks.len()).into_par_iter().for_each(work);
     }
 }
 
@@ -332,9 +353,10 @@ fn jorg_step(
         .map(|s| s.as_ptr() as usize)
         .unwrap_or(0);
 
-    let work = |(t, g, systems): &(usize, usize, Vec<usize>)| unsafe {
+    let work = |task_idx: usize| unsafe {
+        let (t, g, systems) = tasks.group(task_idx);
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(t * n_pairs + g);
-        let temp = temperatures[*t];
+        let temp = temperatures[t];
         let base_a = systems[0] * n_spins;
         let base_b = systems[1] * n_spins;
         let sp_ptr = sp as *mut i8;
@@ -353,7 +375,7 @@ fn jorg_step(
         let is_active = |i: usize| -> bool { *sp_ptr.add(base_a + i) != *sp_ptr.add(base_b + i) };
 
         if use_uf {
-            let (mut parent, _) = uf_bonds(lattice, |i, d| {
+            let (mut parent, mut scratch) = uf_bonds(lattice, |i, d| {
                 let j = lattice.neighbor_fwd(i, d);
                 if !is_active(i) || !is_active(j) {
                     return false;
@@ -409,15 +431,15 @@ fn jorg_step(
                     snap_slot.clear();
                     snap_slot.extend_from_slice(&parent[..n_spins]);
                 }
-                let mut do_flip = vec![u8::MAX; n_spins];
+                scratch.fill(u8::MAX);
                 for &p in parent.iter().take(n_spins) {
                     let root = p as usize;
-                    if counts[root] > 1 && do_flip[root] == u8::MAX {
-                        do_flip[root] = u8::from(rng.gen::<f32>() < 0.5);
+                    if counts[root] > 1 && scratch[root] == u8::MAX {
+                        scratch[root] = u8::from(rng.gen::<f32>() < 0.5);
                     }
                 }
                 for (i, &p) in parent.iter().enumerate().take(n_spins) {
-                    if do_flip[p as usize] == 1 {
+                    if scratch[p as usize] == 1 {
                         *sp_ptr.add(base_a + i) *= -1;
                         *sp_ptr.add(base_b + i) *= -1;
                     }
@@ -462,9 +484,9 @@ fn jorg_step(
     };
 
     if sequential {
-        tasks.iter().for_each(work);
+        (0..tasks.len()).for_each(work);
     } else {
-        tasks.par_iter().for_each(work);
+        (0..tasks.len()).into_par_iter().for_each(work);
     }
 }
 
@@ -539,9 +561,10 @@ fn cmr_step(
         .map(|s| s.as_ptr() as usize)
         .unwrap_or(0);
 
-    let work = |(t, g, systems): &(usize, usize, Vec<usize>)| unsafe {
+    let work = |task_idx: usize| unsafe {
+        let (t, g, systems) = tasks.group(task_idx);
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(t * n_pairs + g);
-        let temp = temperatures[*t];
+        let temp = temperatures[t];
         let base_a = systems[0] * n_spins;
         let base_b = systems[1] * n_spins;
         let sp_ptr = sp as *mut i8;
@@ -569,8 +592,6 @@ fn cmr_step(
             let (mut parent, mut rank) = uf_bonds(lattice, |i, d| {
                 let j = lattice.neighbor_fwd(i, d);
                 let coupling = couplings[i * n_neighbors + d];
-                let j_abs = coupling.abs();
-                let r = (-2.0 * j_abs / temp).exp();
 
                 let a_sat =
                     *sp_ptr.add(base_a + i) as f32 * *sp_ptr.add(base_a + j) as f32 * coupling
@@ -579,7 +600,11 @@ fn cmr_step(
                     *sp_ptr.add(base_b + i) as f32 * *sp_ptr.add(base_b + j) as f32 * coupling
                         > 0.0;
 
-                a_sat && b_sat && rng.gen::<f32>() < 1.0 - r * r
+                if !a_sat || !b_sat {
+                    return false;
+                }
+                let r = (-2.0 * coupling.abs() / temp).exp();
+                rng.gen::<f32>() < 1.0 - r * r
             });
 
             let counts = uf_flatten_counts(&mut parent);
@@ -628,8 +653,6 @@ fn cmr_step(
             uf_bonds_extend(&mut parent, &mut rank, lattice, |i, d| {
                 let j = lattice.neighbor_fwd(i, d);
                 let coupling = couplings[i * n_neighbors + d];
-                let j_abs = coupling.abs();
-                let r = (-2.0 * j_abs / temp).exp();
 
                 let a_sat =
                     *sp_ptr.add(base_a + i) as f32 * *sp_ptr.add(base_a + j) as f32 * coupling
@@ -638,7 +661,11 @@ fn cmr_step(
                     *sp_ptr.add(base_b + i) as f32 * *sp_ptr.add(base_b + j) as f32 * coupling
                         > 0.0;
 
-                a_sat != b_sat && rng.gen::<f32>() < 1.0 - r
+                if a_sat == b_sat {
+                    return false;
+                }
+                let r = (-2.0 * coupling.abs() / temp).exp();
+                rng.gen::<f32>() < 1.0 - r
             });
 
             let grey_counts = uf_flatten_counts(&mut parent);
@@ -666,15 +693,15 @@ fn cmr_step(
                     }
                 }
             } else {
-                let mut cluster_k = vec![u8::MAX; n_spins];
+                rank.fill(u8::MAX);
                 for &p in parent.iter().take(n_spins) {
                     let root = p as usize;
-                    if grey_counts[root] > 1 && cluster_k[root] == u8::MAX {
-                        cluster_k[root] = rng.gen_range(0..=3);
+                    if grey_counts[root] > 1 && rank[root] == u8::MAX {
+                        rank[root] = rng.gen_range(0..=3);
                     }
                 }
                 for (i, &p) in parent.iter().enumerate().take(n_spins) {
-                    let k = cluster_k[p as usize];
+                    let k = rank[p as usize];
                     if k == 0 || k == u8::MAX {
                         continue;
                     }
@@ -705,8 +732,6 @@ fn cmr_step(
                         nb * n_neighbors + d
                     };
                     let coupling = couplings[coupling_idx];
-                    let j_abs = coupling.abs();
-                    let r = (-2.0 * j_abs / temp).exp();
 
                     let a_sat = *sp_ptr.add(base_a + site) as f32
                         * *sp_ptr.add(base_a + nb) as f32
@@ -717,7 +742,11 @@ fn cmr_step(
                         * coupling
                         > 0.0;
 
-                    a_sat && b_sat && rng.gen::<f32>() < 1.0 - r * r
+                    if !a_sat || !b_sat {
+                        return false;
+                    }
+                    let r = (-2.0 * coupling.abs() / temp).exp();
+                    rng.gen::<f32>() < 1.0 - r * r
                 },
             );
 
@@ -743,8 +772,6 @@ fn cmr_step(
                     let fwd = lattice.neighbor_fwd(site, d);
                     if !in_cluster[fwd] {
                         let coupling = couplings[site * n_neighbors + d];
-                        let j_abs = coupling.abs();
-                        let r = (-2.0 * j_abs / temp).exp();
 
                         let a_sat = *sp_ptr.add(base_a + site) as f32
                             * *sp_ptr.add(base_a + fwd) as f32
@@ -755,7 +782,12 @@ fn cmr_step(
                             * coupling
                             > 0.0;
 
-                        if a_sat != b_sat && rng.gen::<f32>() < 1.0 - r {
+                        let eligible = a_sat != b_sat;
+                        let activate = eligible && {
+                            let r = (-2.0 * coupling.abs() / temp).exp();
+                            rng.gen::<f32>() < 1.0 - r
+                        };
+                        if activate {
                             in_cluster[fwd] = true;
                             stack.push(fwd);
                         }
@@ -764,8 +796,6 @@ fn cmr_step(
                     let bwd = lattice.neighbor_bwd(site, d);
                     if !in_cluster[bwd] {
                         let coupling = couplings[bwd * n_neighbors + d];
-                        let j_abs = coupling.abs();
-                        let r = (-2.0 * j_abs / temp).exp();
 
                         let a_sat = *sp_ptr.add(base_a + site) as f32
                             * *sp_ptr.add(base_a + bwd) as f32
@@ -776,7 +806,12 @@ fn cmr_step(
                             * coupling
                             > 0.0;
 
-                        if a_sat != b_sat && rng.gen::<f32>() < 1.0 - r {
+                        let eligible = a_sat != b_sat;
+                        let activate = eligible && {
+                            let r = (-2.0 * coupling.abs() / temp).exp();
+                            rng.gen::<f32>() < 1.0 - r
+                        };
+                        if activate {
                             in_cluster[bwd] = true;
                             stack.push(bwd);
                         }
@@ -802,8 +837,8 @@ fn cmr_step(
     };
 
     if sequential {
-        tasks.iter().for_each(work);
+        (0..tasks.len()).for_each(work);
     } else {
-        tasks.par_iter().for_each(work);
+        (0..tasks.len()).into_par_iter().for_each(work);
     }
 }

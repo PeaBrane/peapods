@@ -1,7 +1,10 @@
+use std::env;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use rand::Rng;
+use rand::{Rng, RngCore, SeedableRng};
+use rand_xoshiro::Xoshiro256StarStar;
 use spin_sim::config::*;
 use spin_sim::{run_sweep_parallel, Lattice, Realization};
 
@@ -12,6 +15,8 @@ const N_SWEEPS: usize = 50;
 const N_REALIZATIONS: usize = 100;
 
 fn main() {
+    let sequential = env::var_os("PEAPODS_SEQUENTIAL").is_some();
+    let mode = env::var("PEAPODS_MODE").unwrap_or_else(|_| "cmr".to_string());
     let lattice = Lattice::new(vec![L, L]);
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
@@ -24,7 +29,7 @@ fn main() {
     let n_systems = N_REPLICAS * N_TEMPS;
     let rngs_per_real = n_systems + N_TEMPS * n_pairs;
 
-    let mut rng = rand::thread_rng();
+    let mut rng = Xoshiro256StarStar::seed_from_u64(0x5eed);
     let mut realizations = Vec::with_capacity(N_REALIZATIONS);
     for r in 0..N_REALIZATIONS {
         let couplings: Vec<f32> = (0..n_spins * n_neighbors)
@@ -37,22 +42,50 @@ fn main() {
     }
 
     let interrupted = AtomicBool::new(false);
+    let (cluster_update, pt_interval, overlap_cluster) = match mode.as_str() {
+        "metropolis" => (None, None, None),
+        "pt" => (None, Some(1), None),
+        "sw" => (
+            Some(ClusterConfig {
+                interval: 1,
+                mode: ClusterMode::Sw,
+                collect_stats: false,
+            }),
+            None,
+            None,
+        ),
+        "wolff" => (
+            Some(ClusterConfig {
+                interval: 1,
+                mode: ClusterMode::Wolff,
+                collect_stats: false,
+            }),
+            None,
+            None,
+        ),
+        "cmr" => (
+            None,
+            Some(1),
+            Some(OverlapClusterConfig {
+                interval: 1,
+                modes: vec![OverlapClusterBuildMode::Cmr],
+                cluster_mode: ClusterMode::Sw,
+                collect_stats: false,
+                snapshot_interval: None,
+            }),
+        ),
+        _ => panic!("unknown PEAPODS_MODE '{mode}'"),
+    };
 
     let config = SimConfig {
         n_sweeps: N_SWEEPS,
         warmup_sweeps: 0,
         sweep_mode: SweepMode::Metropolis,
-        cluster_update: None,
-        pt_interval: Some(1),
-        overlap_cluster: Some(OverlapClusterConfig {
-            interval: 1,
-            modes: vec![OverlapClusterBuildMode::Cmr],
-            cluster_mode: ClusterMode::Sw,
-            collect_stats: false,
-            snapshot_interval: None,
-        }),
+        cluster_update,
+        pt_interval,
+        overlap_cluster,
         autocorrelation_max_lag: None,
-        sequential: false,
+        sequential,
         equilibration_diagnostic: false,
     };
 
@@ -60,11 +93,11 @@ fn main() {
         "Lattice: {}x{}  |  Temps: {}  |  Replicas: {}  |  Sweeps: {}  |  Realizations: {}",
         L, L, N_TEMPS, N_REPLICAS, N_SWEEPS, N_REALIZATIONS
     );
-    println!("Config: bimodal, CMR, SW overlap, PT every sweep");
+    println!("Config: bimodal, mode={mode}, sequential={sequential}");
     println!("{}", "-".repeat(70));
 
     let t0 = Instant::now();
-    run_sweep_parallel(
+    let result = run_sweep_parallel(
         &lattice,
         &mut realizations,
         N_REPLICAS,
@@ -76,6 +109,67 @@ fn main() {
     .unwrap();
     let elapsed = t0.elapsed().as_secs_f64();
 
+    let mut state_hash = DefaultHasher::new();
+    for realization in &realizations {
+        realization.spins.hash(&mut state_hash);
+        realization.system_ids.hash(&mut state_hash);
+        for rng in realization.rngs.iter().chain(&realization.pair_rngs) {
+            let mut rng = rng.clone();
+            rng.next_u64().hash(&mut state_hash);
+        }
+    }
+    for values in [
+        &result.mags,
+        &result.mags2,
+        &result.mags4,
+        &result.energies,
+        &result.energies2,
+    ] {
+        for value in values {
+            value.to_bits().hash(&mut state_hash);
+        }
+    }
+    for values in [
+        &result.overlap_stats.overlap,
+        &result.overlap_stats.overlap2,
+        &result.overlap_stats.overlap4,
+        &result.overlap_stats.link_overlap,
+        &result.overlap_stats.link_overlap2,
+        &result.overlap_stats.link_overlap4,
+    ] {
+        for value in values {
+            value.to_bits().hash(&mut state_hash);
+        }
+    }
+    result.overlap_stats.histogram.hash(&mut state_hash);
+    result
+        .overlap_stats
+        .per_sample_histogram
+        .hash(&mut state_hash);
+    for samples in [
+        &result.overlap_stats.ql_at_q_sum,
+        &result.overlap_stats.ql2_at_q_sum,
+    ] {
+        for bins in samples {
+            for value in bins {
+                value.to_bits().hash(&mut state_hash);
+            }
+        }
+    }
+    for samples in [
+        &result.overlap_stats.per_sample_ql_at_q_sum,
+        &result.overlap_stats.per_sample_ql2_at_q_sum,
+    ] {
+        for temperatures in samples {
+            for bins in temperatures {
+                for value in bins {
+                    value.to_bits().hash(&mut state_hash);
+                }
+            }
+        }
+    }
+
     let per_sweep = elapsed / N_SWEEPS as f64 * 1000.0;
     println!("Total: {:.3} s  |  {:.3} ms/sweep", elapsed, per_sweep);
+    println!("State checksum: {:016x}", state_hash.finish());
 }
