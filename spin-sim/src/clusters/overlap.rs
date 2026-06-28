@@ -210,7 +210,7 @@ fn houdayer_step(
         };
 
         if use_uf {
-            let (mut parent, mut scratch) = uf_bonds(lattice, |i, d| {
+            let mut uf = uf_bonds(lattice, |i, d| {
                 let j = lattice.neighbor_fwd(i, d);
                 is_active(i) && is_active(j)
             });
@@ -219,16 +219,16 @@ fn houdayer_step(
                 let Some(seed) = find_seed(n_spins, rng, &is_active) else {
                     return;
                 };
-                let seed_root = find(&mut parent, seed as u32);
+                let seed_root = find(&mut uf.parent, seed as u32);
                 for i in 0..n_spins {
-                    if find(&mut parent, i as u32) == seed_root {
+                    if find(&mut uf.parent, i as u32) == seed_root {
                         for &system in systems {
                             *sp_ptr.add(system * n_spins + i) *= -1;
                         }
                     }
                 }
                 if has_csd || has_top4 || has_snap {
-                    let counts = uf_flatten_counts(&mut parent);
+                    let counts = uf_flatten_counts(&mut uf.parent);
                     if has_csd {
                         let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
                         uf_histogram(&counts, csd_slot.as_mut_slice());
@@ -240,11 +240,11 @@ fn houdayer_step(
                     if has_snap {
                         let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
                         snap_slot.clear();
-                        snap_slot.extend_from_slice(&parent[..n_spins]);
+                        snap_slot.extend_from_slice(&uf.parent[..n_spins]);
                     }
                 }
             } else {
-                let counts = uf_flatten_counts(&mut parent);
+                let counts = uf_flatten_counts(&mut uf.parent);
                 if has_csd {
                     let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
                     uf_histogram(&counts, csd_slot.as_mut_slice());
@@ -256,17 +256,18 @@ fn houdayer_step(
                 if has_snap {
                     let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
                     snap_slot.clear();
-                    snap_slot.extend_from_slice(&parent[..n_spins]);
+                    snap_slot.extend_from_slice(&uf.parent[..n_spins]);
                 }
-                scratch.fill(u8::MAX);
-                for &p in parent.iter().take(n_spins) {
+                let storage = &mut *uf;
+                storage.rank.fill(u8::MAX);
+                for &p in storage.parent.iter().take(n_spins) {
                     let root = p as usize;
-                    if counts[root] > 1 && scratch[root] == u8::MAX {
-                        scratch[root] = u8::from(rng.gen::<f32>() < 0.5);
+                    if counts[root] > 1 && storage.rank[root] == u8::MAX {
+                        storage.rank[root] = u8::from(rng.gen::<f32>() < 0.5);
                     }
                 }
-                for (i, &p) in parent.iter().enumerate().take(n_spins) {
-                    if scratch[p as usize] == 1 {
+                for (i, &p) in storage.parent.iter().enumerate().take(n_spins) {
+                    if storage.rank[p as usize] == 1 {
                         for &system in systems {
                             *sp_ptr.add(system * n_spins + i) *= -1;
                         }
@@ -375,7 +376,7 @@ fn jorg_step(
         let is_active = |i: usize| -> bool { *sp_ptr.add(base_a + i) != *sp_ptr.add(base_b + i) };
 
         if use_uf {
-            let (mut parent, mut scratch) = uf_bonds(lattice, |i, d| {
+            let mut uf = uf_bonds(lattice, |i, d| {
                 let j = lattice.neighbor_fwd(i, d);
                 if !is_active(i) || !is_active(j) {
                     return false;
@@ -393,15 +394,15 @@ fn jorg_step(
                 let Some(seed) = find_seed(n_spins, rng, &is_active) else {
                     return;
                 };
-                let seed_root = find(&mut parent, seed as u32);
+                let seed_root = find(&mut uf.parent, seed as u32);
                 for i in 0..n_spins {
-                    if find(&mut parent, i as u32) == seed_root {
+                    if find(&mut uf.parent, i as u32) == seed_root {
                         *sp_ptr.add(base_a + i) *= -1;
                         *sp_ptr.add(base_b + i) *= -1;
                     }
                 }
                 if has_csd || has_top4 || has_snap {
-                    let counts = uf_flatten_counts(&mut parent);
+                    let counts = uf_flatten_counts(&mut uf.parent);
                     if has_csd {
                         let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
                         uf_histogram(&counts, csd_slot.as_mut_slice());
@@ -413,11 +414,11 @@ fn jorg_step(
                     if has_snap {
                         let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
                         snap_slot.clear();
-                        snap_slot.extend_from_slice(&parent[..n_spins]);
+                        snap_slot.extend_from_slice(&uf.parent[..n_spins]);
                     }
                 }
             } else {
-                let counts = uf_flatten_counts(&mut parent);
+                let counts = uf_flatten_counts(&mut uf.parent);
                 if has_csd {
                     let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
                     uf_histogram(&counts, csd_slot.as_mut_slice());
@@ -429,17 +430,18 @@ fn jorg_step(
                 if has_snap {
                     let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
                     snap_slot.clear();
-                    snap_slot.extend_from_slice(&parent[..n_spins]);
+                    snap_slot.extend_from_slice(&uf.parent[..n_spins]);
                 }
-                scratch.fill(u8::MAX);
-                for &p in parent.iter().take(n_spins) {
+                let storage = &mut *uf;
+                storage.rank.fill(u8::MAX);
+                for &p in storage.parent.iter().take(n_spins) {
                     let root = p as usize;
-                    if counts[root] > 1 && scratch[root] == u8::MAX {
-                        scratch[root] = u8::from(rng.gen::<f32>() < 0.5);
+                    if counts[root] > 1 && storage.rank[root] == u8::MAX {
+                        storage.rank[root] = u8::from(rng.gen::<f32>() < 0.5);
                     }
                 }
-                for (i, &p) in parent.iter().enumerate().take(n_spins) {
-                    if scratch[p as usize] == 1 {
+                for (i, &p) in storage.parent.iter().enumerate().take(n_spins) {
+                    if storage.rank[p as usize] == 1 {
                         *sp_ptr.add(base_a + i) *= -1;
                         *sp_ptr.add(base_b + i) *= -1;
                     }
@@ -589,7 +591,7 @@ fn cmr_step(
 
             // === Phase 1: Blue clusters ===
             // Blue bond: doubly-satisfied edges with prob 1 - r²
-            let (mut parent, mut rank) = uf_bonds(lattice, |i, d| {
+            let mut uf = uf_bonds(lattice, |i, d| {
                 let j = lattice.neighbor_fwd(i, d);
                 let coupling = couplings[i * n_neighbors + d];
 
@@ -607,7 +609,7 @@ fn cmr_step(
                 rng.gen::<f32>() < 1.0 - r * r
             });
 
-            let counts = uf_flatten_counts(&mut parent);
+            let counts = uf_flatten_counts(&mut uf.parent);
             if has_csd {
                 let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
                 uf_histogram(&counts, csd_slot.as_mut_slice());
@@ -619,27 +621,28 @@ fn cmr_step(
             if has_blue_snap {
                 let blue_slot = &mut *(bsnp as *mut Vec<u32>).add(slot);
                 blue_slot.clear();
-                blue_slot.extend_from_slice(&parent[..n_spins]);
+                blue_slot.extend_from_slice(&uf.parent[..n_spins]);
             }
 
             // Flip blue clusters (both replicas jointly)
             if wolff {
-                let seed_root = parent[seed] as usize;
-                for (i, &p) in parent.iter().enumerate().take(n_spins) {
+                let seed_root = uf.parent[seed] as usize;
+                for (i, &p) in uf.parent.iter().enumerate().take(n_spins) {
                     if p as usize == seed_root {
                         *sp_ptr.add(base_a + i) *= -1;
                         *sp_ptr.add(base_b + i) *= -1;
                     }
                 }
             } else {
+                // Keep UF ranks intact until red bonds extend the blue clusters.
                 let mut do_flip = vec![u8::MAX; n_spins];
-                for &p in parent.iter().take(n_spins) {
+                for &p in uf.parent.iter().take(n_spins) {
                     let root = p as usize;
                     if counts[root] > 1 && do_flip[root] == u8::MAX {
                         do_flip[root] = u8::from(rng.gen::<f32>() < 0.5);
                     }
                 }
-                for (i, &p) in parent.iter().enumerate().take(n_spins) {
+                for (i, &p) in uf.parent.iter().enumerate().take(n_spins) {
                     if do_flip[p as usize] == 1 {
                         *sp_ptr.add(base_a + i) *= -1;
                         *sp_ptr.add(base_b + i) *= -1;
@@ -650,7 +653,10 @@ fn cmr_step(
             // === Phase 2: Grey clusters (extend blue UF with red bonds) ===
             // Red bond: singly-satisfied edges on post-flip spins, prob 1 - r.
             // No clone needed: blue flips preserve the singly-satisfied classification.
-            uf_bonds_extend(&mut parent, &mut rank, lattice, |i, d| {
+            // Return blue counts so grey counts can reuse the pooled allocation.
+            drop(counts);
+            let storage = &mut *uf;
+            uf_bonds_extend(&mut storage.parent, &mut storage.rank, lattice, |i, d| {
                 let j = lattice.neighbor_fwd(i, d);
                 let coupling = couplings[i * n_neighbors + d];
 
@@ -668,21 +674,21 @@ fn cmr_step(
                 rng.gen::<f32>() < 1.0 - r
             });
 
-            let grey_counts = uf_flatten_counts(&mut parent);
+            let grey_counts = uf_flatten_counts(&mut uf.parent);
 
             if has_snap {
                 let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
                 snap_slot.clear();
-                snap_slot.extend_from_slice(&parent[..n_spins]);
+                snap_slot.extend_from_slice(&uf.parent[..n_spins]);
             }
 
             // Flip grey clusters (each replica independently)
             if wolff {
-                let seed_root = parent[seed] as usize;
+                let seed_root = uf.parent[seed] as usize;
                 let k: u8 = rng.gen_range(1..=3);
                 let flip_a = k & 1 != 0;
                 let flip_b = k & 2 != 0;
-                for (i, &p) in parent.iter().enumerate().take(n_spins) {
+                for (i, &p) in uf.parent.iter().enumerate().take(n_spins) {
                     if p as usize == seed_root {
                         if flip_a {
                             *sp_ptr.add(base_a + i) *= -1;
@@ -693,15 +699,16 @@ fn cmr_step(
                     }
                 }
             } else {
-                rank.fill(u8::MAX);
-                for &p in parent.iter().take(n_spins) {
+                let storage = &mut *uf;
+                storage.rank.fill(u8::MAX);
+                for &p in storage.parent.iter().take(n_spins) {
                     let root = p as usize;
-                    if grey_counts[root] > 1 && rank[root] == u8::MAX {
-                        rank[root] = rng.gen_range(0..=3);
+                    if grey_counts[root] > 1 && storage.rank[root] == u8::MAX {
+                        storage.rank[root] = rng.gen_range(0..=3);
                     }
                 }
-                for (i, &p) in parent.iter().enumerate().take(n_spins) {
-                    let k = rank[p as usize];
+                for (i, &p) in storage.parent.iter().enumerate().take(n_spins) {
+                    let k = storage.rank[p as usize];
                     if k == 0 || k == u8::MAX {
                         continue;
                     }

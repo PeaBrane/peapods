@@ -23,13 +23,17 @@ pub struct Lattice {
     /// Backward neighbors, length `n_spins * n_neighbors`.
     /// Layout: `bwd_neighbors[i * n_neighbors + d]`.
     bwd_neighbors: Vec<u32>,
+    canonical_square_shape: Option<(usize, usize)>,
 }
 
 impl Lattice {
     /// Create a hypercubic lattice with the given shape (e.g. `vec![16, 16]`).
     pub fn new(shape: Vec<usize>) -> Self {
         let n_dims = shape.len();
-        Self::with_offsets(shape, hypercubic(n_dims))
+        let canonical_square_shape = (n_dims == 2).then(|| (shape[0], shape[1]));
+        let mut lattice = Self::with_offsets(shape, hypercubic(n_dims));
+        lattice.canonical_square_shape = canonical_square_shape;
+        lattice
     }
 
     /// Create a lattice with arbitrary neighbor offsets.
@@ -84,7 +88,13 @@ impl Lattice {
             n_neighbors,
             fwd_neighbors,
             bwd_neighbors,
+            canonical_square_shape: None,
         }
+    }
+
+    #[inline]
+    pub(crate) fn square_shape(&self) -> Option<(usize, usize)> {
+        self.canonical_square_shape
     }
 
     #[inline]
@@ -171,5 +181,16 @@ mod tests {
         assert_eq!(lat.neighbor_fwd(15, 1), 12);
         // offset [1,-1] -> (0, 2) = 2
         assert_eq!(lat.neighbor_fwd(15, 2), 2);
+    }
+
+    #[test]
+    fn square_shape_uses_construction_time_topology() {
+        let mut square = Lattice::new(vec![5, 7]);
+        square.shape = vec![1, 1];
+        square.n_dims = 3;
+        assert_eq!(square.square_shape(), Some((5, 7)));
+
+        let custom = Lattice::with_offsets(vec![5, 7], vec![vec![0, 1], vec![1, 0]]);
+        assert_eq!(custom.square_shape(), None);
     }
 }

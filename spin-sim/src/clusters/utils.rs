@@ -1,8 +1,67 @@
 use crate::geometry::Lattice;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
+use std::cell::RefCell;
+use std::ops::{Deref, DerefMut};
 
 // --- Union-Find ---
+
+#[derive(Default)]
+pub(super) struct UfStorage {
+    pub(super) parent: Vec<u32>,
+    pub(super) rank: Vec<u8>,
+}
+
+pub(super) struct PooledUf(Option<UfStorage>);
+
+impl Deref for PooledUf {
+    type Target = UfStorage;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().unwrap()
+    }
+}
+
+impl DerefMut for PooledUf {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().unwrap()
+    }
+}
+
+impl Drop for PooledUf {
+    fn drop(&mut self) {
+        let storage = self.0.take().unwrap();
+        UF_POOL.with(|pool| pool.borrow_mut().push(storage));
+    }
+}
+
+pub(super) struct PooledCounts(Option<Vec<u32>>);
+
+impl Deref for PooledCounts {
+    type Target = [u32];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().unwrap()
+    }
+}
+
+impl DerefMut for PooledCounts {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().unwrap()
+    }
+}
+
+impl Drop for PooledCounts {
+    fn drop(&mut self) {
+        let counts = self.0.take().unwrap();
+        COUNTS_POOL.with(|pool| pool.borrow_mut().push(counts));
+    }
+}
+
+thread_local! {
+    static UF_POOL: RefCell<Vec<UfStorage>> = const { RefCell::new(Vec::new()) };
+    static COUNTS_POOL: RefCell<Vec<Vec<u32>>> = const { RefCell::new(Vec::new()) };
+}
 
 #[inline]
 pub(super) fn find(parent: &mut [u32], mut x: u32) -> u32 {
@@ -90,26 +149,64 @@ pub(super) fn dfs_cluster(
 
 /// Activate forward bonds via union-find. `should_bond(site, dim)` decides
 /// whether to activate the bond from `site` to its forward neighbor in `dim`.
-/// Returns `(parent, rank)`.
+/// Returns pooled `(parent, rank)` storage.
 #[inline]
 pub(super) fn uf_bonds(
     lattice: &Lattice,
     mut should_bond: impl FnMut(usize, usize) -> bool,
-) -> (Vec<u32>, Vec<u8>) {
+) -> PooledUf {
     let n_spins = lattice.n_spins;
-    let mut parent: Vec<u32> = (0..n_spins as u32).collect();
-    let mut rank = vec![0u8; n_spins];
+    let mut storage = UF_POOL
+        .with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_default();
+    reset_uf(&mut storage.parent, &mut storage.rank, n_spins);
+    activate_bonds(
+        &mut storage.parent,
+        &mut storage.rank,
+        lattice,
+        &mut should_bond,
+    );
 
-    for i in 0..n_spins {
+    PooledUf(Some(storage))
+}
+
+#[inline]
+pub(super) fn uf_bonds_fresh(
+    lattice: &Lattice,
+    mut should_bond: impl FnMut(usize, usize) -> bool,
+) -> (Vec<u32>, Vec<u8>) {
+    let mut parent = Vec::new();
+    let mut rank = Vec::new();
+    reset_uf(&mut parent, &mut rank, lattice.n_spins);
+    activate_bonds(&mut parent, &mut rank, lattice, &mut should_bond);
+    (parent, rank)
+}
+
+#[inline]
+fn reset_uf(parent: &mut Vec<u32>, rank: &mut Vec<u8>, n_spins: usize) {
+    parent.resize(n_spins, 0);
+    for (i, parent) in parent.iter_mut().enumerate() {
+        *parent = i as u32;
+    }
+    rank.resize(n_spins, 0);
+    rank.fill(0);
+}
+
+#[inline]
+fn activate_bonds(
+    parent: &mut [u32],
+    rank: &mut [u8],
+    lattice: &Lattice,
+    should_bond: &mut impl FnMut(usize, usize) -> bool,
+) {
+    for i in 0..lattice.n_spins {
         for d in 0..lattice.n_neighbors {
             if should_bond(i, d) {
                 let j = lattice.neighbor_fwd(i, d);
-                union(&mut parent, &mut rank, i as u32, j as u32);
+                union(parent, rank, i as u32, j as u32);
             }
         }
     }
-
-    (parent, rank)
 }
 
 /// Extend an existing union-find by activating additional forward bonds.
@@ -132,14 +229,31 @@ pub(super) fn uf_bonds_extend(
 
 /// Flatten UF parent array in-place and return per-root counts.
 #[inline]
-pub(super) fn uf_flatten_counts(parent: &mut [u32]) -> Vec<u32> {
+pub(super) fn uf_flatten_counts(parent: &mut [u32]) -> PooledCounts {
     let n = parent.len();
     uf_flatten(parent);
-    let mut counts = vec![0u32; n];
-    for &root in parent.iter() {
+    let mut counts = COUNTS_POOL
+        .with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_default();
+    counts.resize(n, 0);
+    counts.fill(0);
+    count_roots(parent, &mut counts);
+    PooledCounts(Some(counts))
+}
+
+#[inline]
+pub(super) fn uf_flatten_counts_fresh(parent: &mut [u32]) -> Vec<u32> {
+    let mut counts = vec![0u32; parent.len()];
+    uf_flatten(parent);
+    count_roots(parent, &mut counts);
+    counts
+}
+
+#[inline]
+fn count_roots(parent: &[u32], counts: &mut [u32]) {
+    for &root in parent {
         counts[root as usize] += 1;
     }
-    counts
 }
 
 /// Flatten a UF parent array in-place.
@@ -335,11 +449,13 @@ mod tests {
         let n = lattice.n_spins;
         let bonds = bond_set();
 
-        let (mut parent, _) = uf_bonds(&lattice, |i, d| bonds.contains(&(i, d)));
+        let mut uf = uf_bonds(&lattice, |i, d| bonds.contains(&(i, d)));
+        let parent = &mut uf.parent;
 
         // Flatten parents for easy inspection
         for i in 0..n {
-            parent[i] = find(&mut parent, i as u32);
+            let root = find(parent, i as u32);
+            parent[i] = root;
         }
 
         // Sites in cluster A must share a root
@@ -372,10 +488,12 @@ mod tests {
         let n = lattice.n_spins;
         let sites = active_sites();
 
-        let (mut parent, _) = uf_bonds(&lattice, |i, _d| sites.contains(&i));
+        let mut uf = uf_bonds(&lattice, |i, _d| sites.contains(&i));
+        let parent = &mut uf.parent;
 
         for i in 0..n {
-            parent[i] = find(&mut parent, i as u32);
+            let root = find(parent, i as u32);
+            parent[i] = root;
         }
 
         // Cluster A: {0, 1, 3, 4, 7}
@@ -406,8 +524,8 @@ mod tests {
         let n = lattice.n_spins;
         let bonds = bond_set();
 
-        let (mut parent, _) = uf_bonds(&lattice, |i, d| bonds.contains(&(i, d)));
-        let counts = uf_flatten_counts(&mut parent);
+        let mut uf = uf_bonds(&lattice, |i, d| bonds.contains(&(i, d)));
+        let counts = uf_flatten_counts(&mut uf.parent);
         let mut hist = vec![0u64; n + 1];
         uf_histogram(&counts, &mut hist);
 
@@ -424,8 +542,8 @@ mod tests {
         let n = lattice.n_spins;
         let sites = active_sites();
 
-        let (mut parent, _) = uf_bonds(&lattice, |i, _d| sites.contains(&i));
-        let counts = uf_flatten_counts(&mut parent);
+        let mut uf = uf_bonds(&lattice, |i, _d| sites.contains(&i));
+        let counts = uf_flatten_counts(&mut uf.parent);
         let mut hist = vec![0u64; n + 1];
         uf_histogram(&counts, &mut hist);
 
@@ -434,5 +552,22 @@ mod tests {
         assert_eq!(hist[3], 1);
         assert_eq!(hist[5], 1);
         assert_eq!(hist.iter().sum::<u64>(), 10);
+    }
+
+    #[test]
+    fn pooled_uf_resets_after_size_change() {
+        let larger = Lattice::new(vec![4, 4]);
+        {
+            let mut uf = uf_bonds(&larger, |_i, _d| true);
+            let counts = uf_flatten_counts(&mut uf.parent);
+            assert_eq!(counts.iter().sum::<u32>(), 16);
+        }
+
+        let smaller = Lattice::new(vec![3, 3]);
+        let mut uf = uf_bonds(&smaller, |_i, _d| false);
+        assert_eq!(uf.parent, (0..9).collect::<Vec<_>>());
+        assert!(uf.rank.iter().all(|&rank| rank == 0));
+        let counts = uf_flatten_counts(&mut uf.parent);
+        assert!(counts.iter().all(|&count| count == 1));
     }
 }

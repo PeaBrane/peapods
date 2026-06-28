@@ -1,4 +1,6 @@
-use super::utils::{dfs_cluster, uf_bonds, uf_flatten, uf_flatten_counts, uf_histogram};
+use super::utils::{
+    dfs_cluster, uf_bonds_fresh, uf_flatten, uf_flatten_counts_fresh, uf_histogram,
+};
 use crate::geometry::Lattice;
 use crate::parallel::par_over_replicas;
 use rand::Rng;
@@ -92,7 +94,8 @@ pub fn fk_update(
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(system_id);
         let temp = temperatures[temp_id];
 
-        let (mut parent, mut scratch) = uf_bonds(lattice, |i, d| {
+        // Fresh storage is intentional: pooling regressed FK/SW throughput.
+        let (mut parent, mut scratch) = uf_bonds_fresh(lattice, |i, d| {
             let j = lattice.neighbor_fwd(i, d);
             let inter =
                 spin_slice[i] as f32 * spin_slice[j] as f32 * couplings[i * n_neighbors + d];
@@ -103,7 +106,7 @@ pub fn fk_update(
         });
 
         if has_csd {
-            let counts = uf_flatten_counts(&mut parent);
+            let counts = uf_flatten_counts_fresh(&mut parent);
             let csd_slot = &mut *(cp as *mut Vec<u64>).add(temp_id);
             uf_histogram(&counts, csd_slot.as_mut_slice());
         } else {
@@ -113,20 +116,20 @@ pub fn fk_update(
         if wolff {
             let seed = rng.gen_range(0..n_spins);
             let seed_root = parent[seed];
-            for i in 0..n_spins {
-                if parent[i] == seed_root {
-                    spin_slice[i] = -spin_slice[i];
+            for (&site_parent, spin) in parent.iter().zip(spin_slice.iter_mut()) {
+                if site_parent == seed_root {
+                    *spin = -*spin;
                 }
             }
         } else {
             scratch.fill(2); // 2 = undecided
-            for i in 0..n_spins {
-                let root = parent[i] as usize;
+            for (&site_parent, spin) in parent.iter().zip(spin_slice.iter_mut()) {
+                let root = site_parent as usize;
                 if scratch[root] == 2 {
                     scratch[root] = u8::from(rng.gen::<f32>() < 0.5);
                 }
                 if scratch[root] == 1 {
-                    spin_slice[i] = -spin_slice[i];
+                    *spin = -*spin;
                 }
             }
         }
