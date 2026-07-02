@@ -16,6 +16,7 @@ from utils import (
 
 OUT_DIR = Path(__file__).parent
 N_SWEEPS = 10000
+TEST_SEED = 42
 
 
 def ferromagnet(name, sizes, tc, temps, tol=0.05, shape_fn=None, **ising_kwargs):
@@ -32,7 +33,13 @@ def ferromagnet(name, sizes, tc, temps, tol=0.05, shape_fn=None, **ising_kwargs)
     results = {}
     for L in sizes:
         shape = shape_fn(L)
-        model = Ising(shape, temperatures=temps, n_replicas=2, **ising_kwargs)
+        model = Ising(
+            shape,
+            temperatures=temps,
+            n_replicas=2,
+            seed=TEST_SEED,
+            **ising_kwargs,
+        )
         model.sample(
             N_SWEEPS,
             sweep_mode="metropolis",

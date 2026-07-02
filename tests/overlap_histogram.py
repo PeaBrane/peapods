@@ -6,6 +6,7 @@ from peapods.sweep import _cumulative_overlap_ratio
 
 N_SWEEPS = 40000
 N_DISORDER = 64
+TEST_SEED = 42
 
 
 def overlap_histogram_checks():
@@ -21,6 +22,7 @@ def overlap_histogram_checks():
         temperatures=np.array([1.4], dtype=np.float32),
         n_replicas=2,
         n_disorder=N_DISORDER,
+        seed=TEST_SEED,
     )
     model.sample(
         N_SWEEPS,

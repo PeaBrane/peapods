@@ -8,6 +8,7 @@ N_SWEEPS = 40000
 MAX_LAG = 2000
 EXPECTED_RATIO = 2**0.25  # ≈ 1.189
 TOLERANCE = 0.1
+TEST_SEED = 42
 
 
 def run():
@@ -19,7 +20,7 @@ def run():
     taus = {}
 
     for L in [32, 64]:
-        model = Ising([L, L], temperatures=temps, n_disorder=16)
+        model = Ising([L, L], temperatures=temps, n_disorder=16, seed=TEST_SEED)
         model.sample(
             N_SWEEPS,
             cluster_update_interval=1,

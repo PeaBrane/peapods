@@ -641,9 +641,9 @@ mod tests {
 
         // Remaining sites are singletons
         let clustered: HashSet<usize> = [0, 1, 3, 4, 10, 11, 14].into_iter().collect();
-        for i in 0..n {
+        for (i, &site_parent) in parent.iter().enumerate().take(n) {
             if !clustered.contains(&i) {
-                assert_eq!(parent[i], i as u32, "site {i} should be a singleton");
+                assert_eq!(site_parent, i as u32, "site {i} should be a singleton");
             }
         }
     }
@@ -677,9 +677,9 @@ mod tests {
         assert_ne!(root_a, root_b);
 
         let clustered: HashSet<usize> = [0, 1, 3, 4, 7, 10, 11, 14].into_iter().collect();
-        for i in 0..n {
+        for (i, &site_parent) in parent.iter().enumerate().take(n) {
             if !clustered.contains(&i) {
-                assert_eq!(parent[i], i as u32, "site {i} should be a singleton");
+                assert_eq!(site_parent, i as u32, "site {i} should be a singleton");
             }
         }
     }
