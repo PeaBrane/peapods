@@ -159,6 +159,7 @@ class Ising:
         warmup_ratio=0.25,
         collect_cluster_stats=False,
         autocorrelation_max_lag=None,
+        autocorrelation_backend="ring",
         sequential=False,
         equilibration_diagnostic=False,
         snapshot_interval=None,
@@ -208,6 +209,9 @@ class Ising:
                 collecting statistics. Default 0.25.
             collect_cluster_stats: If `True`, collect FK cluster size
                 distribution and top-4 overlap cluster sizes.
+            autocorrelation_backend: `"ring"` for exact bounded-memory
+                accumulation or `"fft"` to retain the full measurement history
+                and evaluate autocorrelation with an FFT.
             sequential: If `True`, disable inner-loop parallelism over
                 replicas/temperatures. Use when outer-level parallelism over
                 disorder realizations already saturates all physical cores.
@@ -222,6 +226,12 @@ class Ising:
         if pt_schedule not in {"single_random_edge", "full_ladder"}:
             raise ValueError(
                 "pt_schedule must be 'single_random_edge' or 'full_ladder'"
+            )
+        if autocorrelation_backend not in {"ring", "fft"}:
+            raise ValueError("autocorrelation_backend must be 'ring' or 'fft'")
+        if autocorrelation_backend == "fft" and autocorrelation_max_lag is None:
+            raise ValueError(
+                "autocorrelation_backend='fft' requires autocorrelation_max_lag"
             )
         if cluster_action == "observe" and cluster_update_interval is None:
             raise ValueError(
@@ -252,6 +262,7 @@ class Ising:
             warmup_ratio=warmup_ratio,
             collect_cluster_stats=collect_cluster_stats,
             autocorrelation_max_lag=autocorrelation_max_lag,
+            autocorrelation_backend=autocorrelation_backend,
             sequential=sequential,
             equilibration_diagnostic=equilibration_diagnostic,
             snapshot_interval=snapshot_interval if oci else None,

@@ -326,6 +326,8 @@ pub(crate) struct GraphObservationSlot {
 
 pub(super) struct BondMetrics {
     active_bonds: u32,
+    // Component and winding bookkeeping stay separate because combining their
+    // union-find paths regressed this observer workload.
     winding: Option<WindingUf>,
 }
 

@@ -187,6 +187,16 @@ fn run_sweep_loop_impl(
 ) -> Result<SweepResult, String> {
     config.validate().map_err(|e| format!("{e}"))?;
 
+    let metropolis_lookup = (config.sweep_mode == SweepMode::Metropolis)
+        .then(|| {
+            mcmc::sweep::UnitCouplingMetropolisLookup::new(
+                &real.couplings,
+                &real.temperatures,
+                lattice.n_neighbors,
+            )
+        })
+        .flatten();
+
     let n_spins = lattice.n_spins;
     let n_systems = n_replicas * n_temps;
     let n_sweeps = config.n_sweeps;
@@ -333,9 +343,23 @@ fn run_sweep_loop_impl(
     let ac_max_lag = config
         .autocorrelation_max_lag
         .map(|k| k.min(n_measurement_sweeps / 4).max(1));
-    let mut m2_accum = ac_max_lag.map(|k| AutocorrAccum::new(k, n_temps));
+    let mut m2_accum = ac_max_lag.map(|k| {
+        AutocorrAccum::with_backend(
+            k,
+            n_temps,
+            config.autocorrelation_backend,
+            n_measurement_sweeps,
+        )
+    });
     let mut q2_accum = if ac_max_lag.is_some() && n_pairs > 0 {
-        ac_max_lag.map(|k| AutocorrAccum::new(k, n_temps))
+        ac_max_lag.map(|k| {
+            AutocorrAccum::with_backend(
+                k,
+                n_temps,
+                config.autocorrelation_backend,
+                n_measurement_sweeps,
+            )
+        })
     } else {
         None
     };
@@ -394,6 +418,7 @@ fn run_sweep_loop_impl(
                 &real.system_ids,
                 &mut real.rngs,
                 config.sequential,
+                metropolis_lookup.as_ref(),
             ),
             SweepMode::Gibbs => mcmc::sweep::gibbs_sweep(
                 lattice,
@@ -462,6 +487,8 @@ fn run_sweep_loop_impl(
             .pt_interval
             .is_some_and(|interval| sweep_id % interval == 0);
 
+        // Recompute from spins so every mutating path has one source of truth;
+        // incremental observable accounting is deferred until it can cover all mutations.
         if record || pt_this_sweep || equil_diag {
             if record {
                 spins::energy::compute_energies_and_magnetizations_into(
@@ -915,7 +942,8 @@ pub fn run_sweep_parallel(
 mod tests {
     use super::*;
     use crate::config::{
-        ClusterConfig, ClusterMode, OverlapClusterBuildMode, OverlapClusterConfig,
+        AutocorrelationBackend, ClusterConfig, ClusterMode, OverlapClusterBuildMode,
+        OverlapClusterConfig,
     };
 
     fn run_with_cluster_stats(collect_stats: bool) -> SweepResult {
@@ -936,6 +964,7 @@ mod tests {
             pt_schedule: PtSchedule::SingleRandomEdge,
             overlap_cluster: None,
             autocorrelation_max_lag: None,
+            autocorrelation_backend: AutocorrelationBackend::Ring,
             sequential: true,
             equilibration_diagnostic: false,
         };
@@ -987,6 +1016,7 @@ mod tests {
                     snapshot_interval: None,
                 }),
                 autocorrelation_max_lag: None,
+                autocorrelation_backend: AutocorrelationBackend::Ring,
                 sequential: true,
                 equilibration_diagnostic: false,
             };
@@ -1031,6 +1061,7 @@ mod tests {
             pt_schedule: PtSchedule::SingleRandomEdge,
             overlap_cluster: None,
             autocorrelation_max_lag: None,
+            autocorrelation_backend: AutocorrelationBackend::Ring,
             sequential: true,
             equilibration_diagnostic: false,
         };
@@ -1096,6 +1127,7 @@ mod tests {
             pt_schedule: PtSchedule::SingleRandomEdge,
             overlap_cluster: None,
             autocorrelation_max_lag: None,
+            autocorrelation_backend: AutocorrelationBackend::Ring,
             sequential: true,
             equilibration_diagnostic: false,
         };

@@ -50,7 +50,7 @@ pub fn fk_update(
             system_ids,
             n_spins,
             sequential,
-            |spin_slice, rng, temp, _| {
+            |spin_slice, rng, temp, _, _| {
                 let seed = rng.gen_range(0..n_spins);
                 let mut in_cluster = vec![false; n_spins];
                 let mut stack = Vec::with_capacity(n_spins);

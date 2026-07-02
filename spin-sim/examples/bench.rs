@@ -95,6 +95,7 @@ fn main() {
         pt_schedule: PtSchedule::SingleRandomEdge,
         overlap_cluster,
         autocorrelation_max_lag: None,
+        autocorrelation_backend: AutocorrelationBackend::Ring,
         sequential,
         equilibration_diagnostic: false,
     };

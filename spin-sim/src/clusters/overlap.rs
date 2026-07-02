@@ -598,6 +598,8 @@ unsafe fn build_cmr_blue_graph(
                 return false;
             }
 
+            // Point-of-use activation keeps ownership simple; caching these
+            // factors produced only a modest improvement and needs broader coverage.
             let r = (-2.0 * coupling.abs() / temp).exp();
             rng.gen::<f32>() < 1.0 - r * r
         },
