@@ -8,6 +8,7 @@ from utils import TC_EA_3D, assert_crossing, assert_overlap_binder, plot_crossin
 
 OUT_DIR = Path(__file__).parent
 N_SWEEPS = 10000
+TEST_SEED = 42
 
 
 def spin_glass_3d():
@@ -27,6 +28,7 @@ def spin_glass_3d():
             temperatures=temps,
             n_replicas=2,
             n_disorder=25,
+            seed=TEST_SEED,
         )
         model.sample(
             N_SWEEPS,
@@ -66,6 +68,7 @@ def spin_glass_3d_cmr():
             temperatures=temps,
             n_replicas=2,
             n_disorder=25,
+            seed=TEST_SEED,
         )
         model.sample(
             N_SWEEPS,
@@ -107,6 +110,7 @@ def spin_glass_3d_jorg():
             temperatures=temps,
             n_replicas=2,
             n_disorder=25,
+            seed=TEST_SEED,
         )
         model.sample(
             N_SWEEPS,
@@ -148,6 +152,7 @@ def spin_glass_3d_cmr_houd4():
             temperatures=temps,
             n_replicas=4,
             n_disorder=25,
+            seed=TEST_SEED,
         )
         model.sample(
             N_SWEEPS,

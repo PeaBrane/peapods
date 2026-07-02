@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   links:
     runs-on: ubuntu-latest
@@ -28,8 +32,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --all-targets
 
   test-readme:
     runs-on: ubuntu-latest
@@ -56,6 +60,9 @@ jobs:
       - name: README Python examples
         run: source .venv/bin/activate && pytest --codeblocks README.md -v
 
+      - name: Python tests
+        run: .venv/bin/python -m pytest tests/
+
       - name: README CLI examples
         run: |
           source .venv/bin/activate
@@ -69,6 +76,7 @@ jobs:
 
   test-ferromagnets:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -94,6 +102,7 @@ jobs:
 
   test-autocorrelation:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -119,6 +128,7 @@ jobs:
 
   test-spin-glass:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
