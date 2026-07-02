@@ -77,6 +77,11 @@ result = model.sample(n_sweeps=5000, cluster_update_interval=10,
 fk = result["per_disorder"]["cluster_observations"]["fk"]
 ```
 
+Autocorrelation diagnostics use the exact bounded-memory ring backend by
+default. Set `autocorrelation_backend="fft"` together with
+`autocorrelation_max_lag` for faster evaluation when retaining the full
+measurement history and its higher memory use are acceptable.
+
 For a more complete example, check out [examples/energy_vs_temperature.py](examples/energy_vs_temperature.py).
 
 ## Installation

@@ -156,6 +156,56 @@ def test_unsupported_observe_fails_before_mutation():
     np.testing.assert_array_equal(model._sim.get_spins(), before)
 
 
+def test_autocorrelation_backend_defaults_and_fft_agree():
+    model_kwargs = {
+        "lattice_shape": (4, 4),
+        "couplings": "bimodal",
+        "temperatures": np.array([1.0, 2.0], dtype=np.float32),
+        "n_replicas": 2,
+        "seed": 37,
+    }
+    default = Ising(**model_kwargs).sample(
+        64,
+        autocorrelation_max_lag=8,
+        warmup_ratio=0,
+        sequential=True,
+    )
+    explicit_ring = Ising(**model_kwargs).sample(
+        64,
+        autocorrelation_max_lag=8,
+        autocorrelation_backend="ring",
+        warmup_ratio=0,
+        sequential=True,
+    )
+    fft = Ising(**model_kwargs).sample(
+        64,
+        autocorrelation_max_lag=8,
+        autocorrelation_backend="fft",
+        warmup_ratio=0,
+        sequential=True,
+    )
+
+    np.testing.assert_array_equal(default["mags2_tau"], explicit_ring["mags2_tau"])
+    np.testing.assert_allclose(
+        fft["mags2_tau"], default["mags2_tau"], rtol=0, atol=1e-9
+    )
+    np.testing.assert_allclose(
+        fft["overlap2_tau"], default["overlap2_tau"], rtol=0, atol=1e-9
+    )
+
+
+def test_invalid_autocorrelation_backend_fails_before_sampling():
+    model = Ising((4, 4), temperatures=np.array([1.0, 2.0]), seed=43)
+    before = model._sim.get_spins().copy()
+
+    with pytest.raises(ValueError, match="must be 'ring' or 'fft'"):
+        model.sample(4, autocorrelation_backend="other", warmup_ratio=0)
+    with pytest.raises(ValueError, match="requires autocorrelation_max_lag"):
+        model.sample(4, autocorrelation_backend="fft", warmup_ratio=0)
+
+    np.testing.assert_array_equal(model._sim.get_spins(), before)
+
+
 def test_cli_and_toml_propagate_v021_options(tmp_path):
     parser = build_parser()
     args = parser.parse_args(
@@ -178,12 +228,17 @@ def test_cli_and_toml_propagate_v021_options(tmp_path):
             "full_ladder",
             "--overlap-cluster-action",
             "observe",
+            "--autocorrelation-max-lag",
+            "8",
+            "--autocorrelation-backend",
+            "fft",
         ]
     )
     assert args.seed == 17
     assert args.cluster_action == "observe"
     assert args.pt_schedule == "full_ladder"
     assert args.overlap_cluster_action == "observe"
+    assert args.autocorrelation_backend == "fft"
 
     config = tmp_path / "sweep.toml"
     config.write_text(
@@ -196,6 +251,9 @@ action = "observe"
 schedule = "full_ladder"
 [overlap_cluster]
 action = "observe"
+[diagnostics.autocorrelation]
+max_lag = 8
+backend = "fft"
 """
     )
     loaded = _load_sweep_config(config)
@@ -203,6 +261,8 @@ action = "observe"
     assert loaded["cluster_action"] == "observe"
     assert loaded["pt_schedule"] == "full_ladder"
     assert loaded["overlap_cluster_action"] == "observe"
+    assert loaded["autocorrelation_max_lag"] == 8
+    assert loaded["autocorrelation_backend"] == "fft"
 
 
 def test_run_sweep_child_seed_and_npz_flattening_are_stable(tmp_path):

@@ -38,6 +38,7 @@ let config = SimConfig {
     pt_schedule: PtSchedule::FullLadder,
     overlap_cluster: None,
     autocorrelation_max_lag: None,
+    autocorrelation_backend: AutocorrelationBackend::Ring,
     sequential: false,
     equilibration_diagnostic: false,
 };

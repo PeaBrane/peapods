@@ -87,6 +87,8 @@ fn compute_energies_inner(
     let n_neighbors = lattice.n_neighbors;
     assert_eq!(spins.len(), energies.len() * n_spins);
     assert_eq!(couplings.len(), n_spins * n_neighbors);
+    // Keep one traversal for all geometries; a duplicate canonical-square path
+    // produced only a modest improvement.
     for (r, energy) in energies.iter_mut().enumerate() {
         let spin_base = r * n_spins;
         let mut total = 0.0f32;

@@ -78,6 +78,26 @@ impl TryFrom<&str> for PtSchedule {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutocorrelationBackend {
+    Ring,
+    Fft,
+}
+
+impl TryFrom<&str> for AutocorrelationBackend {
+    type Error = String;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match s {
+            "ring" => Ok(Self::Ring),
+            "fft" => Ok(Self::Fft),
+            _ => Err(format!(
+                "unknown autocorrelation_backend '{s}', expected 'ring' or 'fft'"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OverlapClusterBuildMode {
     Houdayer(usize),
@@ -177,6 +197,13 @@ fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
     if cfg.pt_interval == Some(0) {
         return Err(ValidationError::new("pt_interval must be >= 1"));
     }
+    if cfg.autocorrelation_backend == AutocorrelationBackend::Fft
+        && cfg.autocorrelation_max_lag.is_none()
+    {
+        return Err(ValidationError::new(
+            "autocorrelation_backend='fft' requires autocorrelation_max_lag",
+        ));
+    }
     if let Some(ref h) = cfg.overlap_cluster {
         if h.interval < 1 {
             return Err(ValidationError::new(
@@ -230,6 +257,7 @@ pub struct SimConfig {
     pub pt_schedule: PtSchedule,
     pub overlap_cluster: Option<OverlapClusterConfig>,
     pub autocorrelation_max_lag: Option<usize>,
+    pub autocorrelation_backend: AutocorrelationBackend,
     pub sequential: bool,
     pub equilibration_diagnostic: bool,
 }
@@ -248,6 +276,7 @@ mod tests {
             pt_schedule: PtSchedule::SingleRandomEdge,
             overlap_cluster: None,
             autocorrelation_max_lag: None,
+            autocorrelation_backend: AutocorrelationBackend::Ring,
             sequential: true,
             equilibration_diagnostic: false,
         }
@@ -295,5 +324,15 @@ mod tests {
             snapshot_interval: None,
         });
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_fft_without_autocorrelation_lag() {
+        let mut config = config();
+        config.autocorrelation_backend = AutocorrelationBackend::Fft;
+        assert!(config.validate().is_err());
+
+        config.autocorrelation_max_lag = Some(8);
+        assert!(config.validate().is_ok());
     }
 }

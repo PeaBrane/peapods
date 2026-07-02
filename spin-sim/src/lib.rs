@@ -41,6 +41,7 @@
 //!     pt_schedule: PtSchedule::SingleRandomEdge,
 //!     overlap_cluster: None,
 //!     autocorrelation_max_lag: None,
+//!     autocorrelation_backend: AutocorrelationBackend::Ring,
 //!     sequential: false,
 //!     equilibration_diagnostic: false,
 //! };

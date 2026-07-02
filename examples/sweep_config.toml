@@ -43,6 +43,7 @@ collect_cluster_stats = false
 
 [diagnostics.autocorrelation]
 max_lag = 2000
+backend = "ring" # use "fft" to trade higher memory use for faster evaluation
 plot_temp = 1.102
 
 [output]

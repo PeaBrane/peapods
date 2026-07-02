@@ -19,4 +19,5 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("profile")
 rand = "0.8"
 rand_xoshiro = "0.6"
 rayon = "1.10"
+rustfft = "6.2"
 validator = { version = "0.16", features = ["derive"] }

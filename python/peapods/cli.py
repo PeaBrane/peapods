@@ -81,7 +81,13 @@ def _add_common_args(parser):
         "--autocorrelation-max-lag",
         type=int,
         default=None,
-        help="Max lag for streaming autocorrelation of m² and q²",
+        help="Max lag for autocorrelation of m² and q²",
+    )
+    parser.add_argument(
+        "--autocorrelation-backend",
+        default="ring",
+        choices=["ring", "fft"],
+        help="Autocorrelation backend (default: ring; FFT retains full history)",
     )
     parser.add_argument(
         "--equilibration-diagnostic",
@@ -180,7 +186,13 @@ def _add_sweep_common_args(parser):
         "--autocorrelation-max-lag",
         type=int,
         default=None,
-        help="Max lag for streaming autocorrelation of m² and q²",
+        help="Max lag for autocorrelation of m² and q²",
+    )
+    parser.add_argument(
+        "--autocorrelation-backend",
+        default=None,
+        choices=["ring", "fft"],
+        help="Autocorrelation backend (default: ring; FFT retains full history)",
     )
     parser.add_argument(
         "--equilibration-diagnostic",
@@ -292,6 +304,7 @@ def sample_kwargs(args):
         overlap_cluster_action=args.overlap_cluster_action,
         collect_cluster_stats=args.collect_cluster_stats,
         autocorrelation_max_lag=args.autocorrelation_max_lag,
+        autocorrelation_backend=args.autocorrelation_backend,
         equilibration_diagnostic=args.equilibration_diagnostic,
     )
 
@@ -328,6 +341,7 @@ _SWEEP_DEFAULTS = dict(
     warmup_ratio=0.25,
     collect_cluster_stats=False,
     autocorrelation_max_lag=None,
+    autocorrelation_backend="ring",
     autocorrelation_plot_temp=None,
     equilibration_diagnostic=False,
     save_plots=False,
@@ -427,6 +441,8 @@ def _load_sweep_config(path):
             ac = d["autocorrelation"]
             if "max_lag" in ac:
                 kw["autocorrelation_max_lag"] = ac["max_lag"]
+            if "backend" in ac:
+                kw["autocorrelation_backend"] = ac["backend"]
             if "plot_temp" in ac:
                 kw["autocorrelation_plot_temp"] = ac["plot_temp"]
         if "equilibration_diagnostic" in d:
@@ -475,6 +491,7 @@ def run_sweep_cli(args):
         "warmup_ratio": args.warmup_ratio,
         "collect_cluster_stats": args.collect_cluster_stats,
         "autocorrelation_max_lag": args.autocorrelation_max_lag,
+        "autocorrelation_backend": args.autocorrelation_backend,
         "autocorrelation_plot_temp": args.autocorrelation_plot_temp,
         "equilibration_diagnostic": args.equilibration_diagnostic,
         "save_plots": args.save_plots,
@@ -538,6 +555,7 @@ def run_sweep_cli(args):
         warmup_ratio=kw["warmup_ratio"],
         collect_cluster_stats=kw["collect_cluster_stats"],
         autocorrelation_max_lag=kw["autocorrelation_max_lag"],
+        autocorrelation_backend=kw["autocorrelation_backend"],
         autocorrelation_plot_temp=kw["autocorrelation_plot_temp"],
         equilibration_diagnostic=kw["equilibration_diagnostic"],
         save_plots=kw["save_plots"],

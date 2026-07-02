@@ -188,6 +188,7 @@ impl IsingSimulation {
         warmup_ratio=None,
         collect_cluster_stats=None,
         autocorrelation_max_lag=None,
+        autocorrelation_backend=None,
         sequential=None,
         equilibration_diagnostic=None,
         snapshot_interval=None,
@@ -210,6 +211,7 @@ impl IsingSimulation {
         warmup_ratio: Option<f64>,
         collect_cluster_stats: Option<bool>,
         autocorrelation_max_lag: Option<usize>,
+        autocorrelation_backend: Option<&str>,
         sequential: Option<bool>,
         equilibration_diagnostic: Option<bool>,
         snapshot_interval: Option<usize>,
@@ -222,6 +224,9 @@ impl IsingSimulation {
             SweepMode::try_from(sweep_mode).map_err(pyo3::exceptions::PyValueError::new_err)?;
         let pt_schedule = PtSchedule::try_from(pt_schedule.unwrap_or("single_random_edge"))
             .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        let autocorrelation_backend =
+            AutocorrelationBackend::try_from(autocorrelation_backend.unwrap_or("ring"))
+                .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
         let cluster_update = cluster_update_interval
             .map(|interval| {
@@ -273,6 +278,7 @@ impl IsingSimulation {
             pt_schedule,
             overlap_cluster,
             autocorrelation_max_lag,
+            autocorrelation_backend,
             sequential: sequential.unwrap_or(false),
             equilibration_diagnostic: equilibration_diagnostic.unwrap_or(false),
         };

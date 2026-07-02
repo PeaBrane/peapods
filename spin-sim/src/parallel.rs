@@ -4,7 +4,7 @@ use rayon::prelude::*;
 /// Dispatch a per-replica closure over replicas, optionally in parallel.
 ///
 /// Each replica gets a mutable spin slice and its own RNG. The closure receives
-/// `(spin_slice, rng, temp)`.
+/// `(spin_slice, rng, temp, temp_id, system_id)`.
 ///
 /// When `sequential` is true, replicas are processed on the current thread
 /// (no rayon overhead, best when outer-level parallelism over disorder
@@ -19,7 +19,7 @@ pub fn par_over_replicas(
     system_ids: &[usize],
     n_spins: usize,
     sequential: bool,
-    body: impl Fn(&mut [i8], &mut Xoshiro256StarStar, f32, usize) + Send + Sync,
+    body: impl Fn(&mut [i8], &mut Xoshiro256StarStar, f32, usize, usize) + Send + Sync,
 ) {
     let sp = spins.as_mut_ptr() as usize;
     let rp = rngs.as_mut_ptr() as usize;
@@ -30,7 +30,7 @@ pub fn par_over_replicas(
             std::slice::from_raw_parts_mut((sp as *mut i8).add(system_id * n_spins), n_spins);
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(system_id);
         let temp = temperatures[temp_id];
-        body(spin_slice, rng, temp, system_id);
+        body(spin_slice, rng, temp, temp_id, system_id);
     };
 
     if sequential {
