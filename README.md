@@ -27,6 +27,8 @@ The following algorithms are currently supported:
 - [Houdayer isoenergetic cluster move](https://arxiv.org/abs/cond-mat/0101116) (replica cluster move for spin glasses)
 - [Jörg move](https://arxiv.org/abs/cond-mat/0410328) (stochastic overlap cluster move)
 - [CMR move](https://doi.org/10.1103/PhysRevE.62.8114) (Chayes-Machta-Redner blue-bond overlap cluster move)
+- Passive full-graph FK and overlap-cluster observations with per-disorder statistics
+- Full-ladder parallel tempering diagnostics and reproducible optional seeds
 
 ## Quickstart
 
@@ -60,6 +62,19 @@ tri = Ising((32, 32), temperatures=np.linspace(3.0, 4.2, 32),
 tri.sample(n_sweeps=5000, sweep_mode="metropolis",
            cluster_update_interval=1, pt_interval=1)
 print(tri.binder_cumulant)
+```
+
+Pass an explicit seed for deterministic couplings and dynamics. Full SW-style
+graphs can be measured without acting on spins:
+
+<!--pytest-codeblocks:skip-->
+```python
+model = Ising((32, 32), couplings="bimodal", temperatures=np.linspace(1, 3, 16),
+              n_replicas=2, seed=42)
+result = model.sample(n_sweeps=5000, cluster_update_interval=10,
+                      cluster_mode="sw", cluster_action="observe",
+                      pt_interval=1, pt_schedule="full_ladder")
+fk = result["per_disorder"]["cluster_observations"]["fk"]
 ```
 
 For a more complete example, check out [examples/energy_vs_temperature.py](examples/energy_vs_temperature.py).

@@ -55,6 +55,7 @@ fn main() {
             Some(ClusterConfig {
                 interval: 1,
                 mode: ClusterMode::Sw,
+                action: ClusterAction::Update,
                 collect_stats: false,
             }),
             None,
@@ -64,6 +65,7 @@ fn main() {
             Some(ClusterConfig {
                 interval: 1,
                 mode: ClusterMode::Wolff,
+                action: ClusterAction::Update,
                 collect_stats: false,
             }),
             None,
@@ -76,6 +78,7 @@ fn main() {
                 interval: 1,
                 modes: vec![OverlapClusterBuildMode::Cmr],
                 cluster_mode: ClusterMode::Sw,
+                action: ClusterAction::Update,
                 collect_stats: false,
                 snapshot_interval: None,
             }),
@@ -89,6 +92,7 @@ fn main() {
         sweep_mode: SweepMode::Metropolis,
         cluster_update,
         pt_interval,
+        pt_schedule: PtSchedule::SingleRandomEdge,
         overlap_cluster,
         autocorrelation_max_lag: None,
         sequential,

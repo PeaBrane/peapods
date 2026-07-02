@@ -7,6 +7,41 @@ import numpy as np
 
 from peapods.spin_models import Ising
 
+_COUPLING_SEED_TAGS = {"ferro": 0, "bimodal": 1, "gaussian": 2}
+
+
+def _run_seed_words(seed):
+    if seed is not None and (not isinstance(seed, (int, np.integer)) or seed < 0):
+        raise ValueError("seed must be a non-negative integer or None")
+    return [
+        int(value)
+        for value in np.random.SeedSequence(seed).generate_state(4, dtype=np.uint32)
+    ]
+
+
+def _run_child_seed(root_words, coupling, shape):
+    sequence = np.random.SeedSequence(
+        root_words,
+        spawn_key=(_COUPLING_SEED_TAGS[coupling], len(shape), *shape),
+    )
+    return int(sequence.generate_state(1, dtype=np.uint64)[0])
+
+
+def _flatten_per_disorder_arrays(per_disorder, prefix=""):
+    flat = {}
+    key_prefix = f"{prefix}_" if prefix else ""
+    for kind, fields in per_disorder.get("cluster_observations", {}).items():
+        for field, values in fields.items():
+            flat[f"{key_prefix}per_disorder_cluster_observations_{kind}_{field}"] = (
+                values
+            )
+
+    pt = per_disorder.get("parallel_tempering")
+    if pt is not None:
+        for field, values in pt.items():
+            flat[f"{key_prefix}per_disorder_pt_{field}"] = values
+    return flat
+
 
 def _cumulative_overlap_ratio(per_sample_hist):
     """Compute I(q)/X(q) from per-sample overlap histograms (Billoire et al. 2014).
@@ -119,6 +154,9 @@ def _save_data(models, config_label, temperatures, output_dir):
                 save_dict[f"{prefix}_snapshot_blue_ids"] = np.stack(
                     [s["blue_ids"] for s in snaps]
                 )
+        save_dict.update(
+            _flatten_per_disorder_arrays(model.per_disorder, prefix=prefix)
+        )
 
     path = Path(output_dir) / f"sweep_{config_label}.npz"
     np.savez(path, **save_dict)
@@ -323,10 +361,13 @@ def run_sweep(
     sweep_mode="metropolis",
     cluster_update_interval=None,
     cluster_mode="sw",
+    cluster_action="update",
     pt_interval=None,
+    pt_schedule="single_random_edge",
     overlap_cluster_update_interval=None,
     overlap_cluster_build_modes=("houdayer",),
     overlap_cluster_modes=("wolff",),
+    overlap_cluster_action="update",
     warmup_ratio=0.25,
     collect_cluster_stats=False,
     autocorrelation_max_lag=None,
@@ -337,6 +378,7 @@ def run_sweep(
     output_dir=".",
     sequential=False,
     snapshot_interval=None,
+    seed=None,
 ):
     """Run a parameter sweep over sizes and configurations.
 
@@ -387,6 +429,7 @@ def run_sweep(
     all_results = {}
     run_idx = 0
     wall_start = time.perf_counter()
+    seed_words = _run_seed_words(seed)
 
     for coupling, build_mode, oc_mode in valid_combos:
         label = _config_label(coupling, build_mode, oc_mode)
@@ -405,6 +448,7 @@ def run_sweep(
                 n_disorder=n_disorder,
                 neighbor_offsets=neighbor_offsets,
                 geometry=geometry,
+                seed=_run_child_seed(seed_words, coupling, shape),
             )
 
             t0 = time.perf_counter()
@@ -413,10 +457,13 @@ def run_sweep(
                 sweep_mode=sweep_mode,
                 cluster_update_interval=cluster_update_interval,
                 cluster_mode=cluster_mode,
+                cluster_action=cluster_action,
                 pt_interval=pt_interval,
+                pt_schedule=pt_schedule,
                 overlap_cluster_update_interval=overlap_cluster_update_interval,
                 overlap_cluster_build_mode=build_mode,
                 overlap_cluster_mode=oc_mode,
+                overlap_cluster_action=overlap_cluster_action,
                 warmup_ratio=warmup_ratio,
                 collect_cluster_stats=collect_cluster_stats,
                 autocorrelation_max_lag=autocorrelation_max_lag,

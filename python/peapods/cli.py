@@ -7,7 +7,7 @@ import tomllib
 import numpy as np
 
 from peapods import Ising
-from peapods.sweep import run_sweep
+from peapods.sweep import _flatten_per_disorder_arrays, run_sweep
 
 COUPLING_CHOICES = ["ferro", "bimodal", "gaussian"]
 OVERLAP_CLUSTER_CHOICES = ["wolff", "sw"]
@@ -27,6 +27,7 @@ def _add_common_args(parser):
     )
     parser.add_argument("--n-replicas", type=int, default=1)
     parser.add_argument("--n-disorder", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=None)
 
     # Temperature grid
     parser.add_argument("--temp-min", type=float, required=True)
@@ -52,10 +53,18 @@ def _add_common_args(parser):
     )
     parser.add_argument("--cluster-mode", default="sw", choices=["sw", "wolff"])
     parser.add_argument(
+        "--cluster-action", default="update", choices=["update", "observe"]
+    )
+    parser.add_argument(
         "--pt-interval",
         type=int,
         default=None,
         help="Parallel tempering every N sweeps",
+    )
+    parser.add_argument(
+        "--pt-schedule",
+        default="single_random_edge",
+        choices=["single_random_edge", "full_ladder"],
     )
     parser.add_argument(
         "--overlap-cluster-update-interval",
@@ -102,6 +111,11 @@ def add_simulation_args(parser):
     parser.add_argument(
         "--overlap-cluster-mode", default="wolff", choices=OVERLAP_CLUSTER_CHOICES
     )
+    parser.add_argument(
+        "--overlap-cluster-action",
+        default="update",
+        choices=["update", "observe"],
+    )
     _add_common_args(parser)
 
 
@@ -119,6 +133,7 @@ def _add_sweep_common_args(parser):
     )
     parser.add_argument("--n-replicas", type=int, default=None)
     parser.add_argument("--n-disorder", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--temp-min", type=float, default=None)
     parser.add_argument("--temp-max", type=float, default=None)
     parser.add_argument("--n-temps", type=int, default=None)
@@ -137,11 +152,17 @@ def _add_sweep_common_args(parser):
         help="Cluster update every N sweeps",
     )
     parser.add_argument("--cluster-mode", default=None, choices=["sw", "wolff"])
+    parser.add_argument("--cluster-action", default=None, choices=["update", "observe"])
     parser.add_argument(
         "--pt-interval",
         type=int,
         default=None,
         help="Parallel tempering every N sweeps",
+    )
+    parser.add_argument(
+        "--pt-schedule",
+        default=None,
+        choices=["single_random_edge", "full_ladder"],
     )
     parser.add_argument(
         "--overlap-cluster-update-interval",
@@ -214,6 +235,11 @@ def _add_sweep_args(parser):
         default=None,
         choices=OVERLAP_CLUSTER_CHOICES,
     )
+    parser.add_argument(
+        "--overlap-cluster-action",
+        default=None,
+        choices=["update", "observe"],
+    )
     _add_sweep_common_args(parser)
     parser.add_argument("--warmup-ratio", type=float, default=None)
     parser.add_argument(
@@ -248,6 +274,7 @@ def build_model(args):
         n_disorder=args.n_disorder,
         neighbor_offsets=neighbor_offsets,
         geometry=args.geometry,
+        seed=args.seed,
     )
 
 
@@ -256,10 +283,13 @@ def sample_kwargs(args):
         sweep_mode=args.sweep_mode,
         cluster_update_interval=args.cluster_interval,
         cluster_mode=args.cluster_mode,
+        cluster_action=args.cluster_action,
         pt_interval=args.pt_interval,
+        pt_schedule=args.pt_schedule,
         overlap_cluster_update_interval=args.overlap_cluster_update_interval,
         overlap_cluster_build_mode=args.overlap_cluster_build_mode,
         overlap_cluster_mode=args.overlap_cluster_mode,
+        overlap_cluster_action=args.overlap_cluster_action,
         collect_cluster_stats=args.collect_cluster_stats,
         autocorrelation_max_lag=args.autocorrelation_max_lag,
         equilibration_diagnostic=args.equilibration_diagnostic,
@@ -281,16 +311,20 @@ _SWEEP_DEFAULTS = dict(
     temp_scale="log",
     n_replicas=1,
     n_disorder=1,
+    seed=None,
     neighbor_offsets=None,
     geometry=None,
     n_sweeps=None,
     sweep_mode="metropolis",
     cluster_interval=None,
     cluster_mode="sw",
+    cluster_action="update",
     pt_interval=None,
+    pt_schedule="single_random_edge",
     overlap_cluster_update_interval=None,
     overlap_cluster_build_mode=("houdayer",),
     overlap_cluster_mode=("wolff",),
+    overlap_cluster_action="update",
     warmup_ratio=0.25,
     collect_cluster_stats=False,
     autocorrelation_max_lag=None,
@@ -350,6 +384,8 @@ def _load_sweep_config(path):
             kw["warmup_ratio"] = s["warmup_ratio"]
         if "sequential" in s:
             kw["sequential"] = s["sequential"]
+        if "seed" in s:
+            kw["seed"] = s["seed"]
 
     if "cluster" in cfg:
         c = cfg["cluster"]
@@ -357,11 +393,15 @@ def _load_sweep_config(path):
             kw["cluster_interval"] = c["interval"]
         if "mode" in c:
             kw["cluster_mode"] = c["mode"]
+        if "action" in c:
+            kw["cluster_action"] = c["action"]
 
     if "parallel_tempering" in cfg:
         pt = cfg["parallel_tempering"]
         if "interval" in pt:
             kw["pt_interval"] = pt["interval"]
+        if "schedule" in pt:
+            kw["pt_schedule"] = pt["schedule"]
 
     if "overlap_cluster" in cfg:
         oc = cfg["overlap_cluster"]
@@ -377,6 +417,8 @@ def _load_sweep_config(path):
             )
         if "snapshot_interval" in oc:
             kw["snapshot_interval"] = oc["snapshot_interval"]
+        if "action" in oc:
+            kw["overlap_cluster_action"] = oc["action"]
     if "diagnostics" in cfg:
         d = cfg["diagnostics"]
         if "collect_cluster_stats" in d:
@@ -416,16 +458,20 @@ def run_sweep_cli(args):
         "temp_scale": args.temp_scale,
         "n_replicas": args.n_replicas,
         "n_disorder": args.n_disorder,
+        "seed": args.seed,
         "neighbor_offsets": args.neighbor_offsets,
         "geometry": args.geometry,
         "n_sweeps": args.n_sweeps,
         "sweep_mode": args.sweep_mode,
         "cluster_interval": args.cluster_interval,
         "cluster_mode": args.cluster_mode,
+        "cluster_action": args.cluster_action,
         "pt_interval": args.pt_interval,
+        "pt_schedule": args.pt_schedule,
         "overlap_cluster_update_interval": args.overlap_cluster_update_interval,
         "overlap_cluster_build_mode": args.overlap_cluster_build_mode,
         "overlap_cluster_mode": args.overlap_cluster_mode,
+        "overlap_cluster_action": args.overlap_cluster_action,
         "warmup_ratio": args.warmup_ratio,
         "collect_cluster_stats": args.collect_cluster_stats,
         "autocorrelation_max_lag": args.autocorrelation_max_lag,
@@ -475,16 +521,20 @@ def run_sweep_cli(args):
         temperatures=temperatures,
         n_replicas=kw["n_replicas"],
         n_disorder=kw["n_disorder"],
+        seed=kw["seed"],
         neighbor_offsets=neighbor_offsets,
         geometry=kw["geometry"],
         n_sweeps=kw["n_sweeps"],
         sweep_mode=kw["sweep_mode"],
         cluster_update_interval=kw["cluster_interval"],
         cluster_mode=kw["cluster_mode"],
+        cluster_action=kw["cluster_action"],
         pt_interval=kw["pt_interval"],
+        pt_schedule=kw["pt_schedule"],
         overlap_cluster_update_interval=kw["overlap_cluster_update_interval"],
         overlap_cluster_build_modes=tuple(kw["overlap_cluster_build_mode"]),
         overlap_cluster_modes=tuple(kw["overlap_cluster_mode"]),
+        overlap_cluster_action=kw["overlap_cluster_action"],
         warmup_ratio=kw["warmup_ratio"],
         collect_cluster_stats=kw["collect_cluster_stats"],
         autocorrelation_max_lag=kw["autocorrelation_max_lag"],
@@ -567,6 +617,7 @@ def run_simulate(args):
             save_dict["per_sample_overlap_histogram"] = (
                 model.per_sample_overlap_histogram
             )
+        save_dict.update(_flatten_per_disorder_arrays(model.per_disorder))
         np.savez(args.output, **save_dict)
         print(f"\nResults saved to {args.output}")
 

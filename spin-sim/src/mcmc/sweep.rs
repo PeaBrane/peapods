@@ -145,6 +145,7 @@ pub fn metropolis_sweep(
         system_ids,
         rngs,
         sequential,
+        // A guaranteed-accept branch intended to skip RNG/logarithm work was benchmarked and regressed, so this path is intentional.
         |rng, temp| (temp / 2.0) * rng.gen::<f32>().ln(),
     );
 }

@@ -19,19 +19,23 @@ n_disorder = 10
 n_sweeps = 5000
 sweep_mode = "metropolis"
 warmup_ratio = 0.25
+seed = 42
 # sequential = true  # disable inner-loop parallelism (see --help)
 
 [cluster]
 interval = 1
 mode = "sw"
+action = "update"
 
 [parallel_tempering]
 interval = 1
+schedule = "single_random_edge"
 
 [overlap_cluster]
 interval = 1
 build_modes = ["houdayer", "cmr"]
 cluster_mode = "sw"
+action = "update"
 # snapshot_interval = 10000  # save cluster IDs every 10k sweeps
 
 [diagnostics]

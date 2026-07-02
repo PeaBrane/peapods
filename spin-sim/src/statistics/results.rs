@@ -19,6 +19,24 @@ pub struct ClusterStats {
     pub top_cluster_sizes: Vec<Vec<[f64; 4]>>,
 }
 
+#[derive(Clone, Debug)]
+pub struct GraphObservationSummary {
+    pub observation_count: Vec<u64>,
+    pub cluster_size_counts: Vec<Vec<u64>>,
+    pub top_four_component_fractions: Vec<[f64; 4]>,
+    pub active_bond_density: Vec<f64>,
+    pub large_component_count: Vec<f64>,
+    pub winding: Option<Vec<[f64; 4]>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ClusterObservations {
+    pub fk: Option<GraphObservationSummary>,
+    pub houdayer: Option<GraphObservationSummary>,
+    pub jorg: Option<GraphObservationSummary>,
+    pub cmr_blue: Option<GraphObservationSummary>,
+}
+
 pub struct Diagnostics {
     /// Integrated autocorrelation time τ_int(m²) per temperature.
     /// Empty if autocorrelation_max_lag is None.
@@ -48,6 +66,7 @@ pub struct SweepResult {
     pub energies2: Vec<f64>,
     pub overlap_stats: OverlapStats,
     pub cluster_stats: ClusterStats,
+    pub per_disorder_cluster_observations: Vec<ClusterObservations>,
     pub diagnostics: Diagnostics,
     pub cluster_snapshots: Vec<ClusterSnapshot>,
 }
@@ -103,6 +122,10 @@ impl SweepResult {
         } else {
             OverlapStats::aggregate_without_samples(&overlap_results)
         };
+        let per_disorder_cluster_observations = results
+            .iter()
+            .flat_map(|result| result.per_disorder_cluster_observations.iter().cloned())
+            .collect();
 
         let mut agg = SweepResult {
             mags: vec![0.0; n_temps],
@@ -124,6 +147,7 @@ impl SweepResult {
                     .map(|_| vec![[0.0; 4]; n_top_temps])
                     .collect(),
             },
+            per_disorder_cluster_observations,
             diagnostics: Diagnostics {
                 mags2_tau: vec![0.0; m2_tau_len],
                 overlap2_tau: vec![0.0; q2_tau_len],

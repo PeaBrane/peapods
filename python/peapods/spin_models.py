@@ -1,5 +1,4 @@
 import numpy as np
-from numpy.random import rand, randn
 
 from peapods._core import IsingSimulation
 
@@ -9,6 +8,19 @@ GEOMETRIES = {
     "fcc": [[1, 1, 0], [1, 0, 1], [0, 1, 1], [1, -1, 0], [1, 0, -1], [0, 1, -1]],
     "bcc": [[1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1]],
 }
+
+
+def _seed_material(seed):
+    if seed is not None and (not isinstance(seed, (int, np.integer)) or seed < 0):
+        raise ValueError("seed must be a non-negative integer or None")
+    root = np.random.SeedSequence(seed)
+    coupling_seed, dynamics_seed = root.spawn(2)
+    dynamics = int(dynamics_seed.generate_state(1, dtype=np.uint64)[0])
+    return coupling_seed, dynamics
+
+
+def _dynamics_seed(seed):
+    return _seed_material(seed)[1]
 
 
 class Ising:
@@ -44,6 +56,7 @@ class Ising:
         n_disorder=1,
         neighbor_offsets=None,
         geometry=None,
+        seed=None,
     ):
         """Create an Ising model.
 
@@ -65,6 +78,8 @@ class Ising:
             geometry: Named lattice geometry. One of `"triangular"` / `"tri"`,
                 `"fcc"`, or `"bcc"`. Mutually exclusive with `neighbor_offsets`.
                 If neither is given, defaults to a hypercubic lattice.
+            seed: Optional non-negative integer controlling built-in random
+                couplings and initial dynamics. `None` uses fresh entropy.
         """
         if geometry is not None:
             if neighbor_offsets is not None:
@@ -83,24 +98,32 @@ class Ising:
         self.n_temps = len(temperatures)
         self.n_replicas = n_replicas
         self.n_disorder = n_disorder
+        self.seed = seed
+        coupling_seed, self._constructor_dynamics_seed = _seed_material(seed)
 
         if isinstance(couplings, np.ndarray):
             coup = couplings.astype(np.float32)
         else:
-            if n_disorder > 1:
-                shape = (n_disorder,) + self.lattice_shape + (self.n_neighbors,)
-            else:
-                shape = self.lattice_shape + (self.n_neighbors,)
-
-            match couplings:
-                case "ferro":
-                    coup = np.ones(shape, dtype=np.float32)
-                case "bimodal":
-                    coup = (-1 + 2 * rand(*shape).round()).astype(np.float32)
-                case "gaussian":
-                    coup = randn(*shape).astype(np.float32)
-                case _:
-                    raise ValueError("Invalid mode for couplings.")
+            single_shape = self.lattice_shape + (self.n_neighbors,)
+            coupling_children = coupling_seed.spawn(n_disorder)
+            realizations = []
+            for child in coupling_children:
+                rng = np.random.default_rng(child)
+                match couplings:
+                    case "ferro":
+                        realization = np.ones(single_shape, dtype=np.float32)
+                    case "bimodal":
+                        realization = (
+                            2 * rng.integers(0, 2, size=single_shape) - 1
+                        ).astype(np.float32)
+                    case "gaussian":
+                        realization = rng.standard_normal(single_shape).astype(
+                            np.float32
+                        )
+                    case _:
+                        raise ValueError("Invalid mode for couplings.")
+                realizations.append(realization)
+            coup = realizations[0] if n_disorder == 1 else np.stack(realizations)
 
         self.couplings = coup
         self._sim = IsingSimulation(
@@ -109,11 +132,16 @@ class Ising:
             self.temperatures,
             n_replicas,
             neighbor_offsets,
+            self._constructor_dynamics_seed,
         )
 
-    def reset(self):
-        """Reset all spins to a random configuration."""
-        self._sim.reset()
+    def reset(self, seed=None):
+        """Reset dynamics while keeping the model's couplings fixed.
+
+        A bare reset replays the constructor's initial dynamics. Passing a seed
+        performs a deterministic one-off reset without replacing that seed.
+        """
+        self._sim.reset(None if seed is None else _dynamics_seed(seed))
 
     def sample(
         self,
@@ -121,10 +149,13 @@ class Ising:
         sweep_mode="metropolis",
         cluster_update_interval=None,
         cluster_mode="sw",
+        cluster_action="update",
         pt_interval=None,
+        pt_schedule="single_random_edge",
         overlap_cluster_update_interval=None,
         overlap_cluster_build_mode="houdayer",
         overlap_cluster_mode="wolff",
+        overlap_cluster_action="update",
         warmup_ratio=0.25,
         collect_cluster_stats=False,
         autocorrelation_max_lag=None,
@@ -152,8 +183,12 @@ class Ising:
             cluster_update_interval: If set, perform a cluster update every this
                 many sweeps.
             cluster_mode: Cluster algorithm. `"sw"` (Swendsen-Wang) or `"wolff"`.
+            cluster_action: `"update"` to mutate spins or `"observe"` to
+                measure a full SW/FK graph without flipping spins.
             pt_interval: If set, attempt parallel tempering swaps every this many
                 sweeps.
+            pt_schedule: `"single_random_edge"` for legacy PT or
+                `"full_ladder"` to attempt every adjacent edge per event.
             overlap_cluster_update_interval: If set, attempt overlap cluster
                 moves every this many sweeps. Requires `n_replicas >= 2`.
             overlap_cluster_build_mode: Overlap cluster algorithm. `"houdayer"`
@@ -167,6 +202,8 @@ class Ising:
                 e.g. `"cmr+houdayer"` round-robins each overlap update call.
             overlap_cluster_mode: Cluster type used inside the overlap move.
                 `"wolff"` or `"sw"`.
+            overlap_cluster_action: `"update"` to perform the move or
+                `"observe"` to record the full graph without acting on replicas.
             warmup_ratio: Fraction of sweeps discarded as warmup before
                 collecting statistics. Default 0.25.
             collect_cluster_stats: If `True`, collect FK cluster size
@@ -178,16 +215,40 @@ class Ising:
         Returns:
             Raw results dictionary with keys like `"mags"`, `"energies"`, etc.
         """
+        if cluster_action not in {"update", "observe"}:
+            raise ValueError("cluster_action must be 'update' or 'observe'")
+        if overlap_cluster_action not in {"update", "observe"}:
+            raise ValueError("overlap_cluster_action must be 'update' or 'observe'")
+        if pt_schedule not in {"single_random_edge", "full_ladder"}:
+            raise ValueError(
+                "pt_schedule must be 'single_random_edge' or 'full_ladder'"
+            )
+        if cluster_action == "observe" and cluster_update_interval is None:
+            raise ValueError(
+                "cluster_action='observe' requires cluster_update_interval"
+            )
+        if (
+            overlap_cluster_action == "observe"
+            and overlap_cluster_update_interval is None
+        ):
+            raise ValueError(
+                "overlap_cluster_action='observe' requires "
+                "overlap_cluster_update_interval"
+            )
+
         oci = overlap_cluster_update_interval
         result = self._sim.sample(
             n_sweeps,
             sweep_mode,
             cluster_update_interval=cluster_update_interval,
             cluster_mode=cluster_mode if cluster_update_interval else None,
+            cluster_action=cluster_action if cluster_update_interval else None,
             pt_interval=pt_interval,
+            pt_schedule=pt_schedule,
             overlap_cluster_update_interval=oci,
             overlap_cluster_build_mode=overlap_cluster_build_mode if oci else None,
             overlap_cluster_mode=overlap_cluster_mode if oci else None,
+            overlap_cluster_action=overlap_cluster_action if oci else None,
             warmup_ratio=warmup_ratio,
             collect_cluster_stats=collect_cluster_stats,
             autocorrelation_max_lag=autocorrelation_max_lag,
@@ -259,6 +320,8 @@ class Ising:
 
         if "cluster_snapshots" in result:
             self.cluster_snapshots = result["cluster_snapshots"]
+
+        self.per_disorder = result.get("per_disorder", {})
 
         return result
 
