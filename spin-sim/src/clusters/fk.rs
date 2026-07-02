@@ -1,6 +1,8 @@
 use super::utils::{
-    dfs_cluster, uf_bonds_fresh, uf_flatten, uf_flatten_counts_fresh, uf_histogram,
+    dfs_cluster, uf_bonds_fresh, uf_bonds_fresh_with, uf_flatten, uf_flatten_counts_fresh,
+    uf_histogram, BondMetrics, GraphObservationSlot,
 };
+use crate::config::ClusterAction;
 use crate::geometry::Lattice;
 use crate::parallel::par_over_replicas;
 use rand::Rng;
@@ -31,14 +33,16 @@ pub fn fk_update(
     system_ids: &[usize],
     rngs: &mut [Xoshiro256StarStar],
     wolff: bool,
+    action: ClusterAction,
     csd_out: Option<&mut [Vec<u64>]>,
+    observation_out: Option<&mut [GraphObservationSlot]>,
     sequential: bool,
 ) {
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
 
     // BFS fast path: Wolff without CSD collection
-    if wolff && csd_out.is_none() {
+    if action == ClusterAction::Update && wolff && csd_out.is_none() {
         par_over_replicas(
             spins,
             rngs,
@@ -86,6 +90,11 @@ pub fn fk_update(
     let rp = rngs.as_mut_ptr() as usize;
     let cp = csd_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_csd = csd_out.is_some();
+    let op = observation_out
+        .as_ref()
+        .map(|s| s.as_ptr() as usize)
+        .unwrap_or(0);
+    let has_observation = observation_out.is_some();
 
     let work = |temp_id: usize| unsafe {
         let system_id = system_ids[temp_id];
@@ -94,8 +103,7 @@ pub fn fk_update(
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(system_id);
         let temp = temperatures[temp_id];
 
-        // Fresh storage is intentional: pooling regressed FK/SW throughput.
-        let (mut parent, mut scratch) = uf_bonds_fresh(lattice, |i, d| {
+        let mut should_bond = |i: usize, d: usize| {
             let j = lattice.neighbor_fwd(i, d);
             let inter =
                 spin_slice[i] as f32 * spin_slice[j] as f32 * couplings[i * n_neighbors + d];
@@ -103,14 +111,34 @@ pub fn fk_update(
                 return false;
             }
             rng.gen::<f32>() < 1.0 - (-2.0 * inter / temp).exp()
-        });
+        };
 
-        if has_csd {
+        // Fresh storage is intentional: pooling regressed FK/SW throughput.
+        let mut metrics = has_observation.then(|| BondMetrics::new(lattice));
+        let (mut parent, mut scratch) = if let Some(ref mut metrics) = metrics {
+            uf_bonds_fresh_with(lattice, &mut should_bond, |site, dim| {
+                metrics.record_bond(lattice, site, dim);
+            })
+        } else {
+            uf_bonds_fresh(lattice, &mut should_bond)
+        };
+
+        if has_csd || has_observation {
             let counts = uf_flatten_counts_fresh(&mut parent);
-            let csd_slot = &mut *(cp as *mut Vec<u64>).add(temp_id);
-            uf_histogram(&counts, csd_slot.as_mut_slice());
+            if has_csd {
+                let csd_slot = &mut *(cp as *mut Vec<u64>).add(temp_id);
+                uf_histogram(&counts, csd_slot.as_mut_slice());
+            }
+            if let Some(metrics) = metrics {
+                let observation_slot = &mut *(op as *mut GraphObservationSlot).add(temp_id);
+                *observation_slot = metrics.finish(&counts);
+            }
         } else {
             uf_flatten(&mut parent);
+        }
+
+        if action == ClusterAction::Observe {
+            return;
         }
 
         if wolff {

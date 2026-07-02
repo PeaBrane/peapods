@@ -38,6 +38,46 @@ impl TryFrom<&str> for ClusterMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterAction {
+    Update,
+    Observe,
+}
+
+impl TryFrom<&str> for ClusterAction {
+    type Error = String;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match s {
+            "update" => Ok(Self::Update),
+            "observe" => Ok(Self::Observe),
+            _ => Err(format!(
+                "unknown cluster action '{s}', expected 'update' or 'observe'"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PtSchedule {
+    SingleRandomEdge,
+    FullLadder,
+}
+
+impl TryFrom<&str> for PtSchedule {
+    type Error = String;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match s {
+            "single_random_edge" => Ok(Self::SingleRandomEdge),
+            "full_ladder" => Ok(Self::FullLadder),
+            _ => Err(format!(
+                "unknown pt_schedule '{s}', expected 'single_random_edge' or 'full_ladder'"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OverlapClusterBuildMode {
     Houdayer(usize),
@@ -91,6 +131,7 @@ impl TryFrom<&str> for OverlapClusterBuildMode {
 pub struct ClusterConfig {
     pub interval: usize,
     pub mode: ClusterMode,
+    pub action: ClusterAction,
     pub collect_stats: bool,
 }
 
@@ -99,6 +140,7 @@ pub struct OverlapClusterConfig {
     pub interval: usize,
     pub modes: Vec<OverlapClusterBuildMode>,
     pub cluster_mode: ClusterMode,
+    pub action: ClusterAction,
     pub collect_stats: bool,
     pub snapshot_interval: Option<usize>,
 }
@@ -126,6 +168,11 @@ fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
         if c.interval < 1 {
             return Err(ValidationError::new("cluster_update interval must be >= 1"));
         }
+        if c.action == ClusterAction::Observe && c.mode == ClusterMode::Wolff {
+            return Err(ValidationError::new(
+                "cluster_action='observe' requires cluster_mode='sw'",
+            ));
+        }
     }
     if cfg.pt_interval == Some(0) {
         return Err(ValidationError::new("pt_interval must be >= 1"));
@@ -148,6 +195,26 @@ fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
                 "overlap_cluster modes must not be empty",
             ));
         }
+        if h.action == ClusterAction::Observe {
+            if h.cluster_mode == ClusterMode::Wolff {
+                return Err(ValidationError::new(
+                    "overlap_cluster_action='observe' requires overlap_cluster_mode='sw'",
+                ));
+            }
+            if h.snapshot_interval.is_some() {
+                return Err(ValidationError::new(
+                    "snapshot_interval is not supported with overlap_cluster_action='observe'",
+                ));
+            }
+            if h.modes
+                .iter()
+                .any(|mode| matches!(mode, OverlapClusterBuildMode::Houdayer(n) if *n > 2))
+            {
+                return Err(ValidationError::new(
+                    "overlap_cluster_action='observe' does not support experimental houdN with N > 2",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -160,6 +227,7 @@ pub struct SimConfig {
     pub sweep_mode: SweepMode,
     pub cluster_update: Option<ClusterConfig>,
     pub pt_interval: Option<usize>,
+    pub pt_schedule: PtSchedule,
     pub overlap_cluster: Option<OverlapClusterConfig>,
     pub autocorrelation_max_lag: Option<usize>,
     pub sequential: bool,
@@ -177,6 +245,7 @@ mod tests {
             sweep_mode: SweepMode::Metropolis,
             cluster_update: None,
             pt_interval: None,
+            pt_schedule: PtSchedule::SingleRandomEdge,
             overlap_cluster: None,
             autocorrelation_max_lag: None,
             sequential: true,
@@ -198,7 +267,31 @@ mod tests {
             interval: 1,
             modes: vec![],
             cluster_mode: ClusterMode::Sw,
+            action: ClusterAction::Update,
             collect_stats: false,
+            snapshot_interval: None,
+        });
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_unsupported_observe_modes() {
+        let mut config = config();
+        config.cluster_update = Some(ClusterConfig {
+            interval: 1,
+            mode: ClusterMode::Wolff,
+            action: ClusterAction::Observe,
+            collect_stats: true,
+        });
+        assert!(config.validate().is_err());
+
+        config.cluster_update = None;
+        config.overlap_cluster = Some(OverlapClusterConfig {
+            interval: 1,
+            modes: vec![OverlapClusterBuildMode::Houdayer(4)],
+            cluster_mode: ClusterMode::Sw,
+            action: ClusterAction::Observe,
+            collect_stats: true,
             snapshot_interval: None,
         });
         assert!(config.validate().is_err());

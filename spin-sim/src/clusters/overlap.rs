@@ -1,8 +1,8 @@
 use super::utils::{
-    dfs_cluster, find, find_seed, top4_sizes, uf_bonds, uf_bonds_extend, uf_flatten_counts,
-    uf_histogram,
+    dfs_cluster, find, find_seed, top4_sizes, uf_bonds, uf_bonds_extend, uf_bonds_with,
+    uf_flatten_counts, uf_histogram, BondMetrics, GraphObservationSlot, PooledUf,
 };
-use crate::config::{ClusterMode, OverlapClusterBuildMode};
+use crate::config::{ClusterAction, ClusterMode, OverlapClusterBuildMode};
 use crate::geometry::Lattice;
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -72,8 +72,10 @@ pub fn overlap_update(
     rngs: &mut [Xoshiro256StarStar],
     mode: &OverlapClusterBuildMode,
     cluster_mode: ClusterMode,
+    action: ClusterAction,
     csd_out: Option<&mut [Vec<u64>]>,
     top4_out: Option<&mut [[u32; 4]]>,
+    observation_out: Option<&mut [GraphObservationSlot]>,
     sequential: bool,
     snap_out: Option<&mut [Vec<u32>]>,
     blue_snap_out: Option<&mut [Vec<u32>]>,
@@ -90,8 +92,10 @@ pub fn overlap_update(
             rngs,
             *group_size,
             cluster_mode,
+            action,
             csd_out,
             top4_out,
+            observation_out,
             sequential,
             snap_out,
             spin_snap_out,
@@ -107,8 +111,10 @@ pub fn overlap_update(
             n_temps,
             rngs,
             cluster_mode,
+            action,
             csd_out,
             top4_out,
+            observation_out,
             sequential,
             snap_out,
             spin_snap_out,
@@ -124,8 +130,10 @@ pub fn overlap_update(
             n_temps,
             rngs,
             cluster_mode,
+            action,
             csd_out,
             top4_out,
+            observation_out,
             sequential,
             snap_out,
             blue_snap_out,
@@ -151,8 +159,10 @@ fn houdayer_step(
     rngs: &mut [Xoshiro256StarStar],
     group_size: usize,
     cluster_mode: ClusterMode,
+    action: ClusterAction,
     csd_out: Option<&mut [Vec<u64>]>,
     top4_out: Option<&mut [[u32; 4]]>,
+    observation_out: Option<&mut [GraphObservationSlot]>,
     sequential: bool,
     snap_out: Option<&mut [Vec<u32>]>,
     spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
@@ -166,12 +176,21 @@ fn houdayer_step(
 
     let sp = spins.as_mut_ptr() as usize;
     let rp = rngs.as_mut_ptr() as usize;
-    let use_uf = !wolff || csd_out.is_some() || top4_out.is_some() || snap_out.is_some();
+    let use_uf = action == ClusterAction::Observe
+        || !wolff
+        || csd_out.is_some()
+        || top4_out.is_some()
+        || snap_out.is_some();
 
     let cp = csd_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_csd = csd_out.is_some();
     let tp = top4_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_top4 = top4_out.is_some();
+    let op = observation_out
+        .as_ref()
+        .map(|s| s.as_ptr() as usize)
+        .unwrap_or(0);
+    let has_observation = observation_out.is_some();
     let snp = snap_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_snap = snap_out.is_some();
     let spp = spin_snap_out
@@ -210,10 +229,18 @@ fn houdayer_step(
         };
 
         if use_uf {
-            let mut uf = uf_bonds(lattice, |i, d| {
+            let mut should_bond = |i: usize, d: usize| {
                 let j = lattice.neighbor_fwd(i, d);
                 is_active(i) && is_active(j)
-            });
+            };
+            let mut metrics = has_observation.then(|| BondMetrics::new(lattice));
+            let mut uf = if let Some(ref mut metrics) = metrics {
+                uf_bonds_with(lattice, &mut should_bond, |site, dim| {
+                    metrics.record_bond(lattice, site, dim);
+                })
+            } else {
+                uf_bonds(lattice, &mut should_bond)
+            };
 
             if wolff {
                 let Some(seed) = find_seed(n_spins, rng, &is_active) else {
@@ -257,6 +284,13 @@ fn houdayer_step(
                     let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
                     snap_slot.clear();
                     snap_slot.extend_from_slice(&uf.parent[..n_spins]);
+                }
+                if let Some(metrics) = metrics {
+                    let observation_slot = &mut *(op as *mut GraphObservationSlot).add(slot);
+                    *observation_slot = metrics.finish(&counts);
+                }
+                if action == ClusterAction::Observe {
+                    return;
                 }
                 let storage = &mut *uf;
                 storage.rank.fill(u8::MAX);
@@ -321,8 +355,10 @@ fn jorg_step(
     n_temps: usize,
     rngs: &mut [Xoshiro256StarStar],
     cluster_mode: ClusterMode,
+    action: ClusterAction,
     csd_out: Option<&mut [Vec<u64>]>,
     top4_out: Option<&mut [[u32; 4]]>,
+    observation_out: Option<&mut [GraphObservationSlot]>,
     sequential: bool,
     snap_out: Option<&mut [Vec<u32>]>,
     spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
@@ -337,12 +373,21 @@ fn jorg_step(
 
     let sp = spins.as_mut_ptr() as usize;
     let rp = rngs.as_mut_ptr() as usize;
-    let use_uf = !wolff || csd_out.is_some() || top4_out.is_some() || snap_out.is_some();
+    let use_uf = action == ClusterAction::Observe
+        || !wolff
+        || csd_out.is_some()
+        || top4_out.is_some()
+        || snap_out.is_some();
 
     let cp = csd_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_csd = csd_out.is_some();
     let tp = top4_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_top4 = top4_out.is_some();
+    let op = observation_out
+        .as_ref()
+        .map(|s| s.as_ptr() as usize)
+        .unwrap_or(0);
+    let has_observation = observation_out.is_some();
     let snp = snap_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_snap = snap_out.is_some();
     let spp = spin_snap_out
@@ -376,7 +421,7 @@ fn jorg_step(
         let is_active = |i: usize| -> bool { *sp_ptr.add(base_a + i) != *sp_ptr.add(base_b + i) };
 
         if use_uf {
-            let mut uf = uf_bonds(lattice, |i, d| {
+            let mut should_bond = |i: usize, d: usize| {
                 let j = lattice.neighbor_fwd(i, d);
                 if !is_active(i) || !is_active(j) {
                     return false;
@@ -388,7 +433,15 @@ fn jorg_step(
                     return false;
                 }
                 rng.gen::<f32>() < 1.0 - (-4.0 * inter / temp).exp()
-            });
+            };
+            let mut metrics = has_observation.then(|| BondMetrics::new(lattice));
+            let mut uf = if let Some(ref mut metrics) = metrics {
+                uf_bonds_with(lattice, &mut should_bond, |site, dim| {
+                    metrics.record_bond(lattice, site, dim);
+                })
+            } else {
+                uf_bonds(lattice, &mut should_bond)
+            };
 
             if wolff {
                 let Some(seed) = find_seed(n_spins, rng, &is_active) else {
@@ -431,6 +484,13 @@ fn jorg_step(
                     let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
                     snap_slot.clear();
                     snap_slot.extend_from_slice(&uf.parent[..n_spins]);
+                }
+                if let Some(metrics) = metrics {
+                    let observation_slot = &mut *(op as *mut GraphObservationSlot).add(slot);
+                    *observation_slot = metrics.finish(&counts);
+                }
+                if action == ClusterAction::Observe {
+                    return;
                 }
                 let storage = &mut *uf;
                 storage.rank.fill(u8::MAX);
@@ -514,6 +574,38 @@ fn jorg_step(
 /// Grey clusters are supersets of blue clusters; sites in blue clusters receive both
 /// the blue flip and the grey flip. This composition is the correct CMR update.
 #[allow(clippy::too_many_arguments)]
+unsafe fn build_cmr_blue_graph(
+    lattice: &Lattice,
+    sp_ptr: *mut i8,
+    base_a: usize,
+    base_b: usize,
+    couplings: &[f32],
+    n_neighbors: usize,
+    temp: f32,
+    rng: &mut Xoshiro256StarStar,
+    on_bond: impl FnMut(usize, usize),
+) -> PooledUf {
+    uf_bonds_with(
+        lattice,
+        |i, d| {
+            let j = lattice.neighbor_fwd(i, d);
+            let coupling = couplings[i * n_neighbors + d];
+            let a_satisfied =
+                *sp_ptr.add(base_a + i) as f32 * *sp_ptr.add(base_a + j) as f32 * coupling > 0.0;
+            let b_satisfied =
+                *sp_ptr.add(base_b + i) as f32 * *sp_ptr.add(base_b + j) as f32 * coupling > 0.0;
+            if !a_satisfied || !b_satisfied {
+                return false;
+            }
+
+            let r = (-2.0 * coupling.abs() / temp).exp();
+            rng.gen::<f32>() < 1.0 - r * r
+        },
+        on_bond,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn cmr_step(
     lattice: &Lattice,
     spins: &mut [i8],
@@ -524,8 +616,10 @@ fn cmr_step(
     n_temps: usize,
     rngs: &mut [Xoshiro256StarStar],
     cluster_mode: ClusterMode,
+    action: ClusterAction,
     csd_out: Option<&mut [Vec<u64>]>,
     top4_out: Option<&mut [[u32; 4]]>,
+    observation_out: Option<&mut [GraphObservationSlot]>,
     sequential: bool,
     snap_out: Option<&mut [Vec<u32>]>,
     blue_snap_out: Option<&mut [Vec<u32>]>,
@@ -541,12 +635,21 @@ fn cmr_step(
 
     let sp = spins.as_mut_ptr() as usize;
     let rp = rngs.as_mut_ptr() as usize;
-    let use_uf = !wolff || csd_out.is_some() || top4_out.is_some() || snap_out.is_some();
+    let use_uf = action == ClusterAction::Observe
+        || !wolff
+        || csd_out.is_some()
+        || top4_out.is_some()
+        || snap_out.is_some();
 
     let cp = csd_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_csd = csd_out.is_some();
     let tp = top4_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_top4 = top4_out.is_some();
+    let op = observation_out
+        .as_ref()
+        .map(|s| s.as_ptr() as usize)
+        .unwrap_or(0);
+    let has_observation = observation_out.is_some();
     let snp = snap_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
     let has_snap = snap_out.is_some();
     let bsnp = blue_snap_out
@@ -590,24 +693,32 @@ fn cmr_step(
             };
 
             // === Phase 1: Blue clusters ===
-            // Blue bond: doubly-satisfied edges with prob 1 - r²
-            let mut uf = uf_bonds(lattice, |i, d| {
-                let j = lattice.neighbor_fwd(i, d);
-                let coupling = couplings[i * n_neighbors + d];
-
-                let a_sat =
-                    *sp_ptr.add(base_a + i) as f32 * *sp_ptr.add(base_a + j) as f32 * coupling
-                        > 0.0;
-                let b_sat =
-                    *sp_ptr.add(base_b + i) as f32 * *sp_ptr.add(base_b + j) as f32 * coupling
-                        > 0.0;
-
-                if !a_sat || !b_sat {
-                    return false;
-                }
-                let r = (-2.0 * coupling.abs() / temp).exp();
-                rng.gen::<f32>() < 1.0 - r * r
-            });
+            let mut metrics = has_observation.then(|| BondMetrics::new(lattice));
+            let mut uf = if let Some(ref mut metrics) = metrics {
+                build_cmr_blue_graph(
+                    lattice,
+                    sp_ptr,
+                    base_a,
+                    base_b,
+                    couplings,
+                    n_neighbors,
+                    temp,
+                    rng,
+                    |site, dim| metrics.record_bond(lattice, site, dim),
+                )
+            } else {
+                build_cmr_blue_graph(
+                    lattice,
+                    sp_ptr,
+                    base_a,
+                    base_b,
+                    couplings,
+                    n_neighbors,
+                    temp,
+                    rng,
+                    |_site, _dim| {},
+                )
+            };
 
             let counts = uf_flatten_counts(&mut uf.parent);
             if has_csd {
@@ -622,6 +733,13 @@ fn cmr_step(
                 let blue_slot = &mut *(bsnp as *mut Vec<u32>).add(slot);
                 blue_slot.clear();
                 blue_slot.extend_from_slice(&uf.parent[..n_spins]);
+            }
+            if let Some(metrics) = metrics {
+                let observation_slot = &mut *(op as *mut GraphObservationSlot).add(slot);
+                *observation_slot = metrics.finish(&counts);
+            }
+            if action == ClusterAction::Observe {
+                return;
             }
 
             // Flip blue clusters (both replicas jointly)

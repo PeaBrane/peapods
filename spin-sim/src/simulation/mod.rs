@@ -4,15 +4,140 @@ pub use realization::Realization;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::config::{SimConfig, SweepMode};
+use crate::config::{ClusterAction, OverlapClusterBuildMode, PtSchedule, SimConfig, SweepMode};
 use crate::geometry::Lattice;
 use crate::statistics::{
-    sokal_tau, AutocorrAccum, ClusterSnapshot, ClusterStats, Diagnostics, EquilDiagnosticAccum,
-    OverlapAccum, Statistics, SweepResult,
+    sokal_tau, AutocorrAccum, ClusterObservations, ClusterSnapshot, ClusterStats, Diagnostics,
+    EquilDiagnosticAccum, GraphObservationSummary, OverlapAccum, Statistics, SweepResult,
 };
 use crate::{clusters, mcmc, spins};
 use rayon::prelude::*;
 use validator::Validate;
+
+struct GraphObservationAccum {
+    observation_count: Vec<u64>,
+    cluster_size_counts: Vec<Vec<u64>>,
+    top4_sum: Vec<[u64; 4]>,
+    active_bonds: Vec<u64>,
+    winding: Vec<[u64; 4]>,
+    large_components: Vec<u64>,
+}
+
+impl GraphObservationAccum {
+    fn new(n_temps: usize, n_spins: usize) -> Self {
+        Self {
+            observation_count: vec![0; n_temps],
+            cluster_size_counts: (0..n_temps).map(|_| vec![0; n_spins + 1]).collect(),
+            top4_sum: vec![[0; 4]; n_temps],
+            active_bonds: vec![0; n_temps],
+            winding: vec![[0; 4]; n_temps],
+            large_components: vec![0; n_temps],
+        }
+    }
+
+    fn push(&mut self, temp: usize, cluster_sizes: &[u64], slot: clusters::GraphObservationSlot) {
+        if !slot.observed {
+            return;
+        }
+        self.observation_count[temp] += 1;
+        for (total, &count) in self.cluster_size_counts[temp].iter_mut().zip(cluster_sizes) {
+            *total += count;
+        }
+        for (total, value) in self.top4_sum[temp].iter_mut().zip(slot.top4) {
+            *total += u64::from(value);
+        }
+        self.active_bonds[temp] += u64::from(slot.active_bonds);
+        self.winding[temp][0] += u64::from(slot.winding_x);
+        self.winding[temp][1] += u64::from(slot.winding_y);
+        self.winding[temp][2] += u64::from(slot.winding_x || slot.winding_y);
+        self.winding[temp][3] += u64::from(slot.winding_x && slot.winding_y);
+        self.large_components[temp] += u64::from(slot.large_components);
+    }
+
+    fn finish(
+        self,
+        n_spins: usize,
+        n_neighbors: usize,
+        has_winding: bool,
+    ) -> Option<GraphObservationSummary> {
+        if self.observation_count.iter().all(|&count| count == 0) {
+            return None;
+        }
+
+        let mut top_four_component_fractions = vec![[0.0; 4]; self.observation_count.len()];
+        let mut active_bond_density = vec![0.0; self.observation_count.len()];
+        let mut large_component_count = vec![0.0; self.observation_count.len()];
+        let mut winding = has_winding.then(|| vec![[0.0; 4]; self.observation_count.len()]);
+        for temp in 0..self.observation_count.len() {
+            let count = self.observation_count[temp];
+            if count == 0 {
+                continue;
+            }
+            let count_f64 = count as f64;
+            for k in 0..4 {
+                top_four_component_fractions[temp][k] =
+                    self.top4_sum[temp][k] as f64 / (count_f64 * n_spins as f64);
+                if let Some(ref mut winding) = winding {
+                    winding[temp][k] = self.winding[temp][k] as f64 / count_f64;
+                }
+            }
+            active_bond_density[temp] =
+                self.active_bonds[temp] as f64 / (count_f64 * n_spins as f64 * n_neighbors as f64);
+            large_component_count[temp] = self.large_components[temp] as f64 / count_f64;
+        }
+
+        Some(GraphObservationSummary {
+            observation_count: self.observation_count,
+            cluster_size_counts: self.cluster_size_counts,
+            top_four_component_fractions,
+            active_bond_density,
+            large_component_count,
+            winding,
+        })
+    }
+}
+
+#[derive(Default)]
+struct ClusterObservationAccums {
+    fk: Option<GraphObservationAccum>,
+    houdayer: Option<GraphObservationAccum>,
+    jorg: Option<GraphObservationAccum>,
+    cmr_blue: Option<GraphObservationAccum>,
+}
+
+impl ClusterObservationAccums {
+    fn enable_fk(&mut self, n_temps: usize, n_spins: usize) {
+        self.fk = Some(GraphObservationAccum::new(n_temps, n_spins));
+    }
+
+    fn enable_overlap(&mut self, mode: &OverlapClusterBuildMode, n_temps: usize, n_spins: usize) {
+        let target = match mode {
+            OverlapClusterBuildMode::Houdayer(_) => &mut self.houdayer,
+            OverlapClusterBuildMode::Jorg => &mut self.jorg,
+            OverlapClusterBuildMode::Cmr => &mut self.cmr_blue,
+        };
+        target.get_or_insert_with(|| GraphObservationAccum::new(n_temps, n_spins));
+    }
+
+    fn overlap_mut(&mut self, mode: &OverlapClusterBuildMode) -> &mut GraphObservationAccum {
+        match mode {
+            OverlapClusterBuildMode::Houdayer(_) => self.houdayer.as_mut(),
+            OverlapClusterBuildMode::Jorg => self.jorg.as_mut(),
+            OverlapClusterBuildMode::Cmr => self.cmr_blue.as_mut(),
+        }
+        .expect("observed graph accumulator must be allocated")
+    }
+
+    fn finish(self, n_spins: usize, n_neighbors: usize, has_winding: bool) -> ClusterObservations {
+        let finish = |accum: GraphObservationAccum| accum.finish(n_spins, n_neighbors, has_winding);
+        ClusterObservations {
+            fk: self.fk.and_then(finish),
+            houdayer: self.houdayer.and_then(finish),
+            jorg: self.jorg.and_then(finish),
+            cmr_blue: self.cmr_blue.and_then(finish),
+        }
+    }
+}
 
 /// Run the full Monte Carlo loop (warmup + measurement) for one [`Realization`].
 ///
@@ -79,15 +204,33 @@ fn run_sweep_loop_impl(
     }
 
     let n_pairs = n_replicas / 2;
+    let observe_fk = config
+        .cluster_update
+        .as_ref()
+        .is_some_and(|cluster| cluster.action == ClusterAction::Observe);
+    let observe_overlap = config
+        .overlap_cluster
+        .as_ref()
+        .is_some_and(|cluster| cluster.action == ClusterAction::Observe);
     let collect_fk = config
         .cluster_update
         .as_ref()
-        .is_some_and(|c| c.collect_stats);
+        .is_some_and(|c| c.collect_stats || c.action == ClusterAction::Observe);
     let collect_overlap = config
         .overlap_cluster
         .as_ref()
-        .is_some_and(|h| h.collect_stats)
+        .is_some_and(|h| h.collect_stats || h.action == ClusterAction::Observe)
         && n_pairs > 0;
+
+    let mut observation_accums = ClusterObservationAccums::default();
+    if observe_fk {
+        observation_accums.enable_fk(n_temps, n_spins);
+    }
+    if let Some(overlap) = config.overlap_cluster.as_ref().filter(|_| observe_overlap) {
+        for mode in &overlap.modes {
+            observation_accums.enable_overlap(mode, n_temps, n_spins);
+        }
+    }
 
     let mut fk_csd_accum: Vec<Vec<u64>> = if collect_fk || materialize_disabled_stats {
         (0..n_temps).map(|_| vec![0u64; n_spins + 1]).collect()
@@ -96,6 +239,11 @@ fn run_sweep_loop_impl(
     };
     let mut sw_csd_buf: Vec<Vec<u64>> = if collect_fk {
         (0..n_systems).map(|_| vec![0u64; n_spins + 1]).collect()
+    } else {
+        vec![]
+    };
+    let mut fk_observation_buf = if observe_fk {
+        vec![clusters::GraphObservationSlot::default(); n_systems]
     } else {
         vec![]
     };
@@ -130,6 +278,11 @@ fn run_sweep_loop_impl(
     };
     let mut top4_buf: Vec<[u32; 4]> = if collect_top {
         vec![[0u32; 4]; n_temps * n_pairs]
+    } else {
+        vec![]
+    };
+    let mut overlap_observation_buf = if observe_overlap {
+        vec![clusters::GraphObservationSlot::default(); n_temps * n_pairs]
     } else {
         vec![]
     };
@@ -261,11 +414,17 @@ fn run_sweep_loop_impl(
         if do_cluster {
             let cluster_cfg = config.cluster_update.as_ref().unwrap();
             let wolff = cluster_cfg.mode == crate::config::ClusterMode::Wolff;
-            let csd_out = if cluster_cfg.collect_stats && record {
+            let csd_out = if collect_fk && record {
                 for buf in sw_csd_buf.iter_mut() {
                     buf.fill(0);
                 }
                 Some(sw_csd_buf.as_mut_slice())
+            } else {
+                None
+            };
+            let observation_out = if cluster_cfg.action == ClusterAction::Observe && record {
+                fk_observation_buf.fill(clusters::GraphObservationSlot::default());
+                Some(fk_observation_buf.as_mut_slice())
             } else {
                 None
             };
@@ -278,16 +437,23 @@ fn run_sweep_loop_impl(
                 &real.system_ids,
                 &mut real.rngs,
                 wolff,
+                cluster_cfg.action,
                 csd_out,
+                observation_out,
                 config.sequential,
             );
 
-            if cluster_cfg.collect_stats && record {
+            if collect_fk && record {
                 for (slot, buf) in sw_csd_buf.iter().enumerate() {
                     let accum = &mut fk_csd_accum[slot % n_temps];
                     for (a, &b) in accum.iter_mut().zip(buf.iter()) {
                         *a += b;
                     }
+                }
+            }
+            if let Some(accum) = observation_accums.fk.as_mut().filter(|_| record) {
+                for (slot, observation) in fk_observation_buf.iter().copied().enumerate() {
+                    accum.push(slot % n_temps, &sw_csd_buf[slot], observation);
                 }
             }
         }
@@ -401,18 +567,24 @@ fn run_sweep_loop_impl(
             }
         }
 
-        let mut did_overlap_update = false;
+        let mut did_overlap_mutate = false;
         if let Some(ref oc_cfg) = config.overlap_cluster {
             if sweep_id % oc_cfg.interval == 0 {
-                did_overlap_update = true;
+                did_overlap_mutate = oc_cfg.action == ClusterAction::Update;
                 let mode_idx = overlap_call_count % n_modes;
                 let mode = &oc_cfg.modes[mode_idx];
 
-                let ov_csd_out = if oc_cfg.collect_stats && record {
+                let ov_csd_out = if collect_overlap && record {
                     for buf in overlap_csd_buf.iter_mut() {
                         buf.fill(0);
                     }
                     Some(overlap_csd_buf.as_mut_slice())
+                } else {
+                    None
+                };
+                let observation_out = if oc_cfg.action == ClusterAction::Observe && record {
+                    overlap_observation_buf.fill(clusters::GraphObservationSlot::default());
+                    Some(overlap_observation_buf.as_mut_slice())
                 } else {
                     None
                 };
@@ -469,8 +641,10 @@ fn run_sweep_loop_impl(
                     &mut real.pair_rngs,
                     mode,
                     oc_cfg.cluster_mode,
+                    oc_cfg.action,
                     ov_csd_out,
                     top4_out,
+                    observation_out,
                     config.sequential,
                     snap,
                     blue_snap,
@@ -512,7 +686,7 @@ fn run_sweep_loop_impl(
                     });
                 }
 
-                if oc_cfg.collect_stats && record {
+                if collect_overlap && record {
                     for (slot, buf) in overlap_csd_buf.iter().enumerate() {
                         let accum = &mut overlap_csd_accum[mode_idx][slot / n_pairs];
                         for (a, &b) in accum.iter_mut().zip(buf.iter()) {
@@ -533,12 +707,19 @@ fn run_sweep_loop_impl(
                     top4_n[mode_idx] += 1;
                 }
 
+                if record && oc_cfg.action == ClusterAction::Observe {
+                    let accum = observation_accums.overlap_mut(mode);
+                    for (slot, observation) in overlap_observation_buf.iter().copied().enumerate() {
+                        accum.push(slot / n_pairs, &overlap_csd_buf[slot], observation);
+                    }
+                }
+
                 overlap_call_count += 1;
             }
         }
 
         if pt_this_sweep {
-            if did_overlap_update {
+            if did_overlap_mutate {
                 spins::energy::compute_energies_into(
                     lattice,
                     &real.spins,
@@ -546,17 +727,44 @@ fn run_sweep_loop_impl(
                     &mut real.energies,
                 );
             }
+            let first_parity = real.pt.first_parity();
+            let Realization {
+                energies,
+                temperatures,
+                system_ids,
+                rngs,
+                pt,
+                ..
+            } = real;
             for r in 0..n_replicas {
                 let offset = r * n_temps;
-                let sid_slice = &mut real.system_ids[offset..offset + n_temps];
-                let temp_slice = &real.temperatures[offset..offset + n_temps];
-                mcmc::tempering::parallel_tempering(
-                    &real.energies,
-                    temp_slice,
-                    sid_slice,
-                    n_spins,
-                    &mut real.rngs[offset],
-                );
+                let sid_slice = &mut system_ids[offset..offset + n_temps];
+                let temp_slice = &temperatures[offset..offset + n_temps];
+                let mut record = |attempt| {
+                    pt.record_attempt(attempt);
+                };
+                match config.pt_schedule {
+                    PtSchedule::SingleRandomEdge => mcmc::tempering::parallel_tempering(
+                        energies,
+                        temp_slice,
+                        sid_slice,
+                        n_spins,
+                        &mut rngs[offset],
+                        &mut record,
+                    ),
+                    PtSchedule::FullLadder => mcmc::tempering::parallel_tempering_full_ladder(
+                        energies,
+                        temp_slice,
+                        sid_slice,
+                        n_spins,
+                        &mut rngs[offset],
+                        first_parity,
+                        &mut record,
+                    ),
+                }
+            }
+            if config.pt_schedule == PtSchedule::FullLadder {
+                pt.advance_parity();
             }
         }
     }
@@ -597,6 +805,8 @@ fn run_sweep_loop_impl(
         .unwrap_or_default();
 
     let equil_checkpoints = equil_accum.map(|acc| acc.finish()).unwrap_or_default();
+    let has_winding = lattice.square_shape().is_some();
+    let cluster_observations = observation_accums.finish(n_spins, lattice.n_neighbors, has_winding);
 
     Ok(SweepResult {
         mags: mags_stat.average(),
@@ -610,6 +820,7 @@ fn run_sweep_loop_impl(
             overlap_csd: overlap_csd_accum,
             top_cluster_sizes,
         },
+        per_disorder_cluster_observations: vec![cluster_observations],
         diagnostics: Diagnostics {
             mags2_tau,
             overlap2_tau,
@@ -718,9 +929,11 @@ mod tests {
             cluster_update: Some(ClusterConfig {
                 interval: 1,
                 mode: ClusterMode::Sw,
+                action: ClusterAction::Update,
                 collect_stats,
             }),
             pt_interval: None,
+            pt_schedule: PtSchedule::SingleRandomEdge,
             overlap_cluster: None,
             autocorrelation_max_lag: None,
             sequential: true,
@@ -764,10 +977,12 @@ mod tests {
                 sweep_mode: SweepMode::Metropolis,
                 cluster_update: None,
                 pt_interval: None,
+                pt_schedule: PtSchedule::SingleRandomEdge,
                 overlap_cluster: Some(OverlapClusterConfig {
                     interval: 1,
                     modes: vec![OverlapClusterBuildMode::Houdayer(2)],
                     cluster_mode: ClusterMode::Sw,
+                    action: ClusterAction::Update,
                     collect_stats,
                     snapshot_interval: None,
                 }),
@@ -799,5 +1014,132 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn fk_observe_records_without_changing_spins() {
+        let lattice = Lattice::new(vec![4, 4]);
+        let couplings = vec![1.0; lattice.n_spins * lattice.n_neighbors];
+        let mut observed = Realization::new(&lattice, couplings.clone(), &[2.0], 1, 19);
+        let mut baseline = Realization::new(&lattice, couplings, &[2.0], 1, 19);
+        let mut config = SimConfig {
+            n_sweeps: 1,
+            warmup_sweeps: 0,
+            sweep_mode: SweepMode::Metropolis,
+            cluster_update: None,
+            pt_interval: None,
+            pt_schedule: PtSchedule::SingleRandomEdge,
+            overlap_cluster: None,
+            autocorrelation_max_lag: None,
+            sequential: true,
+            equilibration_diagnostic: false,
+        };
+        run_sweep_loop(
+            &lattice,
+            &mut baseline,
+            1,
+            1,
+            &config,
+            &AtomicBool::new(false),
+            &|| {},
+            0,
+        )
+        .unwrap();
+
+        config.cluster_update = Some(ClusterConfig {
+            interval: 1,
+            mode: ClusterMode::Sw,
+            action: ClusterAction::Observe,
+            collect_stats: true,
+        });
+        let result = run_sweep_loop(
+            &lattice,
+            &mut observed,
+            1,
+            1,
+            &config,
+            &AtomicBool::new(false),
+            &|| {},
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(observed.spins, baseline.spins);
+        assert_eq!(observed.system_ids, baseline.system_ids);
+        let summary = result.per_disorder_cluster_observations[0]
+            .fk
+            .as_ref()
+            .unwrap();
+        assert_eq!(summary.observation_count, vec![1]);
+        assert_eq!(
+            summary.cluster_size_counts[0]
+                .iter()
+                .enumerate()
+                .map(|(size, &count)| size as u64 * count)
+                .sum::<u64>(),
+            lattice.n_spins as u64
+        );
+    }
+
+    #[test]
+    fn cmr_observe_stops_before_cluster_actions() {
+        let lattice = Lattice::new(vec![4, 4]);
+        let couplings = vec![1.0; lattice.n_spins * lattice.n_neighbors];
+        let mut observed = Realization::new(&lattice, couplings.clone(), &[1.5], 2, 23);
+        let mut baseline = Realization::new(&lattice, couplings, &[1.5], 2, 23);
+        let mut config = SimConfig {
+            n_sweeps: 1,
+            warmup_sweeps: 0,
+            sweep_mode: SweepMode::Metropolis,
+            cluster_update: None,
+            pt_interval: None,
+            pt_schedule: PtSchedule::SingleRandomEdge,
+            overlap_cluster: None,
+            autocorrelation_max_lag: None,
+            sequential: true,
+            equilibration_diagnostic: false,
+        };
+        run_sweep_loop(
+            &lattice,
+            &mut baseline,
+            2,
+            1,
+            &config,
+            &AtomicBool::new(false),
+            &|| {},
+            0,
+        )
+        .unwrap();
+
+        config.overlap_cluster = Some(OverlapClusterConfig {
+            interval: 1,
+            modes: vec![OverlapClusterBuildMode::Cmr],
+            cluster_mode: ClusterMode::Sw,
+            action: ClusterAction::Observe,
+            collect_stats: true,
+            snapshot_interval: None,
+        });
+        let result = run_sweep_loop(
+            &lattice,
+            &mut observed,
+            2,
+            1,
+            &config,
+            &AtomicBool::new(false),
+            &|| {},
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(observed.spins, baseline.spins);
+        assert_eq!(observed.system_ids, baseline.system_ids);
+        assert_eq!(
+            result.per_disorder_cluster_observations[0]
+                .cmr_blue
+                .as_ref()
+                .unwrap()
+                .observation_count,
+            vec![1]
+        );
     }
 }

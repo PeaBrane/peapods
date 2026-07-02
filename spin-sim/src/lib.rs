@@ -34,9 +34,11 @@
 //!     cluster_update: Some(ClusterConfig {
 //!         interval: 1,
 //!         mode: ClusterMode::Wolff,
+//!         action: ClusterAction::Update,
 //!         collect_stats: false,
 //!     }),
 //!     pt_interval: Some(1),
+//!     pt_schedule: PtSchedule::SingleRandomEdge,
 //!     overlap_cluster: None,
 //!     autocorrelation_max_lag: None,
 //!     sequential: false,
@@ -64,4 +66,7 @@ mod parallel;
 
 pub use geometry::Lattice;
 pub use simulation::{run_sweep_loop, run_sweep_parallel, Realization};
-pub use statistics::{ClusterSnapshot, ClusterStats, Diagnostics, EquilCheckpoint, SweepResult};
+pub use statistics::{
+    ClusterObservations, ClusterSnapshot, ClusterStats, Diagnostics, EquilCheckpoint,
+    GraphObservationSummary, SweepResult,
+};

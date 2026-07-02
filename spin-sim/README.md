@@ -35,19 +35,30 @@ let config = SimConfig {
     sweep_mode: SweepMode::Metropolis,
     cluster_update: None,
     pt_interval: Some(1),
+    pt_schedule: PtSchedule::FullLadder,
     overlap_cluster: None,
     autocorrelation_max_lag: None,
     sequential: false,
+    equilibration_diagnostic: false,
 };
 
 use std::sync::atomic::AtomicBool;
 let interrupted = AtomicBool::new(false);
 let result = run_sweep_loop(
-    &lattice, &mut real, n_replicas, temps.len(), &config, &interrupted, &|| {},
+    &lattice, &mut real, n_replicas, temps.len(), &config, &interrupted, &|| {}, 0,
 ).unwrap();
 
 println!("energies: {:?}", result.energies);
 ```
+
+## v0.2.1 configuration change
+
+Cluster graph construction can now either update spins or passively observe the
+full graph. This intentionally changes public Rust struct literals: add
+`action: ClusterAction::Update` to `ClusterConfig` and
+`OverlapClusterConfig`, and add
+`pt_schedule: PtSchedule::SingleRandomEdge` to `SimConfig`, to preserve the
+pre-v0.2.1 behavior. No legacy wrapper config types are provided.
 
 ## Python
 

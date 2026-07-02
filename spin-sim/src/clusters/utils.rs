@@ -58,6 +58,7 @@ impl Drop for PooledCounts {
     }
 }
 
+// Pooling is intentionally limited to overlap clusters because extending it to ordinary FK/SW regressed performance.
 thread_local! {
     static UF_POOL: RefCell<Vec<UfStorage>> = const { RefCell::new(Vec::new()) };
     static COUNTS_POOL: RefCell<Vec<Vec<u32>>> = const { RefCell::new(Vec::new()) };
@@ -153,7 +154,16 @@ pub(super) fn dfs_cluster(
 #[inline]
 pub(super) fn uf_bonds(
     lattice: &Lattice,
+    should_bond: impl FnMut(usize, usize) -> bool,
+) -> PooledUf {
+    uf_bonds_with(lattice, should_bond, |_site, _dim| {})
+}
+
+#[inline]
+pub(super) fn uf_bonds_with(
+    lattice: &Lattice,
     mut should_bond: impl FnMut(usize, usize) -> bool,
+    mut on_bond: impl FnMut(usize, usize),
 ) -> PooledUf {
     let n_spins = lattice.n_spins;
     let mut storage = UF_POOL
@@ -165,6 +175,7 @@ pub(super) fn uf_bonds(
         &mut storage.rank,
         lattice,
         &mut should_bond,
+        &mut on_bond,
     );
 
     PooledUf(Some(storage))
@@ -173,12 +184,27 @@ pub(super) fn uf_bonds(
 #[inline]
 pub(super) fn uf_bonds_fresh(
     lattice: &Lattice,
+    should_bond: impl FnMut(usize, usize) -> bool,
+) -> (Vec<u32>, Vec<u8>) {
+    uf_bonds_fresh_with(lattice, should_bond, |_site, _dim| {})
+}
+
+#[inline]
+pub(super) fn uf_bonds_fresh_with(
+    lattice: &Lattice,
     mut should_bond: impl FnMut(usize, usize) -> bool,
+    mut on_bond: impl FnMut(usize, usize),
 ) -> (Vec<u32>, Vec<u8>) {
     let mut parent = Vec::new();
     let mut rank = Vec::new();
     reset_uf(&mut parent, &mut rank, lattice.n_spins);
-    activate_bonds(&mut parent, &mut rank, lattice, &mut should_bond);
+    activate_bonds(
+        &mut parent,
+        &mut rank,
+        lattice,
+        &mut should_bond,
+        &mut on_bond,
+    );
     (parent, rank)
 }
 
@@ -198,12 +224,14 @@ fn activate_bonds(
     rank: &mut [u8],
     lattice: &Lattice,
     should_bond: &mut impl FnMut(usize, usize) -> bool,
+    on_bond: &mut impl FnMut(usize, usize),
 ) {
     for i in 0..lattice.n_spins {
         for d in 0..lattice.n_neighbors {
             if should_bond(i, d) {
                 let j = lattice.neighbor_fwd(i, d);
                 union(parent, rank, i as u32, j as u32);
+                on_bond(i, d);
             }
         }
     }
@@ -284,6 +312,144 @@ pub(super) fn top4_sizes(counts: &[u32]) -> [u32; 4] {
     }
     top.reverse(); // descending: top[0] = largest
     top
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct GraphObservationSlot {
+    pub top4: [u32; 4],
+    pub active_bonds: u32,
+    pub winding_x: bool,
+    pub winding_y: bool,
+    pub large_components: u32,
+    pub observed: bool,
+}
+
+pub(super) struct BondMetrics {
+    active_bonds: u32,
+    winding: Option<WindingUf>,
+}
+
+impl BondMetrics {
+    pub fn new(lattice: &Lattice) -> Self {
+        Self {
+            active_bonds: 0,
+            winding: lattice
+                .square_shape()
+                .map(|shape| WindingUf::new(lattice.n_spins, shape)),
+        }
+    }
+
+    #[inline]
+    pub fn record_bond(&mut self, lattice: &Lattice, site: usize, dim: usize) {
+        self.active_bonds += 1;
+        if let Some(ref mut winding) = self.winding {
+            winding.union_forward(site, lattice.neighbor_fwd(site, dim), dim);
+        }
+    }
+
+    pub fn finish(mut self, counts: &[u32]) -> GraphObservationSlot {
+        let mut winding_x = false;
+        let mut winding_y = false;
+        if let Some(ref mut winding) = self.winding {
+            (winding_x, winding_y) = winding.winding();
+        }
+
+        let threshold = ((counts.len() as f64) * 0.05).ceil() as u32;
+        GraphObservationSlot {
+            top4: top4_sizes(counts),
+            active_bonds: self.active_bonds,
+            winding_x,
+            winding_y,
+            large_components: counts.iter().filter(|&&count| count >= threshold).count() as u32,
+            observed: true,
+        }
+    }
+}
+
+struct WindingUf {
+    parent: Vec<u32>,
+    rank: Vec<u8>,
+    displacement: Vec<[i64; 2]>,
+    wrap: Vec<[bool; 2]>,
+    shape: [i64; 2],
+}
+
+impl WindingUf {
+    fn new(n_sites: usize, shape: (usize, usize)) -> Self {
+        Self {
+            parent: (0..n_sites as u32).collect(),
+            rank: vec![0; n_sites],
+            displacement: vec![[0, 0]; n_sites],
+            wrap: vec![[false, false]; n_sites],
+            shape: [shape.0 as i64, shape.1 as i64],
+        }
+    }
+
+    fn find(&mut self, site: usize) -> (usize, [i64; 2]) {
+        let parent = self.parent[site] as usize;
+        if parent == site {
+            return (site, [0, 0]);
+        }
+
+        let own = self.displacement[site];
+        let (root, parent_to_root) = self.find(parent);
+        let to_root = [own[0] + parent_to_root[0], own[1] + parent_to_root[1]];
+        self.parent[site] = root as u32;
+        self.displacement[site] = to_root;
+        (root, to_root)
+    }
+
+    fn union_forward(&mut self, site: usize, neighbor: usize, dim: usize) {
+        let (root_site, disp_site) = self.find(site);
+        let (root_neighbor, disp_neighbor) = self.find(neighbor);
+        let mut neighbor_from_site = [
+            disp_site[0] - disp_neighbor[0],
+            disp_site[1] - disp_neighbor[1],
+        ];
+        neighbor_from_site[dim] += 1;
+
+        if root_site == root_neighbor {
+            for (axis, &displacement) in neighbor_from_site.iter().enumerate() {
+                debug_assert_eq!(displacement % self.shape[axis], 0);
+                self.wrap[root_site][axis] |= displacement != 0;
+            }
+            return;
+        }
+
+        let combined_wrap = [
+            self.wrap[root_site][0] || self.wrap[root_neighbor][0],
+            self.wrap[root_site][1] || self.wrap[root_neighbor][1],
+        ];
+        if self.rank[root_site] < self.rank[root_neighbor] {
+            self.parent[root_site] = root_neighbor as u32;
+            self.displacement[root_site] = [-neighbor_from_site[0], -neighbor_from_site[1]];
+            self.wrap[root_neighbor] = combined_wrap;
+            return;
+        }
+
+        self.parent[root_neighbor] = root_site as u32;
+        self.displacement[root_neighbor] = neighbor_from_site;
+        self.wrap[root_site] = combined_wrap;
+        if self.rank[root_site] == self.rank[root_neighbor] {
+            self.rank[root_site] += 1;
+        }
+    }
+
+    fn winding(&mut self) -> (bool, bool) {
+        for site in 0..self.parent.len() {
+            self.find(site);
+        }
+        let mut x = false;
+        let mut y = false;
+        for site in 0..self.parent.len() {
+            if self.parent[site] as usize != site {
+                continue;
+            }
+            x |= self.wrap[site][0];
+            y |= self.wrap[site][1];
+        }
+        (x, y)
+    }
 }
 
 #[cfg(test)]
@@ -569,5 +735,46 @@ mod tests {
         assert!(uf.rank.iter().all(|&rank| rank == 0));
         let counts = uf_flatten_counts(&mut uf.parent);
         assert!(counts.iter().all(|&count| count == 1));
+    }
+
+    #[test]
+    fn winding_distinguishes_seams_and_noncontractible_cycles() {
+        let index = |row: usize, col: usize| 4 * row + col;
+        let mut seam = WindingUf::new(16, (4, 4));
+        seam.union_forward(index(0, 3), index(0, 0), 1);
+        assert_eq!(seam.winding(), (false, false));
+
+        let mut row = WindingUf::new(16, (4, 4));
+        for col in 0..4 {
+            row.union_forward(index(1, col), index(1, (col + 1) % 4), 1);
+        }
+        assert_eq!(row.winding(), (false, true));
+
+        let mut both = WindingUf::new(16, (4, 4));
+        for col in 0..4 {
+            both.union_forward(index(0, col), index(0, (col + 1) % 4), 1);
+        }
+        for row in 0..4 {
+            both.union_forward(index(row, 0), index((row + 1) % 4, 0), 0);
+        }
+        assert_eq!(both.winding(), (true, true));
+    }
+
+    #[test]
+    fn bond_metrics_reuse_component_counts() {
+        let lattice = lattice_4x4();
+        let bonds = bond_set();
+        let mut metrics = BondMetrics::new(&lattice);
+        let mut uf = uf_bonds_with(
+            &lattice,
+            |site, dim| bonds.contains(&(site, dim)),
+            |site, dim| metrics.record_bond(&lattice, site, dim),
+        );
+        let counts = uf_flatten_counts(&mut uf.parent);
+        let summary = metrics.finish(&counts);
+
+        assert_eq!(summary.active_bonds, bonds.len() as u32);
+        assert_eq!(summary.top4, [4, 3, 1, 1]);
+        assert!(summary.observed);
     }
 }
