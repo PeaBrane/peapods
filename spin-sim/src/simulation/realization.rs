@@ -1,6 +1,7 @@
+use crate::config::PtSchedule;
 use crate::geometry::Lattice;
-use crate::spins;
-use rand::{Rng, SeedableRng};
+use crate::spins::model::{Real, Spin};
+use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256StarStar;
 
 const SYSTEM_SEED_DOMAIN: u64 = 0x53A9_17E1_4C2D_8B6F;
@@ -29,7 +30,12 @@ pub(super) struct PtState {
 }
 
 impl PtState {
-    fn new(n_replicas: usize, n_temps: usize, system_ids: &[usize], temperatures: &[f32]) -> Self {
+    fn new<T: PartialOrd>(
+        n_replicas: usize,
+        n_temps: usize,
+        system_ids: &[usize],
+        temperatures: &[T],
+    ) -> Self {
         let mut state = Self {
             edge_attempts: Vec::new(),
             edge_acceptances: Vec::new(),
@@ -43,12 +49,12 @@ impl PtState {
         state
     }
 
-    fn reset(
+    fn reset<T: PartialOrd>(
         &mut self,
         n_replicas: usize,
         n_temps: usize,
         system_ids: &[usize],
-        temperatures: &[f32],
+        temperatures: &[T],
     ) {
         let n_edges = n_temps.saturating_sub(1);
         self.edge_attempts.resize(n_edges, 0);
@@ -89,7 +95,10 @@ impl PtState {
         self.next_parity = 1 - self.next_parity;
     }
 
-    fn extreme_temperature_slots(temperatures: &[f32], n_temps: usize) -> (usize, usize) {
+    fn extreme_temperature_slots<T: PartialOrd>(
+        temperatures: &[T],
+        n_temps: usize,
+    ) -> (usize, usize) {
         if n_temps == 0 {
             return (0, 0);
         }
@@ -129,13 +138,13 @@ impl PtState {
 /// `n_systems = n_replicas * n_temps` independent spin configurations.
 /// Spins are stored in a single flat `Vec` of length `n_systems * n_spins`,
 /// where system `i` occupies `spins[i*n_spins .. (i+1)*n_spins]`.
-pub struct Realization {
+pub struct ModelRealization<S: Spin> {
     /// Forward couplings, length `n_spins * n_neighbors`.
-    pub couplings: Vec<f32>,
+    pub couplings: Vec<S::Value>,
     /// All spin configurations, length `n_systems * n_spins` (+1/−1).
-    pub spins: Vec<i8>,
+    pub spins: Vec<S>,
     /// Temperature assigned to each system slot, length `n_systems`.
-    pub temperatures: Vec<f32>,
+    pub temperatures: Vec<S::Value>,
     /// Parallel-tempering permutation: `system_ids[slot]` is the system index
     /// currently occupying temperature slot `slot`.
     pub system_ids: Vec<usize>,
@@ -144,18 +153,21 @@ pub struct Realization {
     /// One PRNG per overlap-update pair slot, length `n_temps * (n_replicas / 2)`.
     pub pair_rngs: Vec<Xoshiro256StarStar>,
     pub(super) pt: PtState,
-    /// Cached total energy per system (E / N), length `n_systems`.
-    pub energies: Vec<f32>,
+    /// Cached interaction energy per system (-H/N), length `n_systems`.
+    pub energies: Vec<S::Value>,
 }
 
-impl Realization {
+pub type Realization = ModelRealization<i8>;
+pub type XyRealization = ModelRealization<[f64; 2]>;
+
+impl<S: Spin> ModelRealization<S> {
     /// Initialize a realization with random ±1 spins.
     ///
-    /// Seeds replica RNGs deterministically as `base_seed, base_seed+1, …`.
+    /// Seeds independent system and pair streams from domain-separated child seeds.
     pub fn new(
         lattice: &Lattice,
-        couplings: Vec<f32>,
-        temps: &[f32],
+        couplings: Vec<S::Value>,
+        temps: &[S::Value],
         n_replicas: usize,
         base_seed: u64,
     ) -> Self {
@@ -174,10 +186,10 @@ impl Realization {
             )));
         }
 
-        let mut spins = vec![0i8; n_systems * n_spins];
+        let mut spins = vec![S::default(); n_systems * n_spins];
         for (i, rng) in rngs.iter_mut().enumerate() {
             for j in 0..n_spins {
-                spins[i * n_spins + j] = if rng.gen::<f32>() < 0.5 { -1 } else { 1 };
+                spins[i * n_spins + j] = S::random(rng);
             }
         }
 
@@ -193,8 +205,8 @@ impl Realization {
             )));
         }
 
-        let mut energies = vec![0.0; n_systems];
-        spins::energy::compute_energies_into(lattice, &spins, &couplings, &mut energies);
+        let mut energies = vec![S::Value::default(); n_systems];
+        S::interactions(lattice, &spins, &couplings, &mut energies);
 
         let pt = PtState::new(n_replicas, n_temps, &system_ids, &temperatures);
         Self {
@@ -218,11 +230,7 @@ impl Realization {
             self.rngs[i] =
                 Xoshiro256StarStar::seed_from_u64(child_seed(base_seed, SYSTEM_SEED_DOMAIN, i));
             for j in 0..n_spins {
-                self.spins[i * n_spins + j] = if self.rngs[i].gen::<f32>() < 0.5 {
-                    -1
-                } else {
-                    1
-                };
+                self.spins[i * n_spins + j] = S::random(&mut self.rngs[i]);
             }
         }
 
@@ -234,15 +242,98 @@ impl Realization {
                 Xoshiro256StarStar::seed_from_u64(child_seed(base_seed, PAIR_SEED_DOMAIN, i));
         }
 
-        self.energies.resize(n_systems, 0.0);
-        spins::energy::compute_energies_into(
-            lattice,
-            &self.spins,
-            &self.couplings,
-            &mut self.energies,
-        );
+        self.energies.resize(n_systems, S::Value::default());
+        S::interactions(lattice, &self.spins, &self.couplings, &mut self.energies);
         self.pt
             .reset(n_replicas, n_temps, &self.system_ids, &self.temperatures);
+    }
+
+    /// Validate externally mutable buffers before entering parallel kernels.
+    pub fn validate(
+        &self,
+        lattice: &Lattice,
+        n_replicas: usize,
+        n_temps: usize,
+    ) -> Result<(), String> {
+        let n = n_replicas
+            .checked_mul(n_temps)
+            .ok_or("system count overflow")?;
+        if n == 0
+            || self.spins.len()
+                != n.checked_mul(lattice.n_spins)
+                    .ok_or("spin count overflow")?
+            || self.rngs.len() != n
+            || self.system_ids.len() != n
+            || self.temperatures.len() != n
+            || self.energies.len() != n
+            || self.couplings.len() != lattice.n_spins * lattice.n_neighbors
+            || self.pair_rngs.len() != n_temps * (n_replicas / 2)
+        {
+            return Err("invalid realization buffer dimensions".into());
+        }
+        if self
+            .temperatures
+            .chunks_exact(n_temps)
+            .any(|ladder| ladder != &self.temperatures[..n_temps])
+        {
+            return Err("temperature ladders must agree across replicas".into());
+        }
+        let mut seen = vec![false; n];
+        for (slot, &id) in self.system_ids.iter().enumerate() {
+            if id >= n || seen[id] || id / n_temps != slot / n_temps {
+                return Err("invalid temperature permutation".into());
+            }
+            seen[id] = true;
+        }
+        if self.couplings.iter().any(|x| !x.to_f64().is_finite()) {
+            return Err("couplings must be finite".into());
+        }
+        if self
+            .temperatures
+            .iter()
+            .any(|x| !x.to_f64().is_finite() || x.to_f64() <= 0.0)
+        {
+            return Err("temperatures must be positive and finite".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn temper(
+        &mut self,
+        n_spins: usize,
+        n_replicas: usize,
+        n_temps: usize,
+        schedule: PtSchedule,
+    ) {
+        let first_parity = self.pt.first_parity();
+        for replica in 0..n_replicas {
+            let offset = replica * n_temps;
+            let ids = &mut self.system_ids[offset..offset + n_temps];
+            let temps = &self.temperatures[offset..offset + n_temps];
+            let mut record = |attempt| self.pt.record_attempt(attempt);
+            match schedule {
+                PtSchedule::SingleRandomEdge => crate::mcmc::tempering::parallel_tempering(
+                    &self.energies,
+                    temps,
+                    ids,
+                    n_spins,
+                    &mut self.rngs[offset],
+                    &mut record,
+                ),
+                PtSchedule::FullLadder => crate::mcmc::tempering::parallel_tempering_full_ladder(
+                    &self.energies,
+                    temps,
+                    ids,
+                    n_spins,
+                    &mut self.rngs[offset],
+                    first_parity,
+                    &mut record,
+                ),
+            }
+        }
+        if schedule == PtSchedule::FullLadder {
+            self.pt.advance_parity();
+        }
     }
 
     pub fn pt_edge_attempts(&self) -> &[u64] {
@@ -256,6 +347,11 @@ impl Realization {
     pub fn pt_round_trips(&self) -> &[u64] {
         &self.pt.round_trips
     }
+}
+
+/// Stable disorder stream mapping shared by the Rust and Python interfaces.
+pub fn realization_seed(root: u64, realization: usize) -> u64 {
+    splitmix64(root ^ splitmix64(realization as u64))
 }
 
 #[cfg(test)]

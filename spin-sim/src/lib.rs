@@ -1,4 +1,7 @@
-//! Pure-Rust Ising model Monte Carlo on periodic Bravais lattices.
+//! Pure-Rust Ising and XY Monte Carlo on periodic lattices.
+//!
+//! XY uses [`XySimulation`] and [`XyConfig`] with signed couplings, vector spins,
+//! physical moments and the shared scheduling, cluster and tempering engine.
 //!
 //! # Algorithms
 //!
@@ -71,3 +74,6 @@ pub use statistics::{
     ClusterObservations, ClusterSnapshot, ClusterStats, Diagnostics, EquilCheckpoint,
     GraphObservationSummary, SweepResult,
 };
+
+pub use simulation::realization::{ModelRealization, XyRealization};
+pub use simulation::xy::{XyConfig, XyResult, XySimulation};

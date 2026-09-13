@@ -1,13 +1,16 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+mod execution;
+mod xy;
+use execution::{coupling_count, execute, physics_dict, warmup_sweeps};
+use spin_sim::simulation::realization::realization_seed;
+use spin_sim::simulation::run_sweep_parallel_with_physics;
+use spin_sim::statistics::physics::PhysicsOptions;
 
-use indicatif::{ProgressBar, ProgressStyle};
 use numpy::ndarray::{Array1, Array2, Array3};
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use spin_sim::config::*;
-use spin_sim::{run_sweep_parallel, GraphObservationSummary, Lattice, Realization};
+use spin_sim::{GraphObservationSummary, Lattice, Realization};
 
 #[pyclass]
 struct IsingSimulation {
@@ -17,18 +20,6 @@ struct IsingSimulation {
     n_realizations: usize,
     constructor_seed: u64,
     realizations: Vec<Realization>,
-}
-
-fn splitmix64(mut value: u64) -> u64 {
-    value = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    let mut mixed = value;
-    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    mixed ^ (mixed >> 31)
-}
-
-fn realization_seed(root: u64, realization: usize) -> u64 {
-    splitmix64(root ^ splitmix64(realization as u64))
 }
 
 fn set_graph_observation<'py>(
@@ -113,6 +104,18 @@ impl IsingSimulation {
         neighbor_offsets: Option<Vec<Vec<i64>>>,
         seed: Option<u64>,
     ) -> PyResult<Self> {
+        if lattice_shape.is_empty() || lattice_shape.contains(&0) || n_replicas == Some(0) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "lattice extents and replica count must be positive",
+            ));
+        }
+        if let Some(offsets) = &neighbor_offsets {
+            if offsets.is_empty() || offsets.iter().any(|v| v.len() != lattice_shape.len()) {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "invalid neighbor offsets",
+                ));
+            }
+        }
         let lattice = if let Some(offsets) = neighbor_offsets {
             let offsets: Vec<Vec<isize>> = offsets
                 .into_iter()
@@ -128,28 +131,20 @@ impl IsingSimulation {
 
         let temps_raw = temperatures.as_slice()?;
         let n_temps = temps_raw.len();
-        let coup_shape = couplings.shape();
-        let expected_single: Vec<usize> = lattice
-            .shape
-            .iter()
-            .copied()
-            .chain(std::iter::once(n_neighbors))
-            .collect();
+        if n_temps == 0 || temps_raw.iter().any(|t| !t.is_finite() || *t <= 0.0) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "temperatures must be positive and finite",
+            ));
+        }
 
-        let n_realizations = if coup_shape == expected_single.as_slice() {
-            1
-        } else if coup_shape.len() == expected_single.len() + 1
-            && coup_shape[1..] == *expected_single.as_slice()
-        {
-            coup_shape[0]
-        } else {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "couplings shape {:?} does not match lattice {:?}",
-                coup_shape, expected_single
-            )));
-        };
+        let n_realizations = coupling_count(couplings.shape(), &lattice.shape, n_neighbors)?;
 
         let couplings_raw = couplings.as_slice()?;
+        if couplings_raw.iter().any(|j| !j.is_finite()) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "couplings must be finite",
+            ));
+        }
         let chunk_size = n_spins * n_neighbors;
 
         let constructor_seed = seed.unwrap_or(42);
@@ -192,6 +187,9 @@ impl IsingSimulation {
         sequential=None,
         equilibration_diagnostic=None,
         snapshot_interval=None,
+        collect_physics=false,
+        displacements=None,
+        block_size=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn sample<'py>(
@@ -215,9 +213,12 @@ impl IsingSimulation {
         sequential: Option<bool>,
         equilibration_diagnostic: Option<bool>,
         snapshot_interval: Option<usize>,
+        collect_physics: bool,
+        displacements: Option<Vec<Vec<isize>>>,
+        block_size: Option<usize>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let warmup = warmup_ratio.unwrap_or(0.25);
-        let warmup_sweeps = (n_sweeps as f64 * warmup).round() as usize;
+        let warmup_sweeps = warmup_sweeps(n_sweeps, warmup)?;
         let collect_cluster_stats = collect_cluster_stats.unwrap_or(false);
 
         let sweep_mode_enum =
@@ -286,55 +287,49 @@ impl IsingSimulation {
         let n_replicas = self.n_replicas;
         let n_temps = self.n_temps;
 
-        let pb = ProgressBar::new(n_sweeps as u64);
-        pb.set_style(
-            ProgressStyle::with_template(
-                "{msg} [{bar:40}] {pos}/{len} [{elapsed_precise} < {eta_precise}, {per_sec}]",
-            )
-            .unwrap()
-            .progress_chars("=> "),
-        );
-        pb.set_message("sweeps");
-
-        let lattice = &self.lattice;
-        let realizations = &mut self.realizations;
-        let n_real = self.n_realizations as u64;
-        let counter = AtomicU64::new(0);
-
-        let interrupted = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&interrupted);
-        let _ = ctrlc::set_handler(move || {
-            flag.store(true, Ordering::Relaxed);
-        });
-
-        let agg = py
-            .allow_threads(|| {
-                run_sweep_parallel(
-                    lattice,
-                    realizations,
+        let physics_options = (collect_physics || displacements.is_some() || block_size.is_some())
+            .then(|| PhysicsOptions {
+                displacements: displacements.unwrap_or_default(),
+                block_size,
+                vortices: false,
+            });
+        let agg = execute(
+            py,
+            n_sweeps,
+            self.n_realizations,
+            |interrupted, progress| {
+                run_sweep_parallel_with_physics(
+                    &self.lattice,
+                    &mut self.realizations,
                     n_replicas,
                     n_temps,
                     &config,
-                    &interrupted,
-                    &|| {
-                        let prev = counter.fetch_add(1, Ordering::Relaxed);
-                        if (prev + 1).is_multiple_of(n_real) {
-                            pb.inc(1);
-                        }
-                    },
+                    interrupted,
+                    progress,
+                    physics_options.as_ref(),
                 )
-            })
-            .map_err(|e| {
-                if e == "interrupted" {
-                    pyo3::exceptions::PyKeyboardInterrupt::new_err(e)
-                } else {
-                    pyo3::exceptions::PyValueError::new_err(e)
-                }
-            })?;
-
-        pb.finish();
+            },
+        )?;
 
         let dict = PyDict::new(py);
+        if !agg.per_disorder_physics.is_empty() {
+            let temperatures: Vec<f64> = self.realizations[0].temperatures[..n_temps]
+                .iter()
+                .map(|&t| t as f64)
+                .collect();
+            dict.set_item(
+                "physics",
+                physics_dict(
+                    py,
+                    &self.lattice.shape,
+                    &temperatures,
+                    &agg.per_disorder_physics.iter().collect::<Vec<_>>(),
+                    1,
+                    None,
+                )?,
+            )?;
+        }
+
         dict.set_item("mags", Array1::from(agg.mags).into_pyarray(py))?;
         dict.set_item("mags2", Array1::from(agg.mags2).into_pyarray(py))?;
         dict.set_item("mags4", Array1::from(agg.mags4).into_pyarray(py))?;
@@ -636,5 +631,6 @@ impl IsingSimulation {
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<IsingSimulation>()?;
+    m.add_class::<xy::PyXySimulation>()?;
     Ok(())
 }

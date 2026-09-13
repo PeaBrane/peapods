@@ -2,6 +2,7 @@ use validator::{Validate, ValidationError};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SweepMode {
+    None,
     Metropolis,
     Gibbs,
 }
@@ -10,10 +11,11 @@ impl TryFrom<&str> for SweepMode {
     type Error = String;
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         match s {
+            "none" => Ok(Self::None),
             "metropolis" => Ok(Self::Metropolis),
             "gibbs" => Ok(Self::Gibbs),
             _ => Err(format!(
-                "unknown sweep_mode '{s}', expected 'metropolis' or 'gibbs'"
+                "unknown sweep_mode '{s}', expected 'metropolis', 'gibbs' or 'none'"
             )),
         }
     }

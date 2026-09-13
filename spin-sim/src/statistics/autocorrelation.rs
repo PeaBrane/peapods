@@ -1,16 +1,17 @@
 use crate::config::AutocorrelationBackend;
+use crate::spins::model::Real;
 use rustfft::num_complex::Complex64;
 use rustfft::FftPlanner;
 
-enum AutocorrStorage {
+enum AutocorrStorage<T: Real> {
     Ring {
         ring_len: usize,
-        ring: Vec<Vec<f32>>,
+        ring: Vec<Vec<T>>,
         sum_prod: Vec<Vec<f64>>,
         ring_pos: usize,
     },
     Fft {
-        series: Vec<Vec<f32>>,
+        series: Vec<Vec<T>>,
     },
 }
 
@@ -19,16 +20,18 @@ enum AutocorrStorage {
 /// [`AutocorrAccum::new`] uses the exact bounded-memory ring backend. The FFT
 /// backend is available through simulation configuration and retains the full
 /// measurement history, using O(n_recorded * n_temps) memory.
-pub struct AutocorrAccum {
+pub struct PrecisionAutocorr<T: Real> {
     max_lag: usize,
     n_temps: usize,
     sum_o: Vec<f64>,
     sum_o2: Vec<f64>,
     n_recorded: usize,
-    storage: AutocorrStorage,
+    storage: AutocorrStorage<T>,
 }
 
-impl AutocorrAccum {
+pub type AutocorrAccum = PrecisionAutocorr<f32>;
+
+impl<T: Real> PrecisionAutocorr<T> {
     pub fn new(max_lag: usize, n_temps: usize) -> Self {
         Self::with_backend(max_lag, n_temps, AutocorrelationBackend::Ring, 0)
     }
@@ -44,7 +47,7 @@ impl AutocorrAccum {
                 let ring_len = max_lag + 1;
                 AutocorrStorage::Ring {
                     ring_len,
-                    ring: (0..n_temps).map(|_| vec![0.0; ring_len]).collect(),
+                    ring: (0..n_temps).map(|_| vec![T::default(); ring_len]).collect(),
                     sum_prod: (0..n_temps).map(|_| vec![0.0; max_lag + 1]).collect(),
                     ring_pos: 0,
                 }
@@ -69,9 +72,9 @@ impl AutocorrAccum {
     #[allow(clippy::needless_range_loop)]
     pub fn push(&mut self, values: &[f64]) {
         for t in 0..self.n_temps {
-            let o = values[t] as f32;
-            self.sum_o[t] += o as f64;
-            self.sum_o2[t] += (o as f64) * (o as f64);
+            let o = T::from_f64(values[t]);
+            self.sum_o[t] += o.to_f64();
+            self.sum_o2[t] += (o.to_f64()) * (o.to_f64());
         }
 
         match &mut self.storage {
@@ -84,25 +87,25 @@ impl AutocorrAccum {
                 let pos = *ring_pos;
                 let n_back = self.n_recorded.min(self.max_lag);
                 for t in 0..self.n_temps {
-                    let o = values[t] as f32;
+                    let o = T::from_f64(values[t]);
                     let temp_ring = &mut ring[t];
                     let temp_sum_prod = &mut sum_prod[t];
                     temp_ring[pos] = o;
 
                     let no_wrap = pos.min(n_back);
                     for delta in 0..=no_wrap {
-                        temp_sum_prod[delta] += o as f64 * temp_ring[pos - delta] as f64;
+                        temp_sum_prod[delta] += o.to_f64() * temp_ring[pos - delta].to_f64();
                     }
                     for delta in pos + 1..=n_back {
                         temp_sum_prod[delta] +=
-                            o as f64 * temp_ring[pos + *ring_len - delta] as f64;
+                            o.to_f64() * temp_ring[pos + *ring_len - delta].to_f64();
                     }
                 }
                 *ring_pos = (pos + 1) % *ring_len;
             }
             AutocorrStorage::Fft { series } => {
                 for t in 0..self.n_temps {
-                    series[t].push(values[t] as f32);
+                    series[t].push(T::from_f64(values[t]));
                 }
             }
         }
@@ -123,7 +126,7 @@ impl AutocorrAccum {
         }
     }
 
-    fn finish_fft(&self, series: &[Vec<f32>]) -> Vec<Vec<f64>> {
+    fn finish_fft(&self, series: &[Vec<T>]) -> Vec<Vec<f64>> {
         let fft_len = self
             .n_recorded
             .checked_mul(2)
@@ -149,7 +152,7 @@ impl AutocorrAccum {
 
                 spectrum.fill(Complex64::default());
                 for (value, &sample) in spectrum.iter_mut().zip(&series[t]) {
-                    value.re = sample as f64;
+                    value.re = sample.to_f64();
                 }
                 forward.process_with_scratch(&mut spectrum, &mut scratch);
                 for value in &mut spectrum {

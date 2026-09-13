@@ -1,17 +1,18 @@
+pub(crate) mod driver;
 pub mod realization;
 
 pub use realization::Realization;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
-use crate::config::{ClusterAction, OverlapClusterBuildMode, PtSchedule, SimConfig, SweepMode};
+use crate::config::{ClusterAction, OverlapClusterBuildMode, SimConfig, SweepMode};
 use crate::geometry::Lattice;
+use crate::statistics::physics::{PhysicsCollector, PhysicsOptions};
 use crate::statistics::{
     sokal_tau, AutocorrAccum, ClusterObservations, ClusterSnapshot, ClusterStats, Diagnostics,
     EquilDiagnosticAccum, GraphObservationSummary, OverlapAccum, Statistics, SweepResult,
 };
 use crate::{clusters, mcmc, spins};
-use rayon::prelude::*;
 use validator::Validate;
 
 struct GraphObservationAccum {
@@ -170,6 +171,7 @@ pub fn run_sweep_loop(
         on_sweep,
         realization_idx,
         true,
+        None,
     )
 }
 
@@ -184,8 +186,10 @@ fn run_sweep_loop_impl(
     on_sweep: &(dyn Fn() + Sync),
     realization_idx: usize,
     materialize_disabled_stats: bool,
+    physics_options: Option<&PhysicsOptions>,
 ) -> Result<SweepResult, String> {
     config.validate().map_err(|e| format!("{e}"))?;
+    real.validate(lattice, n_replicas, n_temps)?;
 
     let metropolis_lookup = (config.sweep_mode == SweepMode::Metropolis)
         .then(|| {
@@ -402,13 +406,18 @@ fn run_sweep_loop_impl(
         vec![]
     };
 
-    for sweep_id in 0..n_sweeps {
-        if interrupted.load(Ordering::Relaxed) {
-            return Err("interrupted".to_string());
-        }
-        on_sweep();
-        let record = sweep_id >= warmup_sweeps;
+    let mut physics = physics_options
+        .map(|options| PhysicsCollector::new(lattice, n_temps, options, 1))
+        .transpose()?;
+    let occupied = if physics.is_some() {
+        vec![true; n_spins]
+    } else {
+        vec![]
+    };
 
+    driver::run_sweeps(config, interrupted, on_sweep, |step| {
+        let sweep_id = step.index;
+        let record = step.record;
         match config.sweep_mode {
             SweepMode::Metropolis => mcmc::sweep::metropolis_sweep(
                 lattice,
@@ -420,6 +429,7 @@ fn run_sweep_loop_impl(
                 config.sequential,
                 metropolis_lookup.as_ref(),
             ),
+            SweepMode::None => {}
             SweepMode::Gibbs => mcmc::sweep::gibbs_sweep(
                 lattice,
                 &mut real.spins,
@@ -431,10 +441,7 @@ fn run_sweep_loop_impl(
             ),
         }
 
-        let do_cluster = config
-            .cluster_update
-            .as_ref()
-            .is_some_and(|c| sweep_id % c.interval == 0);
+        let do_cluster = step.cluster;
 
         if do_cluster {
             let cluster_cfg = config.cluster_update.as_ref().unwrap();
@@ -483,9 +490,7 @@ fn run_sweep_loop_impl(
             }
         }
 
-        let pt_this_sweep = config
-            .pt_interval
-            .is_some_and(|interval| sweep_id % interval == 0);
+        let pt_this_sweep = step.temper;
 
         // Recompute from spins so every mutating path has one source of truth;
         // incremental observable accounting is deferred until it can cover all mutations.
@@ -592,6 +597,19 @@ fn run_sweep_loop_impl(
                 }
                 acc.push(&ov_accum.q2_ac_buf);
             }
+        }
+
+        if let Some(collector) = physics.as_mut().filter(|_| record) {
+            for (slot, &system) in real.system_ids.iter().enumerate() {
+                collector.measure(
+                    lattice,
+                    &real.spins[system * n_spins..(system + 1) * n_spins],
+                    &real.couplings,
+                    &occupied,
+                    slot % n_temps,
+                );
+            }
+            collector.end_sweep(n_replicas);
         }
 
         let mut did_overlap_mutate = false;
@@ -754,47 +772,9 @@ fn run_sweep_loop_impl(
                     &mut real.energies,
                 );
             }
-            let first_parity = real.pt.first_parity();
-            let Realization {
-                energies,
-                temperatures,
-                system_ids,
-                rngs,
-                pt,
-                ..
-            } = real;
-            for r in 0..n_replicas {
-                let offset = r * n_temps;
-                let sid_slice = &mut system_ids[offset..offset + n_temps];
-                let temp_slice = &temperatures[offset..offset + n_temps];
-                let mut record = |attempt| {
-                    pt.record_attempt(attempt);
-                };
-                match config.pt_schedule {
-                    PtSchedule::SingleRandomEdge => mcmc::tempering::parallel_tempering(
-                        energies,
-                        temp_slice,
-                        sid_slice,
-                        n_spins,
-                        &mut rngs[offset],
-                        &mut record,
-                    ),
-                    PtSchedule::FullLadder => mcmc::tempering::parallel_tempering_full_ladder(
-                        energies,
-                        temp_slice,
-                        sid_slice,
-                        n_spins,
-                        &mut rngs[offset],
-                        first_parity,
-                        &mut record,
-                    ),
-                }
-            }
-            if config.pt_schedule == PtSchedule::FullLadder {
-                pt.advance_parity();
-            }
+            real.temper(n_spins, n_replicas, n_temps, config.pt_schedule);
         }
-    }
+    })?;
 
     let top_cluster_sizes: Vec<Vec<[f64; 4]>> = if collect_top {
         top4_accum
@@ -848,6 +828,7 @@ fn run_sweep_loop_impl(
             top_cluster_sizes,
         },
         per_disorder_cluster_observations: vec![cluster_observations],
+        per_disorder_physics: physics.map(|p| vec![p.finish()]).unwrap_or_default(),
         diagnostics: Diagnostics {
             mags2_tau,
             overlap2_tau,
@@ -871,40 +852,59 @@ pub fn run_sweep_parallel(
     interrupted: &AtomicBool,
     on_sweep: &(dyn Fn() + Sync),
 ) -> Result<SweepResult, String> {
-    if realizations.len() == 1 {
-        return run_sweep_loop(
+    run_sweep_parallel_with_physics(
+        lattice,
+        realizations,
+        n_replicas,
+        n_temps,
+        config,
+        interrupted,
+        on_sweep,
+        None,
+    )
+}
+
+/// Opt-in physical moments; the legacy entrypoint retains its measurement cost.
+#[allow(clippy::too_many_arguments)]
+pub fn run_sweep_parallel_with_physics(
+    lattice: &Lattice,
+    realizations: &mut [Realization],
+    n_replicas: usize,
+    n_temps: usize,
+    config: &SimConfig,
+    interrupted: &AtomicBool,
+    on_sweep: &(dyn Fn() + Sync),
+    physics: Option<&PhysicsOptions>,
+) -> Result<SweepResult, String> {
+    driver::validate_batch(lattice, realizations, n_replicas, n_temps, config)?;
+    if let Some(options) = physics {
+        PhysicsCollector::new(lattice, n_temps, options, 1)?;
+    }
+    let single = realizations.len() == 1;
+    let mut results = driver::map_realizations(realizations, |idx, real| {
+        run_sweep_loop_impl(
             lattice,
-            &mut realizations[0],
+            real,
             n_replicas,
             n_temps,
             config,
             interrupted,
             on_sweep,
-            0,
-        );
+            idx,
+            single,
+            physics,
+        )
+    })?;
+    if single {
+        return Ok(results.remove(0));
     }
-
-    let results: Vec<Result<SweepResult, String>> = realizations
-        .par_iter_mut()
-        .enumerate()
-        .map(|(idx, real)| {
-            run_sweep_loop_impl(
-                lattice,
-                real,
-                n_replicas,
-                n_temps,
-                config,
-                interrupted,
-                on_sweep,
-                idx,
-                false,
-            )
-        })
-        .collect();
-
-    let mut results: Vec<SweepResult> = results.into_iter().collect::<Result<Vec<_>, _>>()?;
     let snapshots = std::mem::take(&mut results[0].cluster_snapshots);
+    let physics = results
+        .iter_mut()
+        .flat_map(|r| std::mem::take(&mut r.per_disorder_physics))
+        .collect();
     let mut agg = SweepResult::aggregate_without_overlap_samples(&results);
+    agg.per_disorder_physics = physics;
     if !agg.overlap_stats.overlap.is_empty() {
         agg.overlap_stats.per_sample_histogram = results
             .iter_mut()
@@ -943,7 +943,7 @@ mod tests {
     use super::*;
     use crate::config::{
         AutocorrelationBackend, ClusterConfig, ClusterMode, OverlapClusterBuildMode,
-        OverlapClusterConfig,
+        OverlapClusterConfig, PtSchedule,
     };
 
     fn run_with_cluster_stats(collect_stats: bool) -> SweepResult {
@@ -1175,3 +1175,5 @@ mod tests {
         );
     }
 }
+
+pub mod xy;
