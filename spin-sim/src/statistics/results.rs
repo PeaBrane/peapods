@@ -66,6 +66,7 @@ pub struct SweepResult {
     pub energies2: Vec<f64>,
     pub overlap_stats: OverlapStats,
     pub cluster_stats: ClusterStats,
+    pub per_disorder_physics: Vec<super::physics::PhysicsResult>,
     pub per_disorder_cluster_observations: Vec<ClusterObservations>,
     pub diagnostics: Diagnostics,
     pub cluster_snapshots: Vec<ClusterSnapshot>,
@@ -148,6 +149,10 @@ impl SweepResult {
                     .collect(),
             },
             per_disorder_cluster_observations,
+            per_disorder_physics: results
+                .iter()
+                .flat_map(|r| r.per_disorder_physics.iter().cloned())
+                .collect(),
             diagnostics: Diagnostics {
                 mags2_tau: vec![0.0; m2_tau_len],
                 overlap2_tau: vec![0.0; q2_tau_len],

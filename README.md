@@ -8,13 +8,15 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![arXiv](https://img.shields.io/badge/arXiv-2602.19045-b31b1b.svg)](https://arxiv.org/abs/2602.19045)
 
-A Python library for simulating Ising spin systems with modern Monte Carlo methods.
+A Python library for simulating Ising and XY spin systems with modern Monte Carlo methods.
 The core simulation loop is written in Rust (via PyO3) for performance, with a thin Python wrapper for ease of use.
 Currently focused on spin glass simulation, where the combination of parallel tempering, replica cluster moves, and overlap statistics is of particular interest.
 
 ## Features
 
 - Ising ferromagnets and spin glasses on periodic Bravais lattices (hypercubic, triangular, or any custom neighbor offsets)
+- XY vectors with signed couplings, site/bond dilution, embedded SW/Wolff and optional overrelaxation
+- Physical XY thermodynamics, helicity, structure factors, uniform correlation lengths, optional correlations and angle winding
 - Arbitrary, bimodal (±J), or Gaussian coupling distributions
 - Multiple replicas with overlap statistics for spin glass order parameters
 
@@ -83,6 +85,21 @@ default. Set `autocorrelation_backend="fft"` together with
 measurement history and its higher memory use are acceptable.
 
 For a more complete example, check out [examples/energy_vs_temperature.py](examples/energy_vs_temperature.py).
+
+## XY models
+
+The Rust and Python APIs support periodic hypercubic XY systems with finite signed
+couplings. See the [XY guide](docs/xy.md) for conventions, dilution, block errors,
+examples, and bounded comparison with published finite-size measurements.
+CLI and sweep-framework XY integration are deferred.
+
+```python
+from peapods import XY
+
+xy = XY((8, 8), temperatures=[0.6, 1.0, 2.0], seed=42)
+result = xy.sample(1024, collect_blocks=True)
+print(result["helicity_modulus"])
+```
 
 ## Installation
 

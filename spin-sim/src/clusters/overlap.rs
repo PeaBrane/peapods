@@ -160,13 +160,13 @@ fn houdayer_step(
     group_size: usize,
     cluster_mode: ClusterMode,
     action: ClusterAction,
-    csd_out: Option<&mut [Vec<u64>]>,
-    top4_out: Option<&mut [[u32; 4]]>,
-    observation_out: Option<&mut [GraphObservationSlot]>,
+    mut csd_out: Option<&mut [Vec<u64>]>,
+    mut top4_out: Option<&mut [[u32; 4]]>,
+    mut observation_out: Option<&mut [GraphObservationSlot]>,
     sequential: bool,
-    snap_out: Option<&mut [Vec<u32>]>,
-    spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
-    sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
+    mut snap_out: Option<&mut [Vec<u32>]>,
+    mut spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
+    mut sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
 ) {
     let n_spins = lattice.n_spins;
     let n_pairs = n_replicas / 2;
@@ -182,24 +182,33 @@ fn houdayer_step(
         || top4_out.is_some()
         || snap_out.is_some();
 
-    let cp = csd_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
+    let cp = csd_out
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
+        .unwrap_or(0);
     let has_csd = csd_out.is_some();
-    let tp = top4_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
+    let tp = top4_out
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
+        .unwrap_or(0);
     let has_top4 = top4_out.is_some();
     let op = observation_out
-        .as_ref()
-        .map(|s| s.as_ptr() as usize)
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
         .unwrap_or(0);
     let has_observation = observation_out.is_some();
-    let snp = snap_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
+    let snp = snap_out
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
+        .unwrap_or(0);
     let has_snap = snap_out.is_some();
     let spp = spin_snap_out
-        .as_ref()
-        .map(|s| s.as_ptr() as usize)
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
         .unwrap_or(0);
     let sidp = sid_snap_out
-        .as_ref()
-        .map(|s| s.as_ptr() as usize)
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
         .unwrap_or(0);
 
     let work = |task_idx: usize| unsafe {
@@ -356,13 +365,13 @@ fn jorg_step(
     rngs: &mut [Xoshiro256StarStar],
     cluster_mode: ClusterMode,
     action: ClusterAction,
-    csd_out: Option<&mut [Vec<u64>]>,
-    top4_out: Option<&mut [[u32; 4]]>,
-    observation_out: Option<&mut [GraphObservationSlot]>,
+    mut csd_out: Option<&mut [Vec<u64>]>,
+    mut top4_out: Option<&mut [[u32; 4]]>,
+    mut observation_out: Option<&mut [GraphObservationSlot]>,
     sequential: bool,
-    snap_out: Option<&mut [Vec<u32>]>,
-    spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
-    sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
+    mut snap_out: Option<&mut [Vec<u32>]>,
+    mut spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
+    mut sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
 ) {
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
@@ -379,24 +388,33 @@ fn jorg_step(
         || top4_out.is_some()
         || snap_out.is_some();
 
-    let cp = csd_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
+    let cp = csd_out
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
+        .unwrap_or(0);
     let has_csd = csd_out.is_some();
-    let tp = top4_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
+    let tp = top4_out
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
+        .unwrap_or(0);
     let has_top4 = top4_out.is_some();
     let op = observation_out
-        .as_ref()
-        .map(|s| s.as_ptr() as usize)
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
         .unwrap_or(0);
     let has_observation = observation_out.is_some();
-    let snp = snap_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
+    let snp = snap_out
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
+        .unwrap_or(0);
     let has_snap = snap_out.is_some();
     let spp = spin_snap_out
-        .as_ref()
-        .map(|s| s.as_ptr() as usize)
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
         .unwrap_or(0);
     let sidp = sid_snap_out
-        .as_ref()
-        .map(|s| s.as_ptr() as usize)
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
         .unwrap_or(0);
 
     let work = |task_idx: usize| unsafe {
@@ -619,14 +637,14 @@ fn cmr_step(
     rngs: &mut [Xoshiro256StarStar],
     cluster_mode: ClusterMode,
     action: ClusterAction,
-    csd_out: Option<&mut [Vec<u64>]>,
-    top4_out: Option<&mut [[u32; 4]]>,
-    observation_out: Option<&mut [GraphObservationSlot]>,
+    mut csd_out: Option<&mut [Vec<u64>]>,
+    mut top4_out: Option<&mut [[u32; 4]]>,
+    mut observation_out: Option<&mut [GraphObservationSlot]>,
     sequential: bool,
-    snap_out: Option<&mut [Vec<u32>]>,
-    blue_snap_out: Option<&mut [Vec<u32>]>,
-    spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
-    sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
+    mut snap_out: Option<&mut [Vec<u32>]>,
+    mut blue_snap_out: Option<&mut [Vec<u32>]>,
+    mut spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
+    mut sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
 ) {
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
@@ -643,29 +661,38 @@ fn cmr_step(
         || top4_out.is_some()
         || snap_out.is_some();
 
-    let cp = csd_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
+    let cp = csd_out
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
+        .unwrap_or(0);
     let has_csd = csd_out.is_some();
-    let tp = top4_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
+    let tp = top4_out
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
+        .unwrap_or(0);
     let has_top4 = top4_out.is_some();
     let op = observation_out
-        .as_ref()
-        .map(|s| s.as_ptr() as usize)
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
         .unwrap_or(0);
     let has_observation = observation_out.is_some();
-    let snp = snap_out.as_ref().map(|s| s.as_ptr() as usize).unwrap_or(0);
+    let snp = snap_out
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
+        .unwrap_or(0);
     let has_snap = snap_out.is_some();
     let bsnp = blue_snap_out
-        .as_ref()
-        .map(|s| s.as_ptr() as usize)
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
         .unwrap_or(0);
     let has_blue_snap = blue_snap_out.is_some();
     let spp = spin_snap_out
-        .as_ref()
-        .map(|s| s.as_ptr() as usize)
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
         .unwrap_or(0);
     let sidp = sid_snap_out
-        .as_ref()
-        .map(|s| s.as_ptr() as usize)
+        .as_mut()
+        .map(|s| s.as_mut_ptr() as usize)
         .unwrap_or(0);
 
     let work = |task_idx: usize| unsafe {

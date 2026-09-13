@@ -64,3 +64,12 @@ pre-v0.2.1 behavior. No legacy wrapper config types are provided.
 ## Python
 
 For a batteries-included Python interface, see [`peapods`](https://pypi.org/project/peapods/).
+
+
+## XY models
+
+`XySimulation` and `XyConfig` expose periodic hypercubic XY sampling with finite
+signed couplings, embedded SW/Wolff, Metropolis, optional overrelaxation and PT.
+Spins and physical moments use `f64`; the driver and cluster traversal are shared
+with Ising. See the [XY guide](../docs/xy.md) for conventions, dilution, block
+statistics and finite-size validation, and the `XySimulation` Rust API docs.

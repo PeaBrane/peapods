@@ -1,3 +1,4 @@
+use crate::spins::model::Real;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 
@@ -17,9 +18,9 @@ pub struct TemperingAttempt {
 /// `energies`: per-replica average energy (energy per spin)
 /// `n_spins`: total number of spins (for converting to total energy)
 #[cfg_attr(feature = "profile", inline(never))]
-pub fn parallel_tempering(
-    energies: &[f32],
-    temperatures: &[f32],
+pub fn parallel_tempering<T: Real>(
+    energies: &[T],
+    temperatures: &[T],
     system_ids: &mut [usize],
     n_spins: usize,
     rng: &mut Xoshiro256StarStar,
@@ -42,9 +43,9 @@ pub fn parallel_tempering(
 }
 
 #[cfg_attr(feature = "profile", inline(never))]
-pub fn parallel_tempering_full_ladder(
-    energies: &[f32],
-    temperatures: &[f32],
+pub fn parallel_tempering_full_ladder<T: Real>(
+    energies: &[T],
+    temperatures: &[T],
     system_ids: &mut [usize],
     n_spins: usize,
     rng: &mut Xoshiro256StarStar,
@@ -70,9 +71,9 @@ pub fn parallel_tempering_full_ladder(
     }
 }
 
-fn attempt_edge(
-    energies: &[f32],
-    temperatures: &[f32],
+fn attempt_edge<T: Real>(
+    energies: &[T],
+    temperatures: &[T],
     system_ids: &mut [usize],
     n_spins: usize,
     rng: &mut Xoshiro256StarStar,
@@ -85,10 +86,7 @@ fn attempt_edge(
     let left_system = system_ids[temp_id];
     let right_system = system_ids[temp_id + 1];
 
-    let delta = (n_spins as f32) * (energy_2 - energy_1) * (1.0 / temp_1 - 1.0 / temp_2);
-    let log_rand = (rng.gen::<f32>()).ln();
-
-    let accepted = delta >= log_rand;
+    let accepted = T::exchange_accept(energy_1, energy_2, temp_1, temp_2, n_spins, rng);
     if accepted {
         system_ids.swap(temp_id, temp_id + 1);
     }
@@ -135,5 +133,23 @@ mod tests {
             |attempt| edges.push(attempt.edge),
         );
         assert_eq!(edges, vec![1, 3, 0, 2]);
+    }
+}
+
+#[cfg(test)]
+mod sign_tests {
+    use super::*;
+    use rand::SeedableRng;
+    #[test]
+    fn exchange_uses_negative_physical_energy_cache() {
+        // H=(-100,+100) is favorable at (cold,hot), so swapping must reject.
+        let mut ids = vec![0, 1];
+        let mut rng = Xoshiro256StarStar::seed_from_u64(5);
+        let rejected = attempt_edge(&[100.0f64, -100.0], &[0.5, 2.0], &mut ids, 1, &mut rng, 0);
+        assert!(!rejected.accepted);
+        assert_eq!(ids, vec![0, 1]);
+        let accepted = attempt_edge(&[-100.0f64, 100.0], &[0.5, 2.0], &mut ids, 1, &mut rng, 0);
+        assert!(accepted.accepted);
+        assert_eq!(ids, vec![1, 0]);
     }
 }

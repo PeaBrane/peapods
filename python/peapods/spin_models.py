@@ -1,6 +1,6 @@
 import numpy as np
 
-from peapods._core import IsingSimulation
+from peapods._core import IsingSimulation, XYSimulation
 
 GEOMETRIES = {
     "triangular": [[1, 0], [0, 1], [1, -1]],
@@ -21,6 +21,57 @@ def _seed_material(seed):
 
 def _dynamics_seed(seed):
     return _seed_material(seed)[1]
+
+
+def _prepare_temperatures(temperatures, dtype):
+    result = np.array(temperatures, dtype=dtype, copy=True, order="C")
+    if (
+        result.ndim != 1
+        or not result.size
+        or not np.all(np.isfinite(result) & (result > 0))
+    ):
+        raise ValueError(
+            "temperatures must be a nonempty vector of positive finite values"
+        )
+    return result
+
+
+def _prepare_couplings(shape, neighbors, n_disorder, couplings, coupling_seed, dtype):
+    if not isinstance(n_disorder, (int, np.integer)) or n_disorder < 1:
+        raise ValueError("n_disorder must be a positive integer")
+    single_shape = tuple(shape) + (neighbors,)
+    if not isinstance(couplings, str):
+        result = np.array(couplings, dtype=dtype, copy=True, order="C")
+    else:
+        realizations = []
+        for child in coupling_seed.spawn(n_disorder):
+            rng = np.random.default_rng(child)
+            match couplings:
+                case "ferro":
+                    realization = np.ones(single_shape, dtype=dtype)
+                case "bimodal":
+                    realization = (
+                        2 * rng.integers(0, 2, size=single_shape) - 1
+                    ).astype(dtype)
+                case "gaussian":
+                    realization = rng.standard_normal(single_shape).astype(dtype)
+                case _:
+                    raise ValueError(
+                        "couplings must be 'ferro', 'bimodal', 'gaussian', or an array"
+                    )
+            realizations.append(realization)
+        result = realizations[0] if n_disorder == 1 else np.stack(realizations)
+    if result.shape != single_shape and not (
+        result.ndim == len(single_shape) + 1
+        and result.shape[0] > 0
+        and result.shape[1:] == single_shape
+    ):
+        raise ValueError(
+            f"couplings must have shape {single_shape} or (n_disorder, {single_shape})"
+        )
+    if not np.all(np.isfinite(result)):
+        raise ValueError("couplings must be finite")
+    return result
 
 
 class Ising:
@@ -94,36 +145,21 @@ class Ising:
         self.n_spins = int(np.prod(lattice_shape))
         self.n_dims = len(lattice_shape)
         self.n_neighbors = len(neighbor_offsets) if neighbor_offsets else self.n_dims
-        self.temperatures = temperatures.copy().astype(np.float32)
+        self.temperatures = _prepare_temperatures(temperatures, np.float32)
         self.n_temps = len(temperatures)
         self.n_replicas = n_replicas
         self.n_disorder = n_disorder
         self.seed = seed
         coupling_seed, self._constructor_dynamics_seed = _seed_material(seed)
 
-        if isinstance(couplings, np.ndarray):
-            coup = couplings.astype(np.float32)
-        else:
-            single_shape = self.lattice_shape + (self.n_neighbors,)
-            coupling_children = coupling_seed.spawn(n_disorder)
-            realizations = []
-            for child in coupling_children:
-                rng = np.random.default_rng(child)
-                match couplings:
-                    case "ferro":
-                        realization = np.ones(single_shape, dtype=np.float32)
-                    case "bimodal":
-                        realization = (
-                            2 * rng.integers(0, 2, size=single_shape) - 1
-                        ).astype(np.float32)
-                    case "gaussian":
-                        realization = rng.standard_normal(single_shape).astype(
-                            np.float32
-                        )
-                    case _:
-                        raise ValueError("Invalid mode for couplings.")
-                realizations.append(realization)
-            coup = realizations[0] if n_disorder == 1 else np.stack(realizations)
+        coup = _prepare_couplings(
+            self.lattice_shape,
+            self.n_neighbors,
+            n_disorder,
+            couplings,
+            coupling_seed,
+            np.float32,
+        )
 
         self.couplings = coup
         self._sim = IsingSimulation(
@@ -163,6 +199,9 @@ class Ising:
         sequential=False,
         equilibration_diagnostic=False,
         snapshot_interval=None,
+        collect_physics=False,
+        displacements=None,
+        block_size=None,
     ):
         """Run Monte Carlo sampling and compute observables.
 
@@ -266,6 +305,9 @@ class Ising:
             sequential=sequential,
             equilibration_diagnostic=equilibration_diagnostic,
             snapshot_interval=snapshot_interval if oci else None,
+            collect_physics=collect_physics,
+            displacements=displacements,
+            block_size=block_size,
         )
         self.mags = result["mags"]
         self.mags2 = result["mags2"]
@@ -279,6 +321,10 @@ class Ising:
             * (self.energies2_avg - self.energies_avg**2)
             / self.temperatures**2
         )
+
+        if "physics" in result:
+            self.physics = result["physics"]
+            self.heat_capacity = self.physics["heat_capacity"]
 
         if "overlap2" in result:
             self.overlap = result["overlap"]
@@ -360,3 +406,156 @@ class Ising:
     def get_energies(self):
         """Return the mean energies per temperature from the last sample run."""
         return self.energies_avg
+
+
+class XY:
+    """Zero-field XY model on a periodic hypercubic lattice, with signed bonds.
+
+    All physical reductions use float64. Extensive observables are normalized
+    by the original lattice volume, including vacant sites. Uniform magnetic
+    observables do not measure spin-glass order. See ``docs/xy.md`` for moments,
+    disorder averaging, update clocks and the finite-size validation recipe.
+    """
+
+    def __init__(
+        self,
+        lattice_shape,
+        couplings="ferro",
+        temperatures=np.geomspace(0.1, 10, 32),
+        n_replicas=1,
+        n_disorder=1,
+        neighbor_offsets=None,
+        geometry=None,
+        seed=None,
+        occupation=None,
+    ):
+        self.lattice_shape = tuple(lattice_shape)
+        if not self.lattice_shape or any(
+            not isinstance(extent, (int, np.integer)) or extent < 3
+            for extent in self.lattice_shape
+        ):
+            raise ValueError("XY hypercubic extents must be integers at least three")
+        if neighbor_offsets is not None or geometry is not None:
+            raise ValueError("XY currently supports canonical hypercubic lattices only")
+        if not isinstance(n_replicas, (int, np.integer)) or n_replicas < 1:
+            raise ValueError("n_replicas must be a positive integer")
+        self.n_dims = len(self.lattice_shape)
+        self.n_neighbors = self.n_dims
+        self.n_spins = int(np.prod(self.lattice_shape))
+        self.n_replicas = int(n_replicas)
+        self.temperatures = _prepare_temperatures(temperatures, np.float64)
+        self.n_temps = len(self.temperatures)
+        self.seed = seed
+        coupling_seed, self._constructor_dynamics_seed = _seed_material(seed)
+        coup = _prepare_couplings(
+            self.lattice_shape,
+            self.n_dims,
+            n_disorder,
+            couplings,
+            coupling_seed,
+            np.float64,
+        )
+        self.n_disorder = 1 if coup.ndim == self.n_dims + 1 else coup.shape[0]
+        mask_shape = (self.n_disorder,) + self.lattice_shape
+        if occupation is None:
+            mask = np.ones(mask_shape, dtype=bool)
+        else:
+            mask = np.asarray(occupation)
+            if mask.dtype != np.bool_:
+                raise ValueError("occupation must be a Boolean array")
+            if mask.shape == self.lattice_shape:
+                mask = np.broadcast_to(mask, mask_shape)
+            if mask.shape != mask_shape:
+                raise ValueError(
+                    "occupation must match the lattice, optionally with a disorder axis"
+                )
+            mask = np.ascontiguousarray(mask)
+        batch = coup.reshape(
+            (self.n_disorder,) + self.lattice_shape + (self.n_dims,)
+        ).copy()
+        for axis in range(self.n_dims):
+            batch[..., axis] *= mask & np.roll(mask, -1, axis=axis + 1)
+        self.couplings = batch[0] if self.n_disorder == 1 else batch
+        self.occupation = mask[0].copy() if self.n_disorder == 1 else mask.copy()
+        self._sim = XYSimulation(
+            list(self.lattice_shape),
+            self.couplings,
+            self.temperatures,
+            self.n_replicas,
+            mask,
+            self._constructor_dynamics_seed,
+        )
+
+    def reset(self, seed=None):
+        """Reset spins, random streams and tempering; retain couplings and masks."""
+        self._sim.reset(None if seed is None else _dynamics_seed(seed))
+
+    def sample(
+        self,
+        n_sweeps,
+        sweep_mode="metropolis",
+        cluster_update_interval=1,
+        cluster_mode="sw",
+        cluster_updates=1,
+        overrelaxation_sweeps=0,
+        pt_interval=None,
+        pt_schedule="single_random_edge",
+        warmup_ratio=0.25,
+        displacements=None,
+        vortices=False,
+        collect_blocks=False,
+        block_size=128,
+        autocorrelation_max_lag=None,
+        autocorrelation_backend="ring",
+        sequential=False,
+    ):
+        """Sample physical moments, with Metropolis plus embedded SW by default.
+
+        ``n_sweeps`` includes warmup. Set ``sweep_mode="none"`` for cluster-only
+        sampling, or ``cluster_update_interval=None`` for Metropolis only.
+        ``cluster_updates`` is a fixed count per scheduled event. Overrelaxation
+        and tempering are off by default. Blocks retain sums and counts over
+        ``block_size`` measured sweeps; autocorrelation diagnostics use measured
+        energy and m², averaged over replicas at each temperature.
+
+        Returns arrays indexed by temperature (and then direction/displacement).
+        ``per_disorder`` retains individual moments, derived quantities and work
+        counters; optional ``blocks`` and PT diagnostics are nested there.
+        ``angle_vortex_density`` is geometric angle winding on intact plaquettes,
+        not frustration-adjusted vorticity or chirality.
+        """
+        result = self._sim.sample(
+            n_sweeps,
+            sweep_mode=sweep_mode,
+            cluster_update_interval=cluster_update_interval,
+            cluster_mode=cluster_mode,
+            cluster_updates=cluster_updates,
+            overrelaxation_sweeps=overrelaxation_sweeps,
+            pt_interval=pt_interval,
+            pt_schedule=pt_schedule,
+            warmup_ratio=warmup_ratio,
+            displacements=displacements,
+            vortices=vortices,
+            block_size=block_size if collect_blocks else None,
+            autocorrelation_max_lag=autocorrelation_max_lag,
+            autocorrelation_backend=autocorrelation_backend,
+            sequential=sequential,
+        )
+        self.result = result
+        for name in (
+            "energies",
+            "energies2",
+            "mags",
+            "mags2",
+            "mags4",
+            "heat_capacity",
+            "binder_cumulant",
+            "susceptibility",
+            "helicity_modulus",
+            "structure_factor_0",
+            "structure_factor_min",
+            "correlation_length",
+            "correlation_length_ratio",
+        ):
+            setattr(self, name, result[name])
+        return result

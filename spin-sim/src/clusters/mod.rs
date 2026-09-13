@@ -1,4 +1,4 @@
-mod fk;
+pub(crate) mod fk;
 mod overlap;
 mod utils;
 
