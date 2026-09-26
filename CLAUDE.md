@@ -20,3 +20,8 @@ Run: `.venv/bin/python benchmarks/sweep_modes.py`
 
 - Bottleneck is cache pressure + dependent load chains, not compute — see `refs/cache-optimization.md`
 - Sweep ordering options (checkerboard, typewriter, random, etc.) — see `refs/sweep-orderings.md`
+
+## Local Overrides
+
+- In chat responses, prefer inline math rendering for short expressions.
+- If an expression is too long for inline math or hurts readability, place it on its own line instead.
