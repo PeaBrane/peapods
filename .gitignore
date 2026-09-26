@@ -25,5 +25,7 @@ dist/
 **/playground*
 refs/
 notes/
+/output/
+/tmp/
 *.sh
 /sweep*.toml
