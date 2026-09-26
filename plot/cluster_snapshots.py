@@ -47,7 +47,7 @@ def load_snapshots(path):
     return result
 
 
-MIN_CLUSTER_SIZE = 10
+MIN_CLUSTER_FRAC = 0.02
 BLUE = np.array([0.2, 0.5, 1.0])
 RED = np.array([0.9, 0.2, 0.2])
 GREEN = np.array([0.2, 0.8, 0.3])
@@ -63,7 +63,7 @@ def cluster_image(snaps, snap_idx, temp_idx):
     has_blue = "blue_ids" in snaps
 
     _, inverse, counts = np.unique(grey_ids, return_inverse=True, return_counts=True)
-    in_grey = counts[inverse] >= MIN_CLUSTER_SIZE
+    in_grey = counts[inverse] >= int(n_spins * MIN_CLUSTER_FRAC)
 
     img = np.ones((n_spins, 3))
 
@@ -72,14 +72,33 @@ def cluster_image(snaps, snap_idx, temp_idx):
         _, b_inv, b_counts = np.unique(
             blue_ids, return_inverse=True, return_counts=True
         )
-        in_blue = b_counts[b_inv] >= MIN_CLUSTER_SIZE
+        in_blue = b_counts[b_inv] >= int(n_spins * MIN_CLUSTER_FRAC)
 
         img[in_grey] = RED
         img[in_blue] = BLUE
     else:
         img[in_grey] = GREEN
 
-    return img.reshape(*shape, 3)
+    img = img.reshape(*shape, 3)
+
+    # Black boundary overlay for large blue clusters (> 25% of lattice)
+    if has_blue:
+        bid = blue_ids.reshape(shape)
+        b_roots, b_inv, b_counts = np.unique(
+            bid, return_inverse=True, return_counts=True
+        )
+        b_sizes = b_counts[b_inv].reshape(shape)
+        in_large_blue = b_sizes >= n_spins * 0.02
+
+        boundary = in_large_blue & (
+            (bid != np.roll(bid, 1, axis=0))
+            | (bid != np.roll(bid, -1, axis=0))
+            | (bid != np.roll(bid, 1, axis=1))
+            | (bid != np.roll(bid, -1, axis=1))
+        )
+        img[boundary] = 0.0
+
+    return img
 
 
 def plot_single(snaps, snap_idx, temp_idx, ax):
