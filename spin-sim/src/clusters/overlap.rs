@@ -912,63 +912,45 @@ fn cmr_step(
                 }
             }
 
-            // === Phase 2: Grey cluster (extend from blue frontier) ===
-            // Re-seed BFS from all blue sites; in_cluster prevents re-adding them.
-            for (i, &in_c) in in_cluster.iter().enumerate() {
-                if in_c {
-                    stack.push(i);
-                }
-            }
+            // === Phase 2: Grey cluster (extend from the flipped blue cluster) ===
+            // Edges at the blue cluster had their blue bond decided in phase 1, so only
+            // red bonds can still attach there. Sites reached through red bonds sample
+            // both bond types afresh: blue on doubly satisfied edges (prob 1-r²) and
+            // red on singly satisfied ones (prob 1-r). The grey cluster must absorb
+            // both, or the grey flip breaks detailed balance.
+            let in_blue = in_cluster.clone();
+            stack.extend((0..n_spins).filter(|&i| in_blue[i]));
 
-            // Continue BFS with red bond rule (singly-satisfied, prob 1-r)
+            let mut grey_bond = |site: usize, nb: usize, coupling: f32| -> bool {
+                let a_sat =
+                    *sp_ptr.add(base_a + site) as f32 * *sp_ptr.add(base_a + nb) as f32 * coupling
+                        > 0.0;
+                let b_sat =
+                    *sp_ptr.add(base_b + site) as f32 * *sp_ptr.add(base_b + nb) as f32 * coupling
+                        > 0.0;
+                if a_sat != b_sat {
+                    let r = (-2.0 * coupling.abs() / temp).exp();
+                    return rng.gen::<f32>() < 1.0 - r;
+                }
+                if !a_sat || in_blue[site] {
+                    return false;
+                }
+                let r = (-2.0 * coupling.abs() / temp).exp();
+                rng.gen::<f32>() < 1.0 - r * r
+            };
+
             while let Some(site) = stack.pop() {
                 for d in 0..lattice.n_neighbors {
                     let fwd = lattice.neighbor_fwd(site, d);
-                    if !in_cluster[fwd] {
-                        let coupling = couplings[site * n_neighbors + d];
-
-                        let a_sat = *sp_ptr.add(base_a + site) as f32
-                            * *sp_ptr.add(base_a + fwd) as f32
-                            * coupling
-                            > 0.0;
-                        let b_sat = *sp_ptr.add(base_b + site) as f32
-                            * *sp_ptr.add(base_b + fwd) as f32
-                            * coupling
-                            > 0.0;
-
-                        let eligible = a_sat != b_sat;
-                        let activate = eligible && {
-                            let r = (-2.0 * coupling.abs() / temp).exp();
-                            rng.gen::<f32>() < 1.0 - r
-                        };
-                        if activate {
-                            in_cluster[fwd] = true;
-                            stack.push(fwd);
-                        }
+                    if !in_cluster[fwd] && grey_bond(site, fwd, couplings[site * n_neighbors + d]) {
+                        in_cluster[fwd] = true;
+                        stack.push(fwd);
                     }
 
                     let bwd = lattice.neighbor_bwd(site, d);
-                    if !in_cluster[bwd] {
-                        let coupling = couplings[bwd * n_neighbors + d];
-
-                        let a_sat = *sp_ptr.add(base_a + site) as f32
-                            * *sp_ptr.add(base_a + bwd) as f32
-                            * coupling
-                            > 0.0;
-                        let b_sat = *sp_ptr.add(base_b + site) as f32
-                            * *sp_ptr.add(base_b + bwd) as f32
-                            * coupling
-                            > 0.0;
-
-                        let eligible = a_sat != b_sat;
-                        let activate = eligible && {
-                            let r = (-2.0 * coupling.abs() / temp).exp();
-                            rng.gen::<f32>() < 1.0 - r
-                        };
-                        if activate {
-                            in_cluster[bwd] = true;
-                            stack.push(bwd);
-                        }
+                    if !in_cluster[bwd] && grey_bond(site, bwd, couplings[bwd * n_neighbors + d]) {
+                        in_cluster[bwd] = true;
+                        stack.push(bwd);
                     }
                 }
             }
@@ -994,5 +976,157 @@ fn cmr_step(
         (0..tasks.len()).for_each(work);
     } else {
         (0..tasks.len()).into_par_iter().for_each(work);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
+
+    // At this temperature one step of a red-only grey closure, or of one that re-samples
+    // blue bonds at the flipped blue cluster, misses the exact energy by more than 15
+    // standard errors on the 2x2 torus.
+    const TEMP: f32 = 3.0;
+    const TRIALS: usize = 40_000;
+
+    fn couplings(lattice: &Lattice) -> Vec<f32> {
+        const VALUES: [f32; 8] = [0.9, -1.3, 0.4, -0.7, 1.1, -0.2, 0.6, -1.5];
+        (0..lattice.n_spins * lattice.n_neighbors)
+            .map(|k| VALUES[k % VALUES.len()] * (1.0 + 0.1 * (k / VALUES.len()) as f32))
+            .collect()
+    }
+
+    fn bond_sum(lattice: &Lattice, couplings: &[f32], s: &[i8]) -> f64 {
+        let mut total = 0.0;
+        for i in 0..lattice.n_spins {
+            for d in 0..lattice.n_neighbors {
+                let j = lattice.neighbor_fwd(i, d);
+                total +=
+                    (couplings[i * lattice.n_neighbors + d] * s[i] as f32 * s[j] as f32) as f64;
+            }
+        }
+        total
+    }
+
+    fn state(n: usize, bits: usize) -> Vec<i8> {
+        (0..n)
+            .map(|i| if (bits >> i) & 1 == 1 { 1 } else { -1 })
+            .collect()
+    }
+
+    /// Mean and variance of (e_a + e_b, q^2) under two independent Boltzmann replicas.
+    fn exact_moments(lattice: &Lattice, couplings: &[f32], p: &[f64]) -> [(f64, f64); 2] {
+        let n = lattice.n_spins;
+        let states: Vec<Vec<i8>> = (0..p.len()).map(|b| state(n, b)).collect();
+        let e: Vec<f64> = states
+            .iter()
+            .map(|s| bond_sum(lattice, couplings, s) / n as f64)
+            .collect();
+        let (mut m, mut m2) = ([0.0; 2], [0.0; 2]);
+        for (x, sx) in states.iter().enumerate() {
+            for (y, sy) in states.iter().enumerate() {
+                let w = p[x] * p[y];
+                let q = sx.iter().zip(sy).map(|(a, b)| (a * b) as f64).sum::<f64>() / n as f64;
+                for (k, obs) in [e[x] + e[y], q * q].into_iter().enumerate() {
+                    m[k] += w * obs;
+                    m2[k] += w * obs * obs;
+                }
+            }
+        }
+        [(m[0], m2[0] - m[0] * m[0]), (m[1], m2[1] - m[1] * m[1])]
+    }
+
+    /// Draws replica pairs exactly from the Boltzmann law, applies one overlap move and
+    /// checks that energy and q^2 keep their Boltzmann means. A stationary move must
+    /// preserve every expectation after a single step.
+    fn assert_preserves_boltzmann(
+        shape: Vec<usize>,
+        mode: OverlapClusterBuildMode,
+        cluster_mode: ClusterMode,
+        with_stats: bool,
+    ) {
+        let lattice = Lattice::new(shape.clone());
+        let n = lattice.n_spins;
+        let couplings = couplings(&lattice);
+        let weights: Vec<f64> = (0..1usize << n)
+            .map(|b| (bond_sum(&lattice, &couplings, &state(n, b)) / TEMP as f64).exp())
+            .collect();
+        let z: f64 = weights.iter().sum();
+        let p: Vec<f64> = weights.iter().map(|w| w / z).collect();
+        let cdf: Vec<f64> = p
+            .iter()
+            .scan(0.0, |acc, &x| {
+                *acc += x;
+                Some(*acc)
+            })
+            .collect();
+        let exact = exact_moments(&lattice, &couplings, &p);
+
+        let mut draw_rng = Xoshiro256StarStar::seed_from_u64(7);
+        let mut rngs = vec![Xoshiro256StarStar::seed_from_u64(11)];
+        let mut top4 = vec![[0u32; 4]; 1];
+        let mut spins = vec![0i8; 2 * n];
+        let mut sums = [0.0f64; 2];
+        for _ in 0..TRIALS {
+            for replica in 0..2 {
+                let u: f64 = draw_rng.gen();
+                let bits = cdf.partition_point(|&c| c < u).min(p.len() - 1);
+                spins[replica * n..(replica + 1) * n].copy_from_slice(&state(n, bits));
+            }
+            overlap_update(
+                &lattice,
+                &mut spins,
+                &couplings,
+                &[TEMP],
+                &[0, 1],
+                2,
+                1,
+                &mut rngs,
+                &mode,
+                cluster_mode,
+                ClusterAction::Update,
+                None,
+                with_stats.then_some(top4.as_mut_slice()),
+                None,
+                true,
+                None,
+                None,
+                None,
+                None,
+            );
+            let (a, b) = spins.split_at(n);
+            let q = a.iter().zip(b).map(|(x, y)| (x * y) as f64).sum::<f64>() / n as f64;
+            sums[0] +=
+                (bond_sum(&lattice, &couplings, a) + bond_sum(&lattice, &couplings, b)) / n as f64;
+            sums[1] += q * q;
+        }
+        for (k, name) in ["energy", "q^2"].iter().enumerate() {
+            let (mean, var) = exact[k];
+            let observed = sums[k] / TRIALS as f64;
+            let se = (var / TRIALS as f64).sqrt();
+            assert!(
+                (observed - mean).abs() < 5.0 * se,
+                "{mode:?} {cluster_mode:?} stats={with_stats} {shape:?}: {name} {observed:.5} vs exact {mean:.5} (se {se:.5})"
+            );
+        }
+    }
+
+    #[test]
+    fn overlap_moves_preserve_boltzmann() {
+        let modes = [
+            OverlapClusterBuildMode::Houdayer(2),
+            OverlapClusterBuildMode::Jorg,
+            OverlapClusterBuildMode::Cmr,
+        ];
+        for shape in [vec![2, 2], vec![3, 2]] {
+            for mode in &modes {
+                for cluster_mode in [ClusterMode::Wolff, ClusterMode::Sw] {
+                    for with_stats in [false, true] {
+                        assert_preserves_boltzmann(shape.clone(), *mode, cluster_mode, with_stats);
+                    }
+                }
+            }
+        }
     }
 }
