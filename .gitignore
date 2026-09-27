@@ -28,4 +28,3 @@ notes/
 /output/
 /tmp/
 *.sh
-/sweep*.toml
