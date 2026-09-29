@@ -1,18 +1,9 @@
-use crate::execution::{coupling_count, execute, physics_dict, set_array, warmup_sweeps};
+use crate::execution::{
+    coupling_count, execute, physics_dict, pt_delta, pt_snapshot, set_array, warmup_sweeps,
+};
 use numpy::{PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use pyo3::{prelude::*, types::PyDict};
-use spin_sim::{
-    config::*, statistics::physics::PhysicsOptions, XyConfig, XyRealization, XySimulation,
-};
-
-/// Cumulative PT edge attempts, edge acceptances and round trips.
-fn pt_counters(real: &XyRealization) -> [&[u64]; 3] {
-    [
-        real.pt_edge_attempts(),
-        real.pt_edge_acceptances(),
-        real.pt_round_trips(),
-    ]
-}
+use spin_sim::{config::*, statistics::physics::PhysicsOptions, XyConfig, XySimulation};
 
 #[pyclass(name = "XYSimulation")]
 pub(crate) struct PyXySimulation {
@@ -120,12 +111,7 @@ impl PyXySimulation {
             },
         };
         // PT counters persist in the realizations; report this call's increments.
-        let pt_before: Vec<_> = self
-            .model
-            .realizations
-            .iter()
-            .map(|r| pt_counters(r).map(<[u64]>::to_vec))
-            .collect();
+        let pt_before = pt_snapshot(&self.model.realizations);
         let result = execute(
             py,
             n_sweeps,
@@ -185,19 +171,7 @@ impl PyXySimulation {
         }
         if pt_interval.is_some() {
             let pt = PyDict::new(py);
-            let delta = |which: usize| -> Vec<u64> {
-                self.model
-                    .realizations
-                    .iter()
-                    .zip(&pt_before)
-                    .flat_map(|(r, before)| {
-                        pt_counters(r)[which]
-                            .iter()
-                            .zip(&before[which])
-                            .map(|(a, b)| a - b)
-                    })
-                    .collect()
-            };
+            let delta = |which| pt_delta(&self.model.realizations, &pt_before, which);
             for (which, name) in ["edge_attempts", "edge_acceptances"]
                 .into_iter()
                 .enumerate()

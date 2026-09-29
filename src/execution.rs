@@ -5,7 +5,9 @@ use numpy::{
     IntoPyArray,
 };
 use pyo3::{prelude::*, types::PyDict};
+use spin_sim::spins::model::Spin;
 use spin_sim::statistics::physics::{PhysicsResult, PhysicsValues};
+use spin_sim::ModelRealization;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex, OnceLock, Weak,
@@ -246,6 +248,43 @@ pub(crate) fn coupling_count(
     Err(pyo3::exceptions::PyValueError::new_err(format!(
         "couplings shape {shape:?} does not match lattice {expected:?}"
     )))
+}
+
+/// Lifetime PT edge attempts, edge acceptances and round trips of one realization.
+///
+/// They persist across `sample()` calls; bindings report each call's increments.
+pub(crate) fn pt_counters<S: Spin>(real: &ModelRealization<S>) -> [&[u64]; 3] {
+    [
+        real.pt_edge_attempts(),
+        real.pt_edge_acceptances(),
+        real.pt_round_trips(),
+    ]
+}
+
+/// Per-realization snapshot of [`pt_counters`].
+pub(crate) fn pt_snapshot<S: Spin>(reals: &[ModelRealization<S>]) -> Vec<[Vec<u64>; 3]> {
+    reals
+        .iter()
+        .map(|real| pt_counters(real).map(<[u64]>::to_vec))
+        .collect()
+}
+
+/// Increments of counter `which` since `before`, concatenated over realizations.
+pub(crate) fn pt_delta<S: Spin>(
+    reals: &[ModelRealization<S>],
+    before: &[[Vec<u64>; 3]],
+    which: usize,
+) -> Vec<u64> {
+    reals
+        .iter()
+        .zip(before)
+        .flat_map(|(real, before)| {
+            pt_counters(real)[which]
+                .iter()
+                .zip(&before[which])
+                .map(|(now, then)| now - then)
+        })
+        .collect()
 }
 
 pub(crate) fn warmup_sweeps(n: usize, ratio: f64) -> PyResult<usize> {

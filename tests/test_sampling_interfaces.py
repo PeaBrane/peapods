@@ -106,7 +106,10 @@ def test_cmr_observe_and_full_ladder_pt_results():
         pt_schedule="full_ladder",
         warmup_ratio=0,
     )
-    assert np.all(continued["per_disorder"]["parallel_tempering"]["edge_attempts"] == 6)
+    # Counters report this call's increments, not the running total (4 + 2).
+    continued_pt = continued["per_disorder"]["parallel_tempering"]
+    assert np.all(continued_pt["edge_attempts"] == 2)
+    assert np.all(continued_pt["edge_acceptances"] <= continued_pt["edge_attempts"])
 
     model.reset()
     reset = model.sample(
