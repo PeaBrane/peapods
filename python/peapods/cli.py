@@ -666,8 +666,11 @@ def print_table(model, has_overlap, has_csd):
         cols.append(f"{'Overlap Binder':>15}")
     if has_csd:
         cols.append(f"{'Cluster Size':>14}")
-    if has_top4:
-        cols.append(f"{'Top-4 Clusters':>30}")
+    # One column per overlap mode: a mode that never ran reports zeros.
+    n_top4 = len(model.top_cluster_sizes) if has_top4 else 0
+    for mode in range(n_top4):
+        label = "Top-4 Clusters" if n_top4 == 1 else f"Top-4 Clusters [{mode}]"
+        cols.append(f"{label:>30}")
 
     header = "  ".join(cols)
     print(header)
@@ -684,8 +687,8 @@ def print_table(model, has_overlap, has_csd):
             row.append(f"{model.sg_binder[i]:15.6f}")
         if has_csd:
             row.append(f"{model.mean_cluster_size[i]:14.2f}")
-        if has_top4:
-            t = model.top_cluster_sizes[0][i]
+        for mode in range(n_top4):
+            t = model.top_cluster_sizes[mode][i]
             row.append(f"({t[0]:.3f}, {t[1]:.3f}, {t[2]:.3f}, {t[3]:.3f})".rjust(30))
         print("  ".join(row))
 
