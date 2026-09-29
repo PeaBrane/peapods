@@ -571,15 +571,11 @@ fn run_sweep_loop_impl(
         }
 
         if equil_diag {
-            if n_pairs > 0 {
-                equil_accum
-                    .as_mut()
-                    .unwrap()
-                    .push(&diag_e_buf, &ov_accum.diag_ql_buf);
-            } else {
-                let zeros = vec![0.0f32; n_temps];
-                equil_accum.as_mut().unwrap().push(&diag_e_buf, &zeros);
-            }
+            // `diag_ql_buf` stays zero when there are no replica pairs to collect.
+            equil_accum
+                .as_mut()
+                .unwrap()
+                .push(&diag_e_buf, &ov_accum.diag_ql_buf);
         }
 
         if record {

@@ -250,12 +250,19 @@ class Ising:
                 collecting statistics. Default 0.25.
             collect_cluster_stats: If `True`, collect FK cluster size
                 distribution and top-4 overlap cluster sizes.
+            autocorrelation_max_lag: If set, estimate the integrated
+                autocorrelation times `mags2_tau` (and `overlap2_tau` with
+                `n_replicas >= 2`) in measured sweeps, using lags up to this value
+                (capped at a quarter of the measured sweeps).
             autocorrelation_backend: `"ring"` for exact bounded-memory
                 accumulation or `"fft"` to retain the full measurement history
                 and evaluate autocorrelation with an FFT.
             sequential: If `True`, disable inner-loop parallelism over
                 replicas/temperatures. Use when outer-level parallelism over
                 disorder realizations already saturates all physical cores.
+            equilibration_diagnostic: If `True`, record replica-averaged energy
+                and link overlap over log-binned windows for
+                [`equilibration_delta`][peapods.Ising.equilibration_delta].
 
         Returns:
             Raw results dictionary with keys like `"mags"`, `"energies"`, etc.
@@ -383,15 +390,24 @@ class Ising:
         return result
 
     def equilibration_delta(self, j_squared=1.0):
-        """Compute equilibration diagnostic Δ(t) = e(t) - J²β z (1 - q_l(t)).
+        """Compute the equilibration diagnostic Δ = e - J²β (N_b/N) (1 - q_l).
 
-        Δ approaches zero as the system thermalizes (Zhu et al. 2015).
-        Note: the Rust energy convention is e = +Σ J s_i s_j / N (no minus
-        sign), so the sign here is flipped relative to the Hamiltonian form.
+        For Gaussian couplings of variance J², integrating by parts over the
+        disorder gives the equilibrium identity [<e>] = J²β (N_b/N) (1 - [<q_l>]),
+        where e = -H/N is the stored energy (interaction sum per spin), q_l the
+        link overlap and N_b/N = `n_neighbors` bonds per spin (Katzgraber,
+        Palassini & Young, PRB 63, 184422 (2001)). The identity does not hold for
+        bimodal couplings, so Δ need not vanish there even in equilibrium.
+
+        Each checkpoint t averages over the last ⌈t/2⌉ sweeps, i.e. the
+        log-binned window [2^(k-1), 2^k) at t = 2^k. From random initial
+        states both e and q_l rise toward equilibrium, so Δ approaches zero from
+        below; the simulation is considered thermalized once Δ agrees with zero
+        within error bars for the last few windows (Zhu, Ochoa & Katzgraber,
+        PRL 115, 077201 (2015)).
 
         Args:
-            j_squared: Average squared coupling ⟨J²⟩. 1.0 for bimodal and
-                Gaussian (unit variance) spin glasses.
+            j_squared: Coupling variance J². 1.0 for `couplings="gaussian"`.
 
         Returns:
             Tuple of (sweeps, delta) where sweeps has shape ``(n_checkpoints,)``

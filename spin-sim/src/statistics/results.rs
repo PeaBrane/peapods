@@ -45,7 +45,8 @@ pub struct Diagnostics {
     /// Integrated autocorrelation time τ_int(q²) per temperature.
     /// Empty if autocorrelation_max_lag is None or n_replicas < 2.
     pub overlap2_tau: Vec<f64>,
-    /// Equilibration diagnostic checkpoints (energy + link overlap running averages).
+    /// Equilibration diagnostic checkpoints: energy and link overlap averaged over
+    /// the log-binned window of each checkpoint (see [`EquilCheckpoint`]).
     /// Empty if equilibration_diagnostic is false.
     pub equil_checkpoints: Vec<EquilCheckpoint>,
 }
