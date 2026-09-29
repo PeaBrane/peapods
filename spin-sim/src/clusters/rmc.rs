@@ -34,6 +34,7 @@ pub fn rmc_update(
     system_ids: &[usize],
     n_replicas: usize,
     n_temps: usize,
+    active_temps: &[bool],
     rngs: &mut [Xoshiro256StarStar],
     cluster_mode: ClusterMode,
     sequential: bool,
@@ -46,7 +47,11 @@ pub fn rmc_update(
     for parity in 0..2 {
         let n_edges = n_temps.saturating_sub(parity) / 2;
         let work = |task: usize| unsafe {
-            let slot = (task / n_edges) * n_temps + parity + 2 * (task % n_edges);
+            let t = parity + 2 * (task % n_edges);
+            if !(active_temps[t] && active_temps[t + 1]) {
+                return;
+            }
+            let slot = (task / n_edges) * n_temps + t;
             let rng = &mut *(rp as *mut Xoshiro256StarStar).add(slot);
             let sp_ptr = sp as *mut i8;
             let base_a = system_ids[slot] * n_spins;

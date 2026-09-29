@@ -42,6 +42,7 @@ fn every_overlap_mode_keeps_top_cluster_shape_when_one_never_measures() {
         action: ClusterAction::Update,
         collect_stats: true,
         snapshot_interval: None,
+        max_temperature: None,
     });
     let mut reals = realizations(&lattice, &temps, 2, 2);
     let result = run_sweep_parallel(

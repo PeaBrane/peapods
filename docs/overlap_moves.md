@@ -122,6 +122,11 @@ parallel tempering every sweep, with 16 temperatures.
   best on par with PT alone at these sizes. Houdayer (2001) reports much larger gains
   in 2D for L = 100 at T = 0.1 with 32 replicas per temperature, a regime this
   benchmark does not cover.
+- **Restrict same-temperature moves to low temperatures** with
+  `overlap_cluster_max_temperature` (Zhu, Ochoa & Katzgraber, PRL 115, 077201 (2015)):
+  their clusters percolate, and the moves stop helping, well below T_c in 3D, so
+  applying them only there removes most of their cost. For `rmc` the cutoff selects
+  edges whose two temperatures both qualify.
 - **`pairN` and `jorgN`** are valid but no better than `houd2` and `jorg`: their clusters
   are unions over several pairs and percolate even more readily.
 - **Measure τ on replica-symmetric observables.** An autocorrelation time measured on

@@ -180,6 +180,7 @@ impl IsingSimulation {
         overlap_cluster_build_mode=None,
         overlap_cluster_mode=None,
         overlap_cluster_action=None,
+        overlap_cluster_max_temperature=None,
         warmup_ratio=None,
         collect_cluster_stats=None,
         autocorrelation_max_lag=None,
@@ -206,6 +207,7 @@ impl IsingSimulation {
         overlap_cluster_build_mode: Option<&str>,
         overlap_cluster_mode: Option<&str>,
         overlap_cluster_action: Option<&str>,
+        overlap_cluster_max_temperature: Option<f32>,
         warmup_ratio: Option<f64>,
         collect_cluster_stats: Option<bool>,
         autocorrelation_max_lag: Option<usize>,
@@ -266,6 +268,7 @@ impl IsingSimulation {
                     action,
                     collect_stats: collect_cluster_stats || action == ClusterAction::Observe,
                     snapshot_interval,
+                    max_temperature: overlap_cluster_max_temperature,
                 })
             })
             .transpose()?;

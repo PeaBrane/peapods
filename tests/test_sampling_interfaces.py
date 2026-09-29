@@ -314,3 +314,28 @@ def test_run_sweep_child_seed_and_npz_flattening_are_stable(tmp_path):
         assert "4x4_per_disorder_cluster_observations_fk_observation_count" in saved
         assert "4x4_per_disorder_pt_edge_attempts" in saved
         assert all(saved[key].dtype != object for key in saved.files)
+
+
+def test_overlap_max_temperature_limits_moves():
+    temperatures = np.array([0.5, 1.0, 3.0], dtype=np.float32)
+    model = Ising(
+        (6, 6), couplings="bimodal", temperatures=temperatures, n_replicas=2, seed=5
+    )
+    model.sample(
+        20,
+        overlap_cluster_update_interval=1,
+        overlap_cluster_build_mode="houdayer",
+        overlap_cluster_mode="sw",
+        overlap_cluster_max_temperature=1.0,
+        collect_cluster_stats=True,
+        warmup_ratio=0.0,
+    )
+    top4 = np.asarray(model.top_cluster_sizes)[0]
+    assert top4[:2].sum() > 0
+    assert np.all(top4[2] == 0)
+    with pytest.raises(ValueError, match="max_temperature"):
+        model.sample(
+            5,
+            overlap_cluster_update_interval=1,
+            overlap_cluster_max_temperature=-1.0,
+        )

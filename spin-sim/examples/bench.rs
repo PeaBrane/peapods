@@ -119,6 +119,7 @@ fn main() {
                 action: ClusterAction::Update,
                 collect_stats: false,
                 snapshot_interval: None,
+                max_temperature: None,
             }),
         ),
         "sw_pt" => (
@@ -145,6 +146,7 @@ fn main() {
                 action: ClusterAction::Update,
                 collect_stats: false,
                 snapshot_interval: None,
+                max_temperature: None,
             }),
         ),
         // Any other overlap build mode string, e.g. "pair4", "jorg4" or "rmc", with PT.
@@ -159,6 +161,7 @@ fn main() {
                 action: ClusterAction::Update,
                 collect_stats: false,
                 snapshot_interval: None,
+                max_temperature: None,
             }),
         ),
     };

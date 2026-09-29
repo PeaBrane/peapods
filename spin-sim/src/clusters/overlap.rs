@@ -11,6 +11,8 @@ use rayon::prelude::*;
 
 struct GroupTasks {
     systems: Vec<usize>,
+    /// Temperature slots that receive moves.
+    temps: Vec<usize>,
     n_replicas: usize,
     n_groups: usize,
     group_size: usize,
@@ -19,12 +21,12 @@ struct GroupTasks {
 impl GroupTasks {
     #[inline]
     fn len(&self) -> usize {
-        self.systems.len() / self.n_replicas * self.n_groups
+        self.temps.len() * self.n_groups
     }
 
     #[inline]
     fn group(&self, task_idx: usize) -> (usize, usize, &[usize]) {
-        let t = task_idx / self.n_groups;
+        let t = self.temps[task_idx / self.n_groups];
         let g = task_idx % self.n_groups;
         let start = t * self.n_replicas + g * self.group_size;
         (t, g, &self.systems[start..start + self.group_size])
@@ -39,6 +41,7 @@ fn build_tasks(
     group_size: usize,
     rngs: &mut [Xoshiro256StarStar],
     n_pairs: usize,
+    active_temps: &[bool],
 ) -> GroupTasks {
     let n_groups = n_replicas / group_size;
     let mut systems = Vec::with_capacity(n_temps * n_replicas);
@@ -49,6 +52,8 @@ fn build_tasks(
     }
     GroupTasks {
         systems,
+        // Every temperature is still shuffled above, so masking keeps RNG use unchanged.
+        temps: (0..n_temps).filter(|&t| active_temps[t]).collect(),
         n_replicas,
         n_groups,
         group_size,
@@ -69,6 +74,7 @@ pub fn overlap_update(
     system_ids: &[usize],
     n_replicas: usize,
     n_temps: usize,
+    active_temps: &[bool],
     rngs: &mut [Xoshiro256StarStar],
     mode: &OverlapClusterBuildMode,
     cluster_mode: ClusterMode,
@@ -90,6 +96,7 @@ pub fn overlap_update(
             system_ids,
             n_replicas,
             n_temps,
+            active_temps,
             rngs,
             *group_size,
             matches!(mode, OverlapClusterBuildMode::Pair(_)),
@@ -111,6 +118,7 @@ pub fn overlap_update(
             system_ids,
             n_replicas,
             n_temps,
+            active_temps,
             rngs,
             *group_size,
             cluster_mode,
@@ -131,6 +139,7 @@ pub fn overlap_update(
             system_ids,
             n_replicas,
             n_temps,
+            active_temps,
             rngs,
             cluster_mode,
             action,
@@ -198,6 +207,7 @@ fn houdayer_step(
     system_ids: &[usize],
     n_replicas: usize,
     n_temps: usize,
+    active_temps: &[bool],
     rngs: &mut [Xoshiro256StarStar],
     group_size: usize,
     pairwise: bool,
@@ -215,7 +225,15 @@ fn houdayer_step(
     let n_pairs = n_replicas / 2;
     let wolff = cluster_mode == ClusterMode::Wolff;
 
-    let tasks = build_tasks(system_ids, n_replicas, n_temps, group_size, rngs, n_pairs);
+    let tasks = build_tasks(
+        system_ids,
+        n_replicas,
+        n_temps,
+        group_size,
+        rngs,
+        n_pairs,
+        active_temps,
+    );
 
     let sp = spins.as_mut_ptr() as usize;
     let rp = rngs.as_mut_ptr() as usize;
@@ -400,6 +418,7 @@ fn jorg_step(
     system_ids: &[usize],
     n_replicas: usize,
     n_temps: usize,
+    active_temps: &[bool],
     rngs: &mut [Xoshiro256StarStar],
     group_size: usize,
     cluster_mode: ClusterMode,
@@ -417,7 +436,15 @@ fn jorg_step(
     let n_pairs = n_replicas / 2;
     let wolff = cluster_mode == ClusterMode::Wolff;
 
-    let tasks = build_tasks(system_ids, n_replicas, n_temps, group_size, rngs, n_pairs);
+    let tasks = build_tasks(
+        system_ids,
+        n_replicas,
+        n_temps,
+        group_size,
+        rngs,
+        n_pairs,
+        active_temps,
+    );
 
     let sp = spins.as_mut_ptr() as usize;
     let rp = rngs.as_mut_ptr() as usize;
@@ -665,6 +692,7 @@ fn cmr_step(
     system_ids: &[usize],
     n_replicas: usize,
     n_temps: usize,
+    active_temps: &[bool],
     rngs: &mut [Xoshiro256StarStar],
     cluster_mode: ClusterMode,
     action: ClusterAction,
@@ -682,7 +710,15 @@ fn cmr_step(
     let n_pairs = n_replicas / 2;
     let wolff = cluster_mode == ClusterMode::Wolff;
 
-    let tasks = build_tasks(system_ids, n_replicas, n_temps, 2, rngs, n_pairs);
+    let tasks = build_tasks(
+        system_ids,
+        n_replicas,
+        n_temps,
+        2,
+        rngs,
+        n_pairs,
+        active_temps,
+    );
 
     let sp = spins.as_mut_ptr() as usize;
     let rp = rngs.as_mut_ptr() as usize;
@@ -1033,6 +1069,7 @@ mod tests {
                 &[0, 1],
                 2,
                 1,
+                &[true],
                 &mut rngs,
                 &mode,
                 ClusterMode::Wolff,
