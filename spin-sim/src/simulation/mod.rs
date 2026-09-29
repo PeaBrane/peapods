@@ -191,15 +191,19 @@ fn run_sweep_loop_impl(
     config.validate().map_err(|e| format!("{e}"))?;
     real.validate(lattice, n_replicas, n_temps)?;
 
-    let metropolis_lookup = (config.sweep_mode == SweepMode::Metropolis)
-        .then(|| {
-            mcmc::sweep::UnitCouplingMetropolisLookup::new(
-                &real.couplings,
-                &real.temperatures,
-                lattice.n_neighbors,
-            )
-        })
-        .flatten();
+    let acceptance = match config.sweep_mode {
+        SweepMode::Metropolis => Some(mcmc::sweep::Acceptance::Metropolis),
+        SweepMode::Gibbs => Some(mcmc::sweep::Acceptance::Gibbs),
+        SweepMode::None => None,
+    };
+    let unit_lookup = acceptance.and_then(|acceptance| {
+        mcmc::sweep::UnitCouplingLookup::new(
+            &real.couplings,
+            &real.temperatures,
+            lattice.n_neighbors,
+            acceptance,
+        )
+    });
 
     let n_spins = lattice.n_spins;
     let n_systems = n_replicas * n_temps;
@@ -418,8 +422,8 @@ fn run_sweep_loop_impl(
     driver::run_sweeps(config, interrupted, on_sweep, |step| {
         let sweep_id = step.index;
         let record = step.record;
-        match config.sweep_mode {
-            SweepMode::Metropolis => mcmc::sweep::metropolis_sweep(
+        if let Some(acceptance) = acceptance {
+            mcmc::sweep::single_spin_sweep(
                 lattice,
                 &mut real.spins,
                 &real.couplings,
@@ -427,18 +431,9 @@ fn run_sweep_loop_impl(
                 &real.system_ids,
                 &mut real.rngs,
                 config.sequential,
-                metropolis_lookup.as_ref(),
-            ),
-            SweepMode::None => {}
-            SweepMode::Gibbs => mcmc::sweep::gibbs_sweep(
-                lattice,
-                &mut real.spins,
-                &real.couplings,
-                &real.temperatures,
-                &real.system_ids,
-                &mut real.rngs,
-                config.sequential,
-            ),
+                acceptance,
+                unit_lookup.as_ref(),
+            );
         }
 
         let do_cluster = step.cluster;

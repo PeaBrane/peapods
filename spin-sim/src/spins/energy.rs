@@ -91,7 +91,8 @@ fn compute_energies_inner(
     // produced only a modest improvement.
     for (r, energy) in energies.iter_mut().enumerate() {
         let spin_base = r * n_spins;
-        let mut total = 0.0f32;
+        // f64 keeps continuous-coupling totals accurate; PT multiplies them back by N.
+        let mut total = 0.0f64;
         for i in 0..n_spins {
             let spin = spins[spin_base + i];
             record_spin(r, spin);
@@ -102,10 +103,10 @@ fn compute_energies_inner(
                 let c = couplings[i * n_neighbors + d];
                 let interaction = si * sj * c;
                 record_interaction(r, i, d, interaction);
-                total += interaction;
+                total += f64::from(interaction);
             }
         }
-        *energy = total / n_spins as f32;
+        *energy = (total / n_spins as f64) as f32;
     }
 }
 
@@ -144,5 +145,41 @@ mod tests {
                 system_interactions.iter().sum::<f32>() / lattice.n_spins as f32
             );
         }
+    }
+
+    /// Parallel tempering multiplies the cached energy by N, so the total must stay
+    /// accurate for continuous couplings on large lattices (f32 summation drifts by O(1)).
+    #[test]
+    fn continuous_coupling_totals_stay_accurate() {
+        use rand::{Rng, SeedableRng};
+        use rand_xoshiro::Xoshiro256StarStar;
+
+        let lattice = Lattice::new(vec![256, 256]);
+        let mut rng = Xoshiro256StarStar::seed_from_u64(9);
+        let couplings: Vec<f32> = (0..lattice.n_spins * lattice.n_neighbors)
+            .map(|_| {
+                let u1: f64 = 1.0 - rng.gen::<f64>();
+                let u2: f64 = rng.gen();
+                ((-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()) as f32
+            })
+            .collect();
+        let spins: Vec<i8> = (0..lattice.n_spins)
+            .map(|i| if (i * 7919) % 11 < 4 { -1 } else { 1 })
+            .collect();
+
+        let mut exact = 0.0f64;
+        for i in 0..lattice.n_spins {
+            for d in 0..lattice.n_neighbors {
+                let j = lattice.neighbor_fwd(i, d);
+                exact += f64::from(couplings[i * lattice.n_neighbors + d])
+                    * f64::from(spins[i] * spins[j]);
+            }
+        }
+        let mut energy = [0.0f32];
+        compute_energies_into(&lattice, &spins, &couplings, &mut energy);
+        let total_error = (f64::from(energy[0]) * lattice.n_spins as f64 - exact).abs();
+        // Only the final f32 rounding of the per-spin value remains: |e| * 2^-24 * N.
+        let bound = exact.abs() * 2f64.powi(-23);
+        assert!(total_error <= bound, "total error {total_error} > {bound}");
     }
 }
