@@ -103,17 +103,35 @@ impl TryFrom<&str> for AutocorrelationBackend {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OverlapClusterBuildMode {
     Houdayer(usize),
-    Jorg,
+    /// Houdayer clusters for `N / 2` replica pairs swapped jointly: active sites are
+    /// those where any pair disagrees, and a cluster flip swaps every pair on it.
+    Pair(usize),
+    /// Jörg bonds generalized to `N / 2` replica pairs swapped jointly; `Jorg(2)` is
+    /// the two-replica Jörg move.
+    Jorg(usize),
     Cmr,
 }
 
 impl OverlapClusterBuildMode {
+    /// Replicas per temperature consumed by one move.
     pub fn group_size(&self) -> usize {
         match self {
-            Self::Houdayer(n) => *n,
-            _ => 2,
+            Self::Houdayer(n) | Self::Pair(n) | Self::Jorg(n) => *n,
+            Self::Cmr => 2,
         }
     }
+}
+
+fn parse_group_size(s: &str, prefix: &str, label: &str) -> Result<usize, String> {
+    let n: usize = s[prefix.len()..].parse().map_err(|_| {
+        format!(
+            "invalid {label} group size in '{s}', expected '{prefix}N' with even integer N >= 2"
+        )
+    })?;
+    if n < 2 || !n.is_multiple_of(2) {
+        return Err(format!("{label} group size must be even and >= 2, got {n}"));
+    }
+    Ok(n)
 }
 
 impl TryFrom<&str> for OverlapClusterBuildMode {
@@ -121,19 +139,12 @@ impl TryFrom<&str> for OverlapClusterBuildMode {
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         match s {
             "houdayer" | "houd2" => Ok(Self::Houdayer(2)),
-            "jorg" => Ok(Self::Jorg),
+            "jorg" => Ok(Self::Jorg(2)),
             "cmr" | "cmr2" => Ok(Self::Cmr),
+            _ if s.starts_with("pair") => parse_group_size(s, "pair", "pair").map(Self::Pair),
+            _ if s.starts_with("jorg") => parse_group_size(s, "jorg", "Jörg").map(Self::Jorg),
             _ if s.starts_with("houd") => {
-                let n: usize = s[4..].parse().map_err(|_| {
-                    format!(
-                        "invalid Houdayer group size in '{s}', expected 'houdN' with even integer N >= 2"
-                    )
-                })?;
-                if n < 2 || !n.is_multiple_of(2) {
-                    return Err(format!(
-                        "Houdayer group size must be even and >= 2, got {n}"
-                    ));
-                }
+                let n = parse_group_size(s, "houd", "Houdayer")?;
                 if n > 2 {
                     eprintln!(
                         "WARNING: houd{n} (group_size > 2) is experimental and does not satisfy \
@@ -143,7 +154,7 @@ impl TryFrom<&str> for OverlapClusterBuildMode {
                 Ok(Self::Houdayer(n))
             }
             _ => Err(format!(
-                "unknown overlap_cluster_build_mode '{s}', expected 'houdayer', 'houdN', 'jorg', or 'cmr'"
+                "unknown overlap_cluster_build_mode '{s}', expected 'houdayer', 'houdN', 'pairN', 'jorg', 'jorgN', or 'cmr'"
             )),
         }
     }
@@ -233,6 +244,13 @@ fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
                 "Houdayer group size must be even and >= 2",
             ));
         }
+        if h.modes.iter().any(|mode| {
+            matches!(mode, OverlapClusterBuildMode::Pair(n) | OverlapClusterBuildMode::Jorg(n) if *n < 2 || n % 2 != 0)
+        }) {
+            return Err(ValidationError::new(
+                "pairN and jorgN group sizes must be even and >= 2",
+            ));
+        }
         if h.action == ClusterAction::Observe {
             if h.cluster_mode == ClusterMode::Wolff {
                 return Err(ValidationError::new(
@@ -250,6 +268,15 @@ fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
             {
                 return Err(ValidationError::new(
                     "overlap_cluster_action='observe' does not support experimental houdN with N > 2",
+                ));
+            }
+            // Observed graphs are reported per two-replica build mode only.
+            if h.modes.iter().any(|mode| {
+                matches!(mode, OverlapClusterBuildMode::Pair(_))
+                    || matches!(mode, OverlapClusterBuildMode::Jorg(n) if *n > 2)
+            }) {
+                return Err(ValidationError::new(
+                    "overlap_cluster_action='observe' supports only houdayer, jorg and cmr",
                 ));
             }
         }
@@ -350,6 +377,40 @@ mod tests {
                 snapshot_interval: None,
             });
             assert!(config.validate().is_err(), "houd{group_size} accepted");
+        }
+    }
+
+    #[test]
+    fn parses_multi_pair_modes() {
+        use OverlapClusterBuildMode::*;
+        assert_eq!(
+            parse_overlap_modes("jorg+jorg2+jorg4+pair2+pair6+houd2").unwrap(),
+            vec![Jorg(2), Jorg(2), Jorg(4), Pair(2), Pair(6), Houdayer(2)]
+        );
+        for bad in ["pair", "pair3", "pair0", "jorg5", "jorgx"] {
+            assert!(
+                OverlapClusterBuildMode::try_from(bad).is_err(),
+                "{bad} accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_observing_multi_pair_modes() {
+        for mode in [
+            OverlapClusterBuildMode::Pair(2),
+            OverlapClusterBuildMode::Jorg(4),
+        ] {
+            let mut config = config();
+            config.overlap_cluster = Some(OverlapClusterConfig {
+                interval: 1,
+                modes: vec![mode],
+                cluster_mode: ClusterMode::Sw,
+                action: ClusterAction::Observe,
+                collect_stats: true,
+                snapshot_interval: None,
+            });
+            assert!(config.validate().is_err(), "{mode:?} observe accepted");
         }
     }
 

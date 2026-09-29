@@ -137,7 +137,7 @@ fn main() {
             Some(OverlapClusterConfig {
                 interval: 1,
                 modes: vec![if mode == "jorg" {
-                    OverlapClusterBuildMode::Jorg
+                    OverlapClusterBuildMode::Jorg(2)
                 } else {
                     OverlapClusterBuildMode::Houdayer(2)
                 }],
@@ -147,7 +147,20 @@ fn main() {
                 snapshot_interval: None,
             }),
         ),
-        _ => panic!("unknown PEAPODS_MODE '{mode}'"),
+        // Any other overlap build mode string, e.g. "pair4" or "jorg4", with PT.
+        other => (
+            None,
+            Some(1),
+            Some(OverlapClusterConfig {
+                interval: 1,
+                modes: parse_overlap_modes(other)
+                    .unwrap_or_else(|err| panic!("unknown PEAPODS_MODE '{other}': {err}")),
+                cluster_mode: overlap_cluster_mode,
+                action: ClusterAction::Update,
+                collect_stats: false,
+                snapshot_interval: None,
+            }),
+        ),
     };
 
     let config = SimConfig {

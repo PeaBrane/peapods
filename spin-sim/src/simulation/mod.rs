@@ -113,8 +113,10 @@ impl ClusterObservationAccums {
 
     fn enable_overlap(&mut self, mode: &OverlapClusterBuildMode, n_temps: usize, n_spins: usize) {
         let target = match mode {
-            OverlapClusterBuildMode::Houdayer(_) => &mut self.houdayer,
-            OverlapClusterBuildMode::Jorg => &mut self.jorg,
+            OverlapClusterBuildMode::Houdayer(_) | OverlapClusterBuildMode::Pair(_) => {
+                &mut self.houdayer
+            }
+            OverlapClusterBuildMode::Jorg(_) => &mut self.jorg,
             OverlapClusterBuildMode::Cmr => &mut self.cmr_blue,
         };
         target.get_or_insert_with(|| GraphObservationAccum::new(n_temps, n_spins));
@@ -122,8 +124,10 @@ impl ClusterObservationAccums {
 
     fn overlap_mut(&mut self, mode: &OverlapClusterBuildMode) -> &mut GraphObservationAccum {
         match mode {
-            OverlapClusterBuildMode::Houdayer(_) => self.houdayer.as_mut(),
-            OverlapClusterBuildMode::Jorg => self.jorg.as_mut(),
+            OverlapClusterBuildMode::Houdayer(_) | OverlapClusterBuildMode::Pair(_) => {
+                self.houdayer.as_mut()
+            }
+            OverlapClusterBuildMode::Jorg(_) => self.jorg.as_mut(),
             OverlapClusterBuildMode::Cmr => self.cmr_blue.as_mut(),
         }
         .expect("observed graph accumulator must be allocated")

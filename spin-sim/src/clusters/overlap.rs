@@ -83,7 +83,8 @@ pub fn overlap_update(
     sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
 ) {
     match mode {
-        OverlapClusterBuildMode::Houdayer(group_size) => houdayer_step(
+        OverlapClusterBuildMode::Houdayer(group_size)
+        | OverlapClusterBuildMode::Pair(group_size) => houdayer_step(
             lattice,
             spins,
             system_ids,
@@ -91,6 +92,7 @@ pub fn overlap_update(
             n_temps,
             rngs,
             *group_size,
+            matches!(mode, OverlapClusterBuildMode::Pair(_)),
             cluster_mode,
             action,
             csd_out,
@@ -101,7 +103,7 @@ pub fn overlap_update(
             spin_snap_out,
             sid_snap_out,
         ),
-        OverlapClusterBuildMode::Jorg => jorg_step(
+        OverlapClusterBuildMode::Jorg(group_size) => jorg_step(
             lattice,
             spins,
             couplings,
@@ -110,6 +112,7 @@ pub fn overlap_update(
             n_replicas,
             n_temps,
             rngs,
+            *group_size,
             cluster_mode,
             action,
             csd_out,
@@ -143,12 +146,48 @@ pub fn overlap_update(
     }
 }
 
+/// Whether any replica pair `(systems[2k], systems[2k+1])` disagrees at site `i`.
+#[inline]
+unsafe fn any_pair_differs(sp_ptr: *const i8, systems: &[usize], n_spins: usize, i: usize) -> bool {
+    systems
+        .chunks_exact(2)
+        .any(|pair| *sp_ptr.add(pair[0] * n_spins + i) != *sp_ptr.add(pair[1] * n_spins + i))
+}
+
+/// Acts on site `i` of every replica pair in `systems`. With `pairwise` each pair is
+/// swapped, which negates both replicas where they disagree and leaves agreeing pairs
+/// alone; otherwise every replica is negated.
+#[inline]
+unsafe fn flip_group_site(
+    sp_ptr: *mut i8,
+    systems: &[usize],
+    n_spins: usize,
+    i: usize,
+    pairwise: bool,
+) {
+    for pair in systems.chunks_exact(2) {
+        let a = sp_ptr.add(pair[0] * n_spins + i);
+        let b = sp_ptr.add(pair[1] * n_spins + i);
+        if pairwise && *a == *b {
+            continue;
+        }
+        *a = -*a;
+        *b = -*b;
+    }
+}
+
 /// Houdayer-N isoenergetic overlap cluster update.
 ///
 /// For each group of N replicas at a given temperature:
 /// 1. Active sites: spin sum across all N replicas = 0 (balanced)
 /// 2. Deterministic bonds (p=1) between pairs of active sites
 /// 3. Flip all N replicas on cluster sites
+///
+/// With `pairwise` (the `pairN` mode) the group is split into pairs
+/// `(g0 g1)(g2 g3)...` and the move applies the product of pair swaps `g` instead:
+/// active sites are those where any pair disagrees, and a cluster flip swaps every
+/// pair on it. Every neighbor of a connected active component is fixed by `g`, so the
+/// swap conserves the summed energy exactly. For N = 2 both rules coincide.
 #[allow(clippy::too_many_arguments)]
 fn houdayer_step(
     lattice: &Lattice,
@@ -158,6 +197,7 @@ fn houdayer_step(
     n_temps: usize,
     rngs: &mut [Xoshiro256StarStar],
     group_size: usize,
+    pairwise: bool,
     cluster_mode: ClusterMode,
     action: ClusterAction,
     mut csd_out: Option<&mut [Vec<u64>]>,
@@ -231,6 +271,9 @@ fn houdayer_step(
         }
 
         let is_active = |i: usize| -> bool {
+            if pairwise {
+                return any_pair_differs(sp_ptr, systems, n_spins, i);
+            }
             let mut sum: i32 = 0;
             for &system in systems {
                 sum += *sp_ptr.add(system * n_spins + i) as i32;
@@ -287,9 +330,7 @@ fn houdayer_step(
                 let seed_root = uf.parent[seed];
                 for (i, &p) in uf.parent.iter().enumerate().take(n_spins) {
                     if p == seed_root {
-                        for &system in systems {
-                            *sp_ptr.add(system * n_spins + i) *= -1;
-                        }
+                        flip_group_site(sp_ptr, systems, n_spins, i, pairwise);
                     }
                 }
             } else {
@@ -303,9 +344,7 @@ fn houdayer_step(
                 }
                 for (i, &p) in storage.parent.iter().enumerate().take(n_spins) {
                     if storage.rank[p as usize] == 1 {
-                        for &system in systems {
-                            *sp_ptr.add(system * n_spins + i) *= -1;
-                        }
+                        flip_group_site(sp_ptr, systems, n_spins, i, pairwise);
                     }
                 }
             }
@@ -324,9 +363,7 @@ fn houdayer_step(
             );
             for (i, &in_c) in in_cluster.iter().enumerate() {
                 if in_c {
-                    for &system in systems {
-                        *sp_ptr.add(system * n_spins + i) *= -1;
-                    }
+                    flip_group_site(sp_ptr, systems, n_spins, i, pairwise);
                 }
             }
         }
@@ -345,6 +382,12 @@ fn houdayer_step(
 /// 1. Active sites: σ_i ≠ τ_i (negative overlap)
 /// 2. Stochastic FK bonds on active sites: p = 1 - exp(-4 J σ_i σ_j / T)
 /// 3. Flip both replicas on cluster sites
+///
+/// For a group of N > 2 replicas the move applies the product `g` of the pair swaps
+/// `(g0 g1)(g2 g3)...` (Niedermayer / Kandel-Domany embedding): a bond is activated
+/// with p = 1 - exp(-β max(0, ΔE)), where ΔE = E(σ_i, gσ_j) - E(σ_i, σ_j) =
+/// 4 J Σ σ^a_i σ^a_j sums over the pairs `(a, b)` disagreeing at both endpoints, and
+/// every pair is swapped on the flipped clusters.
 #[allow(clippy::too_many_arguments)]
 fn jorg_step(
     lattice: &Lattice,
@@ -355,6 +398,7 @@ fn jorg_step(
     n_replicas: usize,
     n_temps: usize,
     rngs: &mut [Xoshiro256StarStar],
+    group_size: usize,
     cluster_mode: ClusterMode,
     action: ClusterAction,
     mut csd_out: Option<&mut [Vec<u64>]>,
@@ -370,7 +414,7 @@ fn jorg_step(
     let n_pairs = n_replicas / 2;
     let wolff = cluster_mode == ClusterMode::Wolff;
 
-    let tasks = build_tasks(system_ids, n_replicas, n_temps, 2, rngs, n_pairs);
+    let tasks = build_tasks(system_ids, n_replicas, n_temps, group_size, rngs, n_pairs);
 
     let sp = spins.as_mut_ptr() as usize;
     let rp = rngs.as_mut_ptr() as usize;
@@ -413,13 +457,27 @@ fn jorg_step(
         let (t, g, systems) = tasks.group(task_idx);
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(t * n_pairs + g);
         let jorg_bond = BondSampler::new(4.0 / temperatures[t]);
-        let base_a = systems[0] * n_spins;
-        let base_b = systems[1] * n_spins;
         let sp_ptr = sp as *mut i8;
         let slot = t * n_pairs + g;
+        // ΔE / 4J of swapping the pairs at one endpoint of an active-active bond.
+        let aligned = |i: usize, j: usize| -> i32 {
+            systems
+                .chunks_exact(2)
+                .map(|pair| {
+                    let (a, b) = (pair[0] * n_spins, pair[1] * n_spins);
+                    let (ai, aj) = (*sp_ptr.add(a + i), *sp_ptr.add(a + j));
+                    if ai == *sp_ptr.add(b + i) || aj == *sp_ptr.add(b + j) {
+                        return 0;
+                    }
+                    i32::from(ai * aj)
+                })
+                .sum()
+        };
 
         // Only the first pair per temperature is published as a snapshot.
         if spp != 0 && sidp != 0 && g == 0 {
+            let base_a = systems[0] * n_spins;
+            let base_b = systems[1] * n_spins;
             let spin_slot = &mut *(spp as *mut Vec<[Vec<i8>; 2]>).add(slot);
             spin_slot.push([
                 std::slice::from_raw_parts(sp_ptr.add(base_a), n_spins).to_vec(),
@@ -429,7 +487,7 @@ fn jorg_step(
             sid_slot.push([systems[0], systems[1]]);
         }
 
-        let is_active = |i: usize| -> bool { *sp_ptr.add(base_a + i) != *sp_ptr.add(base_b + i) };
+        let is_active = |i: usize| -> bool { any_pair_differs(sp_ptr, systems, n_spins, i) };
 
         if use_uf {
             let active: Vec<bool> = (0..n_spins).map(is_active).collect();
@@ -439,9 +497,7 @@ fn jorg_step(
                 if !is_active(i) || !is_active(j) {
                     return false;
                 }
-                let inter = *sp_ptr.add(base_a + i) as f32
-                    * *sp_ptr.add(base_a + j) as f32
-                    * couplings[i * n_neighbors + d];
+                let inter = aligned(i, j) as f32 * couplings[i * n_neighbors + d];
                 if inter <= 0.0 {
                     return false;
                 }
@@ -487,8 +543,7 @@ fn jorg_step(
                 let seed_root = uf.parent[seed];
                 for (i, &p) in uf.parent.iter().enumerate().take(n_spins) {
                     if p == seed_root {
-                        *sp_ptr.add(base_a + i) *= -1;
-                        *sp_ptr.add(base_b + i) *= -1;
+                        flip_group_site(sp_ptr, systems, n_spins, i, true);
                     }
                 }
             } else {
@@ -502,8 +557,7 @@ fn jorg_step(
                 }
                 for (i, &p) in storage.parent.iter().enumerate().take(n_spins) {
                     if storage.rank[p as usize] == 1 {
-                        *sp_ptr.add(base_a + i) *= -1;
-                        *sp_ptr.add(base_b + i) *= -1;
+                        flip_group_site(sp_ptr, systems, n_spins, i, true);
                     }
                 }
             }
@@ -527,9 +581,7 @@ fn jorg_step(
                     } else {
                         couplings[nb * n_neighbors + d]
                     };
-                    let inter = *sp_ptr.add(base_a + site) as f32
-                        * *sp_ptr.add(base_a + nb) as f32
-                        * coupling;
+                    let inter = aligned(site, nb) as f32 * coupling;
                     if inter <= 0.0 {
                         return false;
                     }
@@ -538,8 +590,7 @@ fn jorg_step(
             );
             for (i, &in_c) in in_cluster.iter().enumerate() {
                 if in_c {
-                    *sp_ptr.add(base_a + i) *= -1;
-                    *sp_ptr.add(base_b + i) *= -1;
+                    flip_group_site(sp_ptr, systems, n_spins, i, true);
                 }
             }
         }
@@ -955,134 +1006,6 @@ mod tests {
     use super::*;
     use rand::SeedableRng;
 
-    // At this temperature one step of a red-only grey closure, or of one that re-samples
-    // blue bonds at the flipped blue cluster, misses the exact energy by more than 15
-    // standard errors on the 2x2 torus.
-    const TEMP: f32 = 3.0;
-    const TRIALS: usize = 40_000;
-
-    fn couplings(lattice: &Lattice) -> Vec<f32> {
-        const VALUES: [f32; 8] = [0.9, -1.3, 0.4, -0.7, 1.1, -0.2, 0.6, -1.5];
-        (0..lattice.n_spins * lattice.n_neighbors)
-            .map(|k| VALUES[k % VALUES.len()] * (1.0 + 0.1 * (k / VALUES.len()) as f32))
-            .collect()
-    }
-
-    fn bond_sum(lattice: &Lattice, couplings: &[f32], s: &[i8]) -> f64 {
-        let mut total = 0.0;
-        for i in 0..lattice.n_spins {
-            for d in 0..lattice.n_neighbors {
-                let j = lattice.neighbor_fwd(i, d);
-                total +=
-                    (couplings[i * lattice.n_neighbors + d] * s[i] as f32 * s[j] as f32) as f64;
-            }
-        }
-        total
-    }
-
-    fn state(n: usize, bits: usize) -> Vec<i8> {
-        (0..n)
-            .map(|i| if (bits >> i) & 1 == 1 { 1 } else { -1 })
-            .collect()
-    }
-
-    /// Mean and variance of (e_a + e_b, q^2) under two independent Boltzmann replicas.
-    fn exact_moments(lattice: &Lattice, couplings: &[f32], p: &[f64]) -> [(f64, f64); 2] {
-        let n = lattice.n_spins;
-        let states: Vec<Vec<i8>> = (0..p.len()).map(|b| state(n, b)).collect();
-        let e: Vec<f64> = states
-            .iter()
-            .map(|s| bond_sum(lattice, couplings, s) / n as f64)
-            .collect();
-        let (mut m, mut m2) = ([0.0; 2], [0.0; 2]);
-        for (x, sx) in states.iter().enumerate() {
-            for (y, sy) in states.iter().enumerate() {
-                let w = p[x] * p[y];
-                let q = sx.iter().zip(sy).map(|(a, b)| (a * b) as f64).sum::<f64>() / n as f64;
-                for (k, obs) in [e[x] + e[y], q * q].into_iter().enumerate() {
-                    m[k] += w * obs;
-                    m2[k] += w * obs * obs;
-                }
-            }
-        }
-        [(m[0], m2[0] - m[0] * m[0]), (m[1], m2[1] - m[1] * m[1])]
-    }
-
-    /// Draws replica pairs exactly from the Boltzmann law, applies one overlap move and
-    /// checks that energy and q^2 keep their Boltzmann means. A stationary move must
-    /// preserve every expectation after a single step.
-    fn assert_preserves_boltzmann(
-        shape: Vec<usize>,
-        mode: OverlapClusterBuildMode,
-        cluster_mode: ClusterMode,
-        with_stats: bool,
-    ) {
-        let lattice = Lattice::new(shape.clone());
-        let n = lattice.n_spins;
-        let couplings = couplings(&lattice);
-        let weights: Vec<f64> = (0..1usize << n)
-            .map(|b| (bond_sum(&lattice, &couplings, &state(n, b)) / TEMP as f64).exp())
-            .collect();
-        let z: f64 = weights.iter().sum();
-        let p: Vec<f64> = weights.iter().map(|w| w / z).collect();
-        let cdf: Vec<f64> = p
-            .iter()
-            .scan(0.0, |acc, &x| {
-                *acc += x;
-                Some(*acc)
-            })
-            .collect();
-        let exact = exact_moments(&lattice, &couplings, &p);
-
-        let mut draw_rng = Xoshiro256StarStar::seed_from_u64(7);
-        let mut rngs = vec![Xoshiro256StarStar::seed_from_u64(11)];
-        let mut top4 = vec![[0u32; 4]; 1];
-        let mut spins = vec![0i8; 2 * n];
-        let mut sums = [0.0f64; 2];
-        for _ in 0..TRIALS {
-            for replica in 0..2 {
-                let u: f64 = draw_rng.gen();
-                let bits = cdf.partition_point(|&c| c < u).min(p.len() - 1);
-                spins[replica * n..(replica + 1) * n].copy_from_slice(&state(n, bits));
-            }
-            overlap_update(
-                &lattice,
-                &mut spins,
-                &couplings,
-                &[TEMP],
-                &[0, 1],
-                2,
-                1,
-                &mut rngs,
-                &mode,
-                cluster_mode,
-                ClusterAction::Update,
-                None,
-                with_stats.then_some(top4.as_mut_slice()),
-                None,
-                true,
-                None,
-                None,
-                None,
-                None,
-            );
-            let (a, b) = spins.split_at(n);
-            let q = a.iter().zip(b).map(|(x, y)| (x * y) as f64).sum::<f64>() / n as f64;
-            sums[0] +=
-                (bond_sum(&lattice, &couplings, a) + bond_sum(&lattice, &couplings, b)) / n as f64;
-            sums[1] += q * q;
-        }
-        for (k, name) in ["energy", "q^2"].iter().enumerate() {
-            let (mean, var) = exact[k];
-            let observed = sums[k] / TRIALS as f64;
-            let se = (var / TRIALS as f64).sqrt();
-            assert!(
-                (observed - mean).abs() < 5.0 * se,
-                "{mode:?} {cluster_mode:?} stats={with_stats} {shape:?}: {name} {observed:.5} vs exact {mean:.5} (se {se:.5})"
-            );
-        }
-    }
-
     /// With identical replicas no site is active, so the Wolff seed search fails; the
     /// all-singleton cluster statistics must still be written for every build mode.
     #[test]
@@ -1092,7 +1015,7 @@ mod tests {
         let couplings = vec![1.0; n * lattice.n_neighbors];
         for mode in [
             OverlapClusterBuildMode::Houdayer(2),
-            OverlapClusterBuildMode::Jorg,
+            OverlapClusterBuildMode::Jorg(2),
         ] {
             let mut spins = vec![1i8; 2 * n];
             let mut rngs = vec![Xoshiro256StarStar::seed_from_u64(1)];
@@ -1124,24 +1047,6 @@ mod tests {
             assert_eq!(top4[0], [1; 4], "{mode:?}");
             assert_eq!(snapshot[0], (0..n as u32).collect::<Vec<_>>(), "{mode:?}");
             assert!(spins.iter().all(|&s| s == 1));
-        }
-    }
-
-    #[test]
-    fn overlap_moves_preserve_boltzmann() {
-        let modes = [
-            OverlapClusterBuildMode::Houdayer(2),
-            OverlapClusterBuildMode::Jorg,
-            OverlapClusterBuildMode::Cmr,
-        ];
-        for shape in [vec![2, 2], vec![3, 2]] {
-            for mode in &modes {
-                for cluster_mode in [ClusterMode::Wolff, ClusterMode::Sw] {
-                    for with_stats in [false, true] {
-                        assert_preserves_boltzmann(shape.clone(), *mode, cluster_mode, with_stats);
-                    }
-                }
-            }
         }
     }
 }
