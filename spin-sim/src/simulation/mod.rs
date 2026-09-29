@@ -404,11 +404,41 @@ fn run_sweep_loop_impl(
     let mut mags2_buf = vec![0.0f32; n_temps];
     let mut mags4_buf = vec![0.0f32; n_temps];
     let mut energies_buf = vec![0.0f32; n_temps];
-    let mut magnetization_sums = if n_measurement_sweeps > 0 {
-        vec![0i64; n_systems]
-    } else {
-        vec![]
-    };
+    let mut magnetization_sums = vec![0i64; n_systems];
+    // Observables (energies, magnetization sums) stay valid across sweeps when unit
+    // couplings let the sweep report exact integer deltas; any other mutation
+    // invalidates them until the next refresh.
+    let mut unit_totals = vec![0i64; if unit_lookup.is_some() { n_systems } else { 0 }];
+    let mut sweep_deltas = vec![
+        mcmc::sweep::UnitSweepDelta::default();
+        if unit_lookup.is_some() { n_systems } else { 0 }
+    ];
+    let mut observables_valid = false;
+    let refresh_observables =
+        |real: &mut Realization, unit_totals: &mut [i64], magnetization_sums: &mut [i64]| {
+            let Some(lookup) = unit_lookup.as_ref() else {
+                spins::energy::refresh_energies_and_magnetizations(
+                    lattice,
+                    &real.spins,
+                    &real.couplings,
+                    &mut real.energies,
+                    magnetization_sums,
+                    config.sequential,
+                );
+                return;
+            };
+            spins::energy::refresh_unit_totals(
+                lattice,
+                &real.spins,
+                lookup.couplings(),
+                unit_totals,
+                magnetization_sums,
+                config.sequential,
+            );
+            for (energy, &total) in real.energies.iter_mut().zip(unit_totals.iter()) {
+                *energy = spins::energy::unit_energy(total, n_spins);
+            }
+        };
 
     let mut physics = physics_options
         .map(|options| PhysicsCollector::new(lattice, n_temps, options, 1))
@@ -423,6 +453,21 @@ fn run_sweep_loop_impl(
         let sweep_id = step.index;
         let record = step.record;
         if let Some(acceptance) = acceptance {
+            // Track only if the deltas can be consumed before a cluster move
+            // invalidates them anyway.
+            let cluster_mutates = step.cluster
+                && config
+                    .cluster_update
+                    .as_ref()
+                    .is_some_and(|cluster| cluster.action == ClusterAction::Update);
+            let overlap_mutates_first = !(record || equil_diag)
+                && config.overlap_cluster.as_ref().is_some_and(|overlap| {
+                    overlap.action == ClusterAction::Update && sweep_id % overlap.interval == 0
+                });
+            let track = observables_valid
+                && unit_lookup.is_some()
+                && !cluster_mutates
+                && !overlap_mutates_first;
             mcmc::sweep::single_spin_sweep(
                 lattice,
                 &mut real.spins,
@@ -433,7 +478,17 @@ fn run_sweep_loop_impl(
                 config.sequential,
                 acceptance,
                 unit_lookup.as_ref(),
+                track.then_some(sweep_deltas.as_mut_slice()),
             );
+            observables_valid = track;
+            if track {
+                for (system, delta) in sweep_deltas.iter().enumerate() {
+                    unit_totals[system] += delta.interaction;
+                    magnetization_sums[system] += delta.magnetization;
+                    real.energies[system] =
+                        spins::energy::unit_energy(unit_totals[system], n_spins);
+                }
+            }
         }
 
         let do_cluster = step.cluster;
@@ -469,6 +524,9 @@ fn run_sweep_loop_impl(
                 observation_out,
                 config.sequential,
             );
+            if cluster_cfg.action == ClusterAction::Update {
+                observables_valid = false;
+            }
 
             if collect_fk && record {
                 for (slot, buf) in sw_csd_buf.iter().enumerate() {
@@ -487,25 +545,9 @@ fn run_sweep_loop_impl(
 
         let pt_this_sweep = step.temper;
 
-        // Recompute from spins so every mutating path has one source of truth;
-        // incremental observable accounting is deferred until it can cover all mutations.
-        if record || pt_this_sweep || equil_diag {
-            if record {
-                spins::energy::compute_energies_and_magnetizations_into(
-                    lattice,
-                    &real.spins,
-                    &real.couplings,
-                    &mut real.energies,
-                    &mut magnetization_sums,
-                );
-            } else {
-                spins::energy::compute_energies_into(
-                    lattice,
-                    &real.spins,
-                    &real.couplings,
-                    &mut real.energies,
-                );
-            }
+        if (record || pt_this_sweep || equil_diag) && !observables_valid {
+            refresh_observables(real, &mut unit_totals, &mut magnetization_sums);
+            observables_valid = true;
         }
 
         if equil_diag {
@@ -607,10 +649,11 @@ fn run_sweep_loop_impl(
             collector.end_sweep(n_replicas);
         }
 
-        let mut did_overlap_mutate = false;
         if let Some(ref oc_cfg) = config.overlap_cluster {
             if sweep_id % oc_cfg.interval == 0 {
-                did_overlap_mutate = oc_cfg.action == ClusterAction::Update;
+                if oc_cfg.action == ClusterAction::Update {
+                    observables_valid = false;
+                }
                 let mode_idx = overlap_call_count % n_modes;
                 let mode = &oc_cfg.modes[mode_idx];
 
@@ -759,13 +802,9 @@ fn run_sweep_loop_impl(
         }
 
         if pt_this_sweep {
-            if did_overlap_mutate {
-                spins::energy::compute_energies_into(
-                    lattice,
-                    &real.spins,
-                    &real.couplings,
-                    &mut real.energies,
-                );
+            if !observables_valid {
+                refresh_observables(real, &mut unit_totals, &mut magnetization_sums);
+                observables_valid = true;
             }
             real.temper(n_spins, n_replicas, n_temps, config.pt_schedule);
         }
@@ -975,6 +1014,73 @@ mod tests {
             0,
         )
         .unwrap()
+    }
+
+    /// Unit-coupling sweeps track energies from exact per-flip deltas; after a long run
+    /// with tempering, overlap and cluster moves they must equal a fresh recomputation.
+    #[test]
+    fn tracked_energies_match_recomputation() {
+        let lattice = Lattice::new(vec![6, 5]);
+        let couplings: Vec<f32> = (0..lattice.n_spins * lattice.n_neighbors)
+            .map(|i| [1.0, -1.0, 1.0, 0.0][i % 4])
+            .collect();
+        let temps = [0.6, 1.1, 1.9, 3.0];
+        for (sweep_mode, with_clusters) in [
+            (SweepMode::Metropolis, false),
+            (SweepMode::Gibbs, false),
+            (SweepMode::Metropolis, true),
+        ] {
+            let mut realization = Realization::new(&lattice, couplings.clone(), &temps, 2, 5);
+            let config = SimConfig {
+                n_sweeps: 300,
+                warmup_sweeps: 100,
+                sweep_mode,
+                cluster_update: with_clusters.then_some(ClusterConfig {
+                    interval: 7,
+                    mode: ClusterMode::Sw,
+                    action: ClusterAction::Update,
+                    collect_stats: false,
+                }),
+                pt_interval: Some(1),
+                pt_schedule: PtSchedule::FullLadder,
+                overlap_cluster: with_clusters.then_some(OverlapClusterConfig {
+                    interval: 5,
+                    modes: vec![OverlapClusterBuildMode::Cmr],
+                    cluster_mode: ClusterMode::Sw,
+                    action: ClusterAction::Update,
+                    collect_stats: false,
+                    snapshot_interval: None,
+                }),
+                autocorrelation_max_lag: None,
+                autocorrelation_backend: AutocorrelationBackend::Ring,
+                sequential: false,
+                equilibration_diagnostic: false,
+            };
+            run_sweep_loop(
+                &lattice,
+                &mut realization,
+                2,
+                temps.len(),
+                &config,
+                &AtomicBool::new(false),
+                &|| {},
+                0,
+            )
+            .unwrap();
+            let mut expected = vec![0.0; realization.energies.len()];
+            spins::energy::compute_energies_into(
+                &lattice,
+                &realization.spins,
+                &realization.couplings,
+                &mut expected,
+            );
+            // Cluster intervals 7 and 5 skip the final sweep (index 299), whose tempering
+            // step refreshes observables after the last mutating move.
+            assert_eq!(
+                realization.energies, expected,
+                "{sweep_mode:?} clusters={with_clusters}"
+            );
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use super::threshold;
 use crate::geometry::Lattice;
-use crate::parallel::par_over_replicas;
+use crate::parallel::{par_over_replicas, par_over_replicas_with};
 use rand::RngCore;
 use rand_xoshiro::Xoshiro256StarStar;
 use std::ops::Add;
@@ -175,6 +175,10 @@ impl UnitCouplingLookup {
         })
     }
 
+    pub(crate) fn couplings(&self) -> &[i8] {
+        &self.couplings
+    }
+
     #[inline]
     fn row(&self, temperature_id: usize) -> &[u64] {
         let start = temperature_id * self.table_width;
@@ -188,10 +192,49 @@ fn flip_if(spin_slice: &mut [i8], i: usize, accept: bool) {
     spin_slice[i] *= 1 - 2 * i8::from(accept);
 }
 
+/// Exact change of one system's -H total and magnetization sum over a unit-coupling sweep.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct UnitSweepDelta {
+    pub interaction: i64,
+    pub magnetization: i64,
+}
+
+/// Integer sweep of one system with unit couplings; with `TRACK` it also returns the
+/// exact observable change.
+#[inline(always)]
+fn unit_kernel<const TRACK: bool>(
+    lattice: &Lattice,
+    spin_slice: &mut [i8],
+    rng: &mut Xoshiro256StarStar,
+    lookup: &UnitCouplingLookup,
+    temperature_id: usize,
+) -> UnitSweepDelta {
+    let row = lookup.row(temperature_id);
+    let mut gain_sum = 0i64;
+    let mut magnetization = 0i64;
+    sweep_sites(lattice, spin_slice, &lookup.couplings, |spins, i, h| {
+        let spin = i32::from(spins[i]);
+        let gain = -spin * h;
+        let accept = rng.next_u64() < row[(gain + lookup.offset) as usize];
+        if TRACK {
+            let flip = i32::from(accept);
+            gain_sum += i64::from(gain * flip);
+            magnetization -= i64::from(2 * spin * flip);
+        }
+        flip_if(spins, i, accept);
+    });
+    // A flip with gain g = -s h raises -H by 2g.
+    UnitSweepDelta {
+        interaction: 2 * gain_sum,
+        magnetization,
+    }
+}
+
 /// Single-spin-flip sweep over all replicas.
 ///
 /// Uses the integer lookup kernel when `lookup` is given; it must have been built
-/// from the same couplings, temperatures and acceptance rule.
+/// from the same couplings, temperatures and acceptance rule. That kernel also writes
+/// each system's exact observable change into `deltas` (indexed by system id).
 #[cfg_attr(feature = "profile", inline(never))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn single_spin_sweep(
@@ -204,23 +247,34 @@ pub(crate) fn single_spin_sweep(
     sequential: bool,
     acceptance: Acceptance,
     lookup: Option<&UnitCouplingLookup>,
+    deltas: Option<&mut [UnitSweepDelta]>,
 ) {
     let n_spins = lattice.n_spins;
     if let Some(lookup) = lookup {
-        par_over_replicas(
+        let Some(deltas) = deltas else {
+            par_over_replicas(
+                spins,
+                rngs,
+                temperatures,
+                system_ids,
+                n_spins,
+                sequential,
+                |spin_slice, rng, _temperature, temperature_id, _system_id| {
+                    unit_kernel::<false>(lattice, spin_slice, rng, lookup, temperature_id);
+                },
+            );
+            return;
+        };
+        par_over_replicas_with(
             spins,
             rngs,
             temperatures,
             system_ids,
             n_spins,
             sequential,
-            |spin_slice, rng, _temperature, temperature_id, _system_id| {
-                let row = lookup.row(temperature_id);
-                sweep_sites(lattice, spin_slice, &lookup.couplings, |spins, i, h| {
-                    let gain = -i32::from(spins[i]) * h;
-                    let accept = rng.next_u64() < row[(gain + lookup.offset) as usize];
-                    flip_if(spins, i, accept);
-                });
+            deltas,
+            |spin_slice, rng, _temperature, temperature_id, _system_id, delta| {
+                *delta = unit_kernel::<true>(lattice, spin_slice, rng, lookup, temperature_id);
             },
         );
         return;
@@ -272,6 +326,7 @@ mod tests {
             true,
             acceptance,
             lookup,
+            None,
         );
     }
 
