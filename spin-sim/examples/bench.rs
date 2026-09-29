@@ -9,41 +9,72 @@ use spin_sim::config::*;
 use spin_sim::geometry::hypercubic;
 use spin_sim::{run_sweep_parallel, Lattice, Realization};
 
-const L: usize = 128;
-const N_TEMPS: usize = 16;
-const N_REPLICAS: usize = 2;
-const N_SWEEPS: usize = 50;
-const N_REALIZATIONS: usize = 100;
+fn env_usize(name: &str, default: usize) -> usize {
+    env::var(name).map_or(default, |value| {
+        value
+            .parse()
+            .unwrap_or_else(|_| panic!("{name} must be an integer"))
+    })
+}
 
 fn main() {
+    let l = env_usize("PEAPODS_L", 128);
+    let n_dims = env_usize("PEAPODS_DIM", 2);
+    let n_temps = env_usize("PEAPODS_TEMPS", 16);
+    let n_replicas = env_usize("PEAPODS_REPLICAS", 2);
+    let n_sweeps = env_usize("PEAPODS_SWEEPS", 50);
+    let n_realizations = env_usize("PEAPODS_NREAL", 100);
     let sequential = env::var_os("PEAPODS_SEQUENTIAL").is_some();
     let generic_lattice = env::var_os("PEAPODS_GENERIC_LATTICE").is_some();
     let mode = env::var("PEAPODS_MODE").unwrap_or_else(|_| "cmr".to_string());
+    let couplings_kind = env::var("PEAPODS_COUPLINGS").unwrap_or_else(|_| "bimodal".to_string());
+    let sweep_mode = match env::var("PEAPODS_SWEEP").as_deref().unwrap_or("metropolis") {
+        "metropolis" => SweepMode::Metropolis,
+        "gibbs" => SweepMode::Gibbs,
+        other => panic!("unknown PEAPODS_SWEEP '{other}'"),
+    };
+    let shape = vec![l; n_dims];
     let lattice = if generic_lattice {
-        Lattice::with_offsets(vec![L, L], hypercubic(2))
+        Lattice::with_offsets(shape, hypercubic(n_dims))
     } else {
-        Lattice::new(vec![L, L])
+        Lattice::new(shape)
     };
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
 
-    let temps: Vec<f32> = (0..N_TEMPS)
-        .map(|i| 0.1 * (50.0f32).powf(i as f32 / (N_TEMPS - 1) as f32))
+    let temps: Vec<f32> = (0..n_temps)
+        .map(|i| 0.1 * (50.0f32).powf(i as f32 / (n_temps.max(2) - 1) as f32))
         .collect();
 
-    let n_pairs = N_REPLICAS / 2;
-    let n_systems = N_REPLICAS * N_TEMPS;
-    let rngs_per_real = n_systems + N_TEMPS * n_pairs;
+    let n_pairs = n_replicas / 2;
+    let n_systems = n_replicas * n_temps;
+    let rngs_per_real = n_systems + n_temps * n_pairs;
 
     let mut rng = Xoshiro256StarStar::seed_from_u64(0x5eed);
-    let mut realizations = Vec::with_capacity(N_REALIZATIONS);
-    for r in 0..N_REALIZATIONS {
+    let mut realizations = Vec::with_capacity(n_realizations);
+    for r in 0..n_realizations {
         let couplings: Vec<f32> = (0..n_spins * n_neighbors)
-            .map(|_| if rng.gen::<bool>() { 1.0 } else { -1.0 })
+            .map(|_| match couplings_kind.as_str() {
+                "bimodal" => {
+                    if rng.gen::<bool>() {
+                        1.0
+                    } else {
+                        -1.0
+                    }
+                }
+                "ferro" => 1.0,
+                // Box-Muller keeps the bench free of extra distribution crates.
+                "gaussian" => {
+                    let u1: f64 = 1.0 - rng.gen::<f64>();
+                    let u2: f64 = rng.gen();
+                    ((-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()) as f32
+                }
+                other => panic!("unknown PEAPODS_COUPLINGS '{other}'"),
+            })
             .collect();
         let base_seed = 42 + (r * rngs_per_real) as u64;
         realizations.push(Realization::new(
-            &lattice, couplings, &temps, N_REPLICAS, base_seed,
+            &lattice, couplings, &temps, n_replicas, base_seed,
         ));
     }
 
@@ -83,13 +114,39 @@ fn main() {
                 snapshot_interval: None,
             }),
         ),
+        "sw_pt" => (
+            Some(ClusterConfig {
+                interval: 1,
+                mode: ClusterMode::Sw,
+                action: ClusterAction::Update,
+                collect_stats: false,
+            }),
+            Some(1),
+            None,
+        ),
+        "houdayer" | "jorg" => (
+            None,
+            Some(1),
+            Some(OverlapClusterConfig {
+                interval: 1,
+                modes: vec![if mode == "jorg" {
+                    OverlapClusterBuildMode::Jorg
+                } else {
+                    OverlapClusterBuildMode::Houdayer(2)
+                }],
+                cluster_mode: ClusterMode::Sw,
+                action: ClusterAction::Update,
+                collect_stats: false,
+                snapshot_interval: None,
+            }),
+        ),
         _ => panic!("unknown PEAPODS_MODE '{mode}'"),
     };
 
     let config = SimConfig {
-        n_sweeps: N_SWEEPS,
+        n_sweeps,
         warmup_sweeps: 0,
-        sweep_mode: SweepMode::Metropolis,
+        sweep_mode,
         cluster_update,
         pt_interval,
         pt_schedule: PtSchedule::SingleRandomEdge,
@@ -101,11 +158,10 @@ fn main() {
     };
 
     println!(
-        "Lattice: {}x{}  |  Temps: {}  |  Replicas: {}  |  Sweeps: {}  |  Realizations: {}",
-        L, L, N_TEMPS, N_REPLICAS, N_SWEEPS, N_REALIZATIONS
+        "Lattice: {l}^{n_dims}  |  Temps: {n_temps}  |  Replicas: {n_replicas}  |  Sweeps: {n_sweeps}  |  Realizations: {n_realizations}"
     );
     println!(
-        "Config: bimodal, mode={mode}, sequential={sequential}, generic_lattice={generic_lattice}"
+        "Config: {couplings_kind}, mode={mode}, sequential={sequential}, generic_lattice={generic_lattice}"
     );
     println!("{}", "-".repeat(70));
 
@@ -113,8 +169,8 @@ fn main() {
     let result = run_sweep_parallel(
         &lattice,
         &mut realizations,
-        N_REPLICAS,
-        N_TEMPS,
+        n_replicas,
+        n_temps,
         &config,
         &interrupted,
         &|| {},
@@ -182,7 +238,7 @@ fn main() {
         }
     }
 
-    let per_sweep = elapsed / N_SWEEPS as f64 * 1000.0;
+    let per_sweep = elapsed / n_sweeps as f64 * 1000.0;
     println!("Total: {:.3} s  |  {:.3} ms/sweep", elapsed, per_sweep);
     println!("State checksum: {:016x}", state_hash.finish());
 }
