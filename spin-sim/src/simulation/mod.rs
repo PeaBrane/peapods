@@ -816,7 +816,7 @@ fn run_sweep_loop_impl(
             .zip(top4_n.iter())
             .map(|(mode_accum, &count)| {
                 if count == 0 {
-                    return vec![];
+                    return vec![[0.0; 4]; n_temps];
                 }
                 let denom = (count * n_pairs) as f64;
                 mode_accum
@@ -855,6 +855,7 @@ fn run_sweep_loop_impl(
         mags4: mags4_stat.average(),
         energies: energies_stat.average(),
         energies2: energies2_stat.average(),
+        energy_variance: Statistics::variance(&energies_stat, &energies2_stat),
         overlap_stats: ov_accum.finish(),
         cluster_stats: ClusterStats {
             fk_csd: fk_csd_accum,

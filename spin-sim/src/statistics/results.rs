@@ -16,6 +16,7 @@ pub struct ClusterStats {
     /// Per-mode overlap cluster size histogram: `[n_modes][n_temps][n_spins+1]`.
     pub overlap_csd: Vec<Vec<Vec<u64>>>,
     /// Per-mode average relative size of k-th largest overlap cluster: `[n_modes][n_temps][4]`.
+    /// Zero for a mode that never ran during measurement.
     pub top_cluster_sizes: Vec<Vec<[f64; 4]>>,
 }
 
@@ -52,7 +53,8 @@ pub struct Diagnostics {
 /// Per-temperature observables averaged over measurement sweeps and replicas.
 ///
 /// All vectors are indexed by temperature index and have length `n_temps`.
-/// Overlap vectors are empty when `n_replicas < 2`.
+/// Overlap vectors are empty when `n_replicas < 2`. After
+/// [`SweepResult::aggregate`] every moment is additionally averaged over disorder.
 pub struct SweepResult {
     /// ⟨m⟩ — mean magnetization per spin.
     pub mags: Vec<f64>,
@@ -60,10 +62,17 @@ pub struct SweepResult {
     pub mags2: Vec<f64>,
     /// ⟨m⁴⟩.
     pub mags4: Vec<f64>,
-    /// ⟨E⟩ — mean energy per spin.
+    /// ⟨e⟩ with `e = -H/N = Σ_⟨ij⟩ J_ij s_i s_j / N`, the interaction sum per spin.
+    /// This is minus the physical energy per spin; the opt-in physics collector
+    /// ([`super::physics::PhysicsResult`]) reports `+H/N` instead.
     pub energies: Vec<f64>,
-    /// ⟨E²⟩.
+    /// ⟨e²⟩.
     pub energies2: Vec<f64>,
+    /// Thermal variance `⟨e²⟩ - ⟨e⟩²` of one disorder sample; after aggregation, its
+    /// disorder average. The heat capacity per spin is `N · energy_variance / T²`.
+    /// Unlike `energies2 - energies²` after aggregation, it excludes the
+    /// disorder variance of `⟨e⟩`.
+    pub energy_variance: Vec<f64>,
     pub overlap_stats: OverlapStats,
     pub cluster_stats: ClusterStats,
     pub per_disorder_physics: Vec<super::physics::PhysicsResult>,
@@ -73,7 +82,36 @@ pub struct SweepResult {
 }
 
 impl SweepResult {
-    /// Average [`SweepResult`]s across disorder realizations.
+    /// A result with no temperatures, returned when aggregating nothing.
+    pub fn empty() -> Self {
+        Self {
+            mags: vec![],
+            mags2: vec![],
+            mags4: vec![],
+            energies: vec![],
+            energies2: vec![],
+            energy_variance: vec![],
+            overlap_stats: OverlapStats::empty(),
+            cluster_stats: ClusterStats {
+                fk_csd: vec![],
+                overlap_csd: vec![],
+                top_cluster_sizes: vec![],
+            },
+            per_disorder_physics: vec![],
+            per_disorder_cluster_observations: vec![],
+            diagnostics: Diagnostics {
+                mags2_tau: vec![],
+                overlap2_tau: vec![],
+                equil_checkpoints: vec![],
+            },
+            cluster_snapshots: vec![],
+        }
+    }
+
+    /// Average [`SweepResult`]s across disorder realizations with equal weights.
+    ///
+    /// Thermal variances (`energy_variance`) are averaged per sample, so they do not
+    /// pick up disorder fluctuations. An empty slice yields [`SweepResult::empty`].
     pub fn aggregate(results: &[Self]) -> Self {
         Self::aggregate_impl(results, true)
     }
@@ -83,6 +121,9 @@ impl SweepResult {
     }
 
     fn aggregate_impl(results: &[Self], retain_overlap_samples: bool) -> Self {
+        if results.is_empty() {
+            return Self::empty();
+        }
         let n = results.len() as f64;
         let n_temps = results[0].mags.len();
         let n_fk_csd = results[0].cluster_stats.fk_csd.len();
@@ -107,11 +148,16 @@ impl SweepResult {
             .map_or(0, |v| v.len());
 
         let n_top_modes = results[0].cluster_stats.top_cluster_sizes.len();
-        let n_top_temps = results[0]
-            .cluster_stats
-            .top_cluster_sizes
-            .first()
-            .map_or(0, |v| v.len());
+        let n_top_temps: Vec<usize> = (0..n_top_modes)
+            .map(|mode| {
+                results
+                    .iter()
+                    .filter_map(|r| r.cluster_stats.top_cluster_sizes.get(mode))
+                    .map(Vec::len)
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
 
         let m2_tau_len = results[0].diagnostics.mags2_tau.len();
         let q2_tau_len = results[0].diagnostics.overlap2_tau.len();
@@ -134,6 +180,7 @@ impl SweepResult {
             mags4: vec![0.0; n_temps],
             energies: vec![0.0; n_temps],
             energies2: vec![0.0; n_temps],
+            energy_variance: vec![0.0; n_temps],
             overlap_stats,
             cluster_stats: ClusterStats {
                 fk_csd: (0..n_fk_csd).map(|_| vec![0u64; fk_len]).collect(),
@@ -144,9 +191,7 @@ impl SweepResult {
                             .collect()
                     })
                     .collect(),
-                top_cluster_sizes: (0..n_top_modes)
-                    .map(|_| vec![[0.0; 4]; n_top_temps])
-                    .collect(),
+                top_cluster_sizes: n_top_temps.iter().map(|&len| vec![[0.0; 4]; len]).collect(),
             },
             per_disorder_cluster_observations,
             per_disorder_physics: results
@@ -181,6 +226,9 @@ impl SweepResult {
                 *a += v;
             }
             for (a, &v) in agg.energies2.iter_mut().zip(r.energies2.iter()) {
+                *a += v;
+            }
+            for (a, &v) in agg.energy_variance.iter_mut().zip(r.energy_variance.iter()) {
                 *a += v;
             }
             for (a, s) in agg
@@ -259,6 +307,7 @@ impl SweepResult {
             .chain(agg.mags4.iter_mut())
             .chain(agg.energies.iter_mut())
             .chain(agg.energies2.iter_mut())
+            .chain(agg.energy_variance.iter_mut())
         {
             *v /= n;
         }
@@ -287,5 +336,50 @@ impl SweepResult {
         }
 
         agg
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A per-sample result whose energies have the given thermal mean and variance.
+    fn sample(mean: f64, variance: f64, top: Vec<Vec<[f64; 4]>>) -> SweepResult {
+        let mut result = SweepResult::empty();
+        result.mags = vec![0.0];
+        result.mags2 = vec![0.0];
+        result.mags4 = vec![0.0];
+        result.energies = vec![mean];
+        result.energies2 = vec![variance + mean * mean];
+        result.energy_variance = vec![variance];
+        result.cluster_stats.top_cluster_sizes = top;
+        result
+    }
+
+    #[test]
+    fn aggregate_averages_per_sample_thermal_variance() {
+        let agg = SweepResult::aggregate(&[sample(-1.0, 0.25, vec![]), sample(-2.0, 0.75, vec![])]);
+        assert_eq!(agg.energies, vec![-1.5]);
+        assert_eq!(agg.energy_variance, vec![0.5]);
+        // Pooling across disorder would add Var_J(⟨e⟩) = 0.25.
+        assert_eq!(agg.energies2[0] - agg.energies[0].powi(2), 0.75);
+    }
+
+    #[test]
+    fn empty_aggregate_is_empty() {
+        let agg = SweepResult::aggregate(&[]);
+        assert!(agg.energies.is_empty() && agg.cluster_stats.top_cluster_sizes.is_empty());
+    }
+
+    #[test]
+    fn top_cluster_modes_keep_their_own_lengths() {
+        let tops = |first: Vec<[f64; 4]>| vec![first, vec![[0.5, 0.25, 0.0, 0.0]; 2]];
+        let agg = SweepResult::aggregate(&[
+            sample(0.0, 0.0, tops(vec![])),
+            sample(0.0, 0.0, tops(vec![[1.0; 4]; 2])),
+        ]);
+        let sizes = &agg.cluster_stats.top_cluster_sizes;
+        assert_eq!(sizes[0], vec![[0.5; 4]; 2]);
+        assert_eq!(sizes[1], vec![[0.5, 0.25, 0.0, 0.0]; 2]);
     }
 }

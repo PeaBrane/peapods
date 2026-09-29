@@ -335,6 +335,10 @@ impl IsingSimulation {
         dict.set_item("mags4", Array1::from(agg.mags4).into_pyarray(py))?;
         dict.set_item("energies", Array1::from(agg.energies).into_pyarray(py))?;
         dict.set_item("energies2", Array1::from(agg.energies2).into_pyarray(py))?;
+        dict.set_item(
+            "energy_variance",
+            Array1::from(agg.energy_variance).into_pyarray(py),
+        )?;
 
         let ov = agg.overlap_stats;
         if !ov.overlap.is_empty() {

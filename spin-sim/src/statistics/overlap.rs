@@ -56,6 +56,7 @@ impl OverlapStats {
         }
     }
 
+    /// Average across disorder realizations; an empty slice yields [`OverlapStats::empty`].
     pub fn aggregate(results: &[&Self]) -> Self {
         Self::aggregate_impl(results, true)
     }
@@ -65,7 +66,7 @@ impl OverlapStats {
     }
 
     fn aggregate_impl(results: &[&Self], retain_samples: bool) -> Self {
-        if results[0].overlap.is_empty() {
+        if results.first().is_none_or(|r| r.overlap.is_empty()) {
             return Self::empty();
         }
 
@@ -350,5 +351,16 @@ impl OverlapAccum {
             per_sample_ql_at_q_sum: vec![],
             per_sample_ql2_at_q_sum: vec![],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_aggregate_is_empty() {
+        let empty = OverlapStats::aggregate(&[]);
+        assert!(empty.overlap.is_empty() && empty.per_sample_histogram.is_empty());
     }
 }

@@ -189,11 +189,11 @@ block_size=128, displacements=[[1, 0]])`, or Rust
 include physical energy, thermodynamics, magnetic moments, structure factors,
 uniform lengths and requested correlations; they omit XY helicity and winding.
 Ising Binder and susceptibility use one-component normalizations. Legacy output
-keys and default measurement cost are preserved. **The legacy Ising default
-heat-capacity attribute pools disorder before taking its variance; that existing
-behavior is retained for compatibility.** Opting into `collect_physics` supplies
-the thermally centered heat capacity and updates that attribute correctly.
-Changing the legacy default is deferred to an explicit compatibility change.
+keys and default measurement cost are preserved. The default Ising heat-capacity
+attribute uses `energy_variance`, the disorder average of each realization's
+thermal energy variance, as does `collect_physics`. Forming
+`energies2 - energies**2` from the disorder-averaged legacy keys would add the
+disorder variance of the thermal mean energy.
 
 ## Bounded verification
 
