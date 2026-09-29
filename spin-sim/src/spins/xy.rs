@@ -39,6 +39,21 @@ pub fn local_field(lattice: &Lattice, spins: &[XySpin], couplings: &[f64], site:
     field
 }
 
+/// `local_field` for a non-boundary site of a canonical 2D lattice, whose
+/// directions have strides `width` and 1, with the same summation order.
+#[inline]
+fn square_interior_field(spins: &[XySpin], couplings: &[f64], site: usize, width: usize) -> XySpin {
+    let (up, down, right, left) = (site + width, site - width, site + 1, site - 1);
+    let (j_up, j_down) = (couplings[site * 2], couplings[down * 2]);
+    let (j_right, j_left) = (couplings[site * 2 + 1], couplings[left * 2 + 1]);
+    let mut field = [0.0; 2];
+    for (k, component) in field.iter_mut().enumerate() {
+        *component += j_up * spins[up][k] + j_down * spins[down][k];
+        *component += j_right * spins[right][k] + j_left * spins[left][k];
+    }
+    field
+}
+
 /// Physical H(new)-H(old) for a local proposal.
 pub fn energy_change(
     lattice: &Lattice,
@@ -51,6 +66,82 @@ pub fn energy_change(
     dot(spins[site], h) - dot(proposal, h)
 }
 
+/// Uniform point `(x, y, x²+y²)` in the punctured open unit disk.
+#[inline]
+fn disk_point(rng: &mut Xoshiro256StarStar) -> (f64, f64, f64) {
+    loop {
+        let x = 2.0 * rng.gen::<f64>() - 1.0;
+        let y = 2.0 * rng.gen::<f64>() - 1.0;
+        let r2 = x * x + y * y;
+        if r2 < 1.0 && r2 > 0.0 {
+            return (x, y, r2);
+        }
+    }
+}
+
+/// Trig-free uniform unit vector: a uniform disk point has a uniform polar
+/// angle, hence so does its doubled angle `(x²-y², 2xy)/r²`.
+#[inline]
+pub(crate) fn random_unit(rng: &mut Xoshiro256StarStar) -> XySpin {
+    let (x, y, r2) = disk_point(rng);
+    let inverse = 1.0 / r2;
+    [(x * x - y * y) * inverse, 2.0 * x * y * inverse]
+}
+
+/// Visit every site in index order with its local field, skipping vacancies.
+#[inline(always)]
+fn sweep_sites(
+    lattice: &Lattice,
+    spins: &mut [XySpin],
+    couplings: &[f64],
+    occupied: Option<&[bool]>,
+    mut update: impl FnMut(&mut [XySpin], usize, XySpin),
+) {
+    let square = lattice
+        .square_shape()
+        .filter(|&(height, width)| height >= 3 && width >= 3);
+    let width = square.map_or(0, |(_, width)| width);
+    let mut visit = |spins: &mut [XySpin], i: usize, interior: bool| {
+        if occupied.is_some_and(|mask| !mask[i]) {
+            return;
+        }
+        let h = if interior {
+            square_interior_field(spins, couplings, i, width)
+        } else {
+            local_field(lattice, spins, couplings, i)
+        };
+        update(spins, i, h);
+    };
+    let Some((height, _)) = square else {
+        for i in 0..lattice.n_spins {
+            visit(spins, i, false);
+        }
+        return;
+    };
+    for i in 0..width {
+        visit(spins, i, false);
+    }
+    for row in 1..height - 1 {
+        let start = row * width;
+        visit(spins, start, false);
+        for i in start + 1..start + width - 1 {
+            visit(spins, i, true);
+        }
+        visit(spins, start + width - 1, false);
+    }
+    for i in (height - 1) * width..height * width {
+        visit(spins, i, false);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LocalMove {
+    Metropolis,
+    Overrelaxation,
+}
+
+/// One pass of `kind` over every system. `occupied: None` means no vacancies;
+/// vacant sites are skipped since they have no bonds and no measured weight.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn local_sweep(
     lattice: &Lattice,
@@ -59,8 +150,9 @@ pub(crate) fn local_sweep(
     temperatures: &[f64],
     ids: &[usize],
     rngs: &mut [Xoshiro256StarStar],
+    occupied: Option<&[bool]>,
     sequential: bool,
-    overrelaxation: bool,
+    kind: LocalMove,
 ) {
     par_over_replicas(
         spins,
@@ -70,26 +162,35 @@ pub(crate) fn local_sweep(
         lattice.n_spins,
         sequential,
         |s, rng, t, _, _| {
-            for i in 0..lattice.n_spins {
-                let h = local_field(lattice, s, couplings, i);
-                if overrelaxation {
-                    // hypot avoids squaring very large/small fields before normalization.
-                    let norm = h[0].hypot(h[1]);
-                    if norm == 0.0 {
-                        continue;
-                    }
-                    let axis = [h[0] / norm, h[1] / norm];
-                    let projection = dot(s[i], axis);
-                    s[i] = [
-                        2.0 * projection * axis[0] - s[i][0],
-                        2.0 * projection * axis[1] - s[i][1],
-                    ];
-                } else {
-                    let proposal = XySpin::random(rng);
+            let beta = 1.0 / t;
+            match kind {
+                LocalMove::Metropolis => sweep_sites(lattice, s, couplings, occupied, |s, i, h| {
+                    let proposal = random_unit(rng);
                     let delta = dot(s[i], h) - dot(proposal, h);
-                    if delta <= 0.0 || rng.gen::<f64>() < (-delta / t).exp() {
+                    if delta <= 0.0 || rng.gen::<f64>() < (-delta * beta).exp() {
                         s[i] = proposal;
                     }
+                }),
+                LocalMove::Overrelaxation => {
+                    sweep_sites(lattice, s, couplings, occupied, |s, i, h| {
+                        let h2 = dot(h, h);
+                        if h2.is_normal() {
+                            let scale = 2.0 * dot(s[i], h) / h2;
+                            s[i] = [scale * h[0] - s[i][0], scale * h[1] - s[i][1]];
+                            return;
+                        }
+                        // hypot avoids squaring very large/small fields before normalization.
+                        let norm = h[0].hypot(h[1]);
+                        if norm == 0.0 {
+                            return;
+                        }
+                        let axis = [h[0] / norm, h[1] / norm];
+                        let projection = dot(s[i], axis);
+                        s[i] = [
+                            2.0 * projection * axis[0] - s[i][0],
+                            2.0 * projection * axis[1] - s[i][1],
+                        ];
+                    })
                 }
             }
         },
@@ -133,20 +234,25 @@ mod tests {
     };
     use rand::SeedableRng;
 
+    fn sweep(lattice: &Lattice, real: &mut XyRealization, kind: LocalMove) {
+        local_sweep(
+            lattice,
+            &mut real.spins,
+            &real.couplings,
+            &real.temperatures,
+            &real.system_ids,
+            &mut real.rngs,
+            None,
+            true,
+            kind,
+        );
+    }
+
+    /// Kernels: 0 Metropolis, 1 SW, 2 Wolff.
     fn apply(lattice: &Lattice, real: &mut XyRealization, kernel: usize) {
-        if kernel == 0 {
-            local_sweep(
-                lattice,
-                &mut real.spins,
-                &real.couplings,
-                &real.temperatures,
-                &real.system_ids,
-                &mut real.rngs,
-                true,
-                false,
-            );
-        } else {
-            embedded_update::<XyEmbedding>(
+        match kernel {
+            0 => sweep(lattice, real, LocalMove::Metropolis),
+            _ => embedded_update::<XyEmbedding>(
                 lattice,
                 &mut real.spins,
                 &real.couplings,
@@ -159,7 +265,7 @@ mod tests {
                 None,
                 true,
                 None,
-            );
+            ),
         }
     }
 
@@ -182,31 +288,13 @@ mod tests {
         }
         assert!((interaction(&lattice, &real.spins, &real.couplings) - initial).abs() < 1e-12);
         for _ in 0..100 {
-            local_sweep(
-                &lattice,
-                &mut real.spins,
-                &real.couplings,
-                &real.temperatures,
-                &real.system_ids,
-                &mut real.rngs,
-                true,
-                true,
-            );
+            sweep(&lattice, &mut real, LocalMove::Overrelaxation);
         }
         assert!((interaction(&lattice, &real.spins, &real.couplings) - initial).abs() < 1e-10);
         assert!(real.spins.iter().all(|s| (dot(*s, *s) - 1.0).abs() < 1e-12));
         let original = real.spins.clone();
         real.couplings.fill(0.0);
-        local_sweep(
-            &lattice,
-            &mut real.spins,
-            &real.couplings,
-            &real.temperatures,
-            &real.system_ids,
-            &mut real.rngs,
-            true,
-            true,
-        );
+        sweep(&lattice, &mut real, LocalMove::Overrelaxation);
         assert_eq!(original, real.spins);
     }
 
@@ -304,6 +392,92 @@ mod tests {
                     "kernel={kernel}: {measured} vs {expected}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn random_unit_is_uniform_on_the_circle() {
+        let mut rng = Xoshiro256StarStar::seed_from_u64(2024);
+        let (n, bins) = (256_000, 64);
+        let mut counts = vec![0u32; bins];
+        for _ in 0..n {
+            let s = random_unit(&mut rng);
+            assert!((dot(s, s) - 1.0).abs() < 1e-15);
+            let fraction = s[1].atan2(s[0]) / std::f64::consts::TAU + 0.5;
+            counts[((fraction * bins as f64) as usize).min(bins - 1)] += 1;
+        }
+        let expected = n as f64 / bins as f64;
+        let chi2: f64 = counts
+            .iter()
+            .map(|&c| (c as f64 - expected).powi(2) / expected)
+            .sum();
+        // 63 degrees of freedom: the 0.9999 quantile is about 110.
+        assert!(chi2 < 110.0, "chi2 = {chi2}");
+    }
+
+    #[test]
+    fn square_specialization_matches_generic_trajectory() {
+        let square = Lattice::new(vec![5, 7]);
+        let generic = Lattice::with_offsets(vec![5, 7], crate::geometry::hypercubic(2));
+        assert!(square.square_shape().is_some() && generic.square_shape().is_none());
+        let mut rng = Xoshiro256StarStar::seed_from_u64(3);
+        let couplings: Vec<f64> = (0..70).map(|_| 2.0 * rng.gen::<f64>() - 0.5).collect();
+        let mask: Vec<bool> = (0..35).map(|i| i % 6 != 4).collect();
+        let bits = |real: &XyRealization| -> Vec<u64> {
+            real.spins.iter().flatten().map(|v| v.to_bits()).collect()
+        };
+        for occupied in [None, Some(&mask[..])] {
+            let mut a = XyRealization::new(&square, couplings.clone(), &[0.4, 1.3], 2, 5);
+            let mut b = XyRealization::new(&generic, couplings.clone(), &[0.4, 1.3], 2, 5);
+            let initial = a.spins.clone();
+            for kind in [
+                LocalMove::Metropolis,
+                LocalMove::Overrelaxation,
+                LocalMove::Metropolis,
+            ] {
+                for (lattice, real) in [(&square, &mut a), (&generic, &mut b)] {
+                    local_sweep(
+                        lattice,
+                        &mut real.spins,
+                        &real.couplings,
+                        &real.temperatures,
+                        &real.system_ids,
+                        &mut real.rngs,
+                        occupied,
+                        true,
+                        kind,
+                    );
+                }
+                assert_eq!(
+                    bits(&a),
+                    bits(&b),
+                    "{kind:?}, masked={}",
+                    occupied.is_some()
+                );
+            }
+            for (i, (now, before)) in a.spins.iter().zip(&initial).enumerate() {
+                let vacant = occupied.is_some_and(|m| !m[i % 35]);
+                assert_eq!(now == before, vacant, "site {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn overrelaxation_conserves_energy_at_extreme_field_scales() {
+        let lattice = Lattice::new(vec![4, 4]);
+        // Fields overflow (1e200) or underflow (1e-200) when squared; both use hypot.
+        for scale in [1e-200, 1.0, 1e200] {
+            let couplings = (0..32).map(|i| scale * (i as f64 - 13.0) / 17.0).collect();
+            let mut real = XyRealization::new(&lattice, couplings, &[0.8], 1, 13);
+            let initial = interaction(&lattice, &real.spins, &real.couplings);
+            let before = real.spins.clone();
+            for _ in 0..50 {
+                sweep(&lattice, &mut real, LocalMove::Overrelaxation);
+            }
+            let energy = interaction(&lattice, &real.spins, &real.couplings);
+            assert!((energy - initial).abs() < 1e-10 * scale, "scale={scale}");
+            assert!(real.spins.iter().all(|s| (dot(*s, *s) - 1.0).abs() < 1e-12));
+            assert_ne!(real.spins, before);
         }
     }
 

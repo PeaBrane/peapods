@@ -9,7 +9,7 @@ use crate::{
     geometry::Lattice,
     spins::{
         model::Spin,
-        xy::{local_sweep, XyEmbedding},
+        xy::{local_sweep, LocalMove, XyEmbedding},
     },
     statistics::{
         autocorrelation::PrecisionAutocorr,
@@ -293,8 +293,14 @@ fn run_xy(
     let mut m2_buf = vec![0.0; n_temps];
     let mut visits = vec![0; n_temps * n_replicas];
     let mut updates = vec![0; n_temps];
+    let occupied = (!occupation.iter().all(|&o| o)).then_some(occupation);
+    let local_move = (cfg.sweep_mode == SweepMode::Metropolis).then_some(LocalMove::Metropolis);
     driver::run_sweeps(cfg, interrupted, on_sweep, |step| {
-        if cfg.sweep_mode == SweepMode::Metropolis {
+        let moves = local_move.into_iter().chain(std::iter::repeat_n(
+            LocalMove::Overrelaxation,
+            config.overrelaxation_sweeps,
+        ));
+        for kind in moves {
             local_sweep(
                 lattice,
                 &mut real.spins,
@@ -302,20 +308,9 @@ fn run_xy(
                 &real.temperatures,
                 &real.system_ids,
                 &mut real.rngs,
+                occupied,
                 cfg.sequential,
-                false,
-            );
-        }
-        for _ in 0..config.overrelaxation_sweeps {
-            local_sweep(
-                lattice,
-                &mut real.spins,
-                &real.couplings,
-                &real.temperatures,
-                &real.system_ids,
-                &mut real.rngs,
-                cfg.sequential,
-                true,
+                kind,
             );
         }
         if step.cluster {
