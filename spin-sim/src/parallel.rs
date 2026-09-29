@@ -77,3 +77,71 @@ pub(crate) fn par_over_replicas_with<S: Copy + Send + Sync, T: Copy + Send + Syn
         (0..system_ids.len()).into_par_iter().for_each(work);
     }
 }
+
+/// One replica's mutable state inside a grouped task.
+pub(crate) struct ReplicaSlot<'a, S, T, O> {
+    pub spins: &'a mut [S],
+    pub rng: &'a mut Xoshiro256StarStar,
+    pub temp: T,
+    pub temp_id: usize,
+    pub output: &'a mut O,
+}
+
+/// Like [`par_over_replicas_with`], but hands each task up to `group` consecutive
+/// temperature slots so kernels can interleave independent systems on one core.
+///
+/// SAFETY: as for [`par_over_replicas`], `system_ids` must not repeat a system.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn par_over_replica_groups<S: Copy + Send + Sync, T: Copy + Send + Sync, O: Send>(
+    spins: &mut [S],
+    rngs: &mut [Xoshiro256StarStar],
+    temperatures: &[T],
+    system_ids: &[usize],
+    n_spins: usize,
+    sequential: bool,
+    group: usize,
+    outputs: &mut [O],
+    body: impl Fn(&mut [ReplicaSlot<'_, S, T, O>]) + Send + Sync,
+) {
+    let n_systems = rngs.len();
+    assert!(
+        group > 0
+            && system_ids.len() <= n_systems
+            && temperatures.len() >= system_ids.len()
+            && outputs.len() == n_systems
+            && spins.len() >= n_systems * n_spins,
+        "replica buffers disagree with the system count"
+    );
+    let sp = spins.as_mut_ptr() as usize;
+    let rp = rngs.as_mut_ptr() as usize;
+    let op = outputs.as_mut_ptr() as usize;
+    let n_slots = system_ids.len();
+
+    let work = |chunk: usize| unsafe {
+        let start = chunk * group;
+        let end = (start + group).min(n_slots);
+        let mut slots = Vec::with_capacity(end - start);
+        for temp_id in start..end {
+            let system_id = system_ids[temp_id];
+            assert!(system_id < n_systems, "system id out of range");
+            slots.push(ReplicaSlot {
+                spins: std::slice::from_raw_parts_mut(
+                    (sp as *mut S).add(system_id * n_spins),
+                    n_spins,
+                ),
+                rng: &mut *(rp as *mut Xoshiro256StarStar).add(system_id),
+                temp: temperatures[temp_id],
+                temp_id,
+                output: &mut *(op as *mut O).add(system_id),
+            });
+        }
+        body(&mut slots);
+    };
+
+    let n_chunks = n_slots.div_ceil(group);
+    if sequential {
+        (0..n_chunks).for_each(work);
+    } else {
+        (0..n_chunks).into_par_iter().for_each(work);
+    }
+}

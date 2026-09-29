@@ -1,6 +1,6 @@
 use super::{threshold, uniform_draw, uniform_f32};
 use crate::geometry::Lattice;
-use crate::parallel::{par_over_replicas, par_over_replicas_with};
+use crate::parallel::{par_over_replica_groups, ReplicaSlot};
 use rand_xoshiro::Xoshiro256StarStar;
 use std::ops::Add;
 
@@ -47,6 +47,25 @@ fn local_field<C: Coupling>(
 }
 
 #[inline]
+fn cubic_interior_field<C: Coupling>(
+    spin_slice: &[i8],
+    couplings: &[C],
+    i: usize,
+    s0: usize,
+    s1: usize,
+) -> C::Field {
+    // Interior sites of a canonical 3D lattice, summed in `local_field` order.
+    let mut h = C::Field::default();
+    h = h + C::term(spin_slice[i + s0], couplings[i * 3]);
+    h = h + C::term(spin_slice[i - s0], couplings[(i - s0) * 3]);
+    h = h + C::term(spin_slice[i + s1], couplings[i * 3 + 1]);
+    h = h + C::term(spin_slice[i - s1], couplings[(i - s1) * 3 + 1]);
+    h = h + C::term(spin_slice[i + 1], couplings[i * 3 + 2]);
+    h = h + C::term(spin_slice[i - 1], couplings[(i - 1) * 3 + 2]);
+    h
+}
+
+#[inline]
 fn square_interior_field<C: Coupling>(
     spin_slice: &[i8],
     couplings: &[C],
@@ -64,47 +83,103 @@ fn square_interior_field<C: Coupling>(
     h
 }
 
-#[inline]
-fn sweep_sites<C: Coupling>(
+/// Visits every site of `K` independent systems in the same fixed order, updating
+/// all `K` systems at a site before moving on. Each system sees exactly the order
+/// and draws of a solo sweep; interleaving only overlaps their dependency chains
+/// (flip -> field -> acceptance) on one core.
+#[inline(always)]
+fn sweep_sites<C: Coupling, St, const K: usize>(
     lattice: &Lattice,
-    spin_slice: &mut [i8],
+    states: &mut [St; K],
     couplings: &[C],
-    mut attempt: impl FnMut(&mut [i8], usize, C::Field),
+    spins: impl Fn(&mut St) -> &mut [i8],
+    mut attempt: impl FnMut(&mut St, usize, C::Field),
 ) {
+    #[inline(always)]
+    fn visit_generic<C: Coupling, St, const K: usize>(
+        lattice: &Lattice,
+        states: &mut [St; K],
+        couplings: &[C],
+        spins: &impl Fn(&mut St) -> &mut [i8],
+        attempt: &mut impl FnMut(&mut St, usize, C::Field),
+        i: usize,
+    ) {
+        for state in states.iter_mut() {
+            let h = local_field(lattice, spins(state), couplings, i);
+            attempt(state, i, h);
+        }
+    }
+    if let Some([l0, l1, l2]) = lattice
+        .cubic_shape()
+        .filter(|shape| shape.iter().all(|&l| l >= 3))
+    {
+        let (s0, s1) = (l1 * l2, l2);
+        for x in 0..l0 {
+            for y in 0..l1 {
+                let row = (x * l1 + y) * l2;
+                if x == 0 || x == l0 - 1 || y == 0 || y == l1 - 1 {
+                    for i in row..row + l2 {
+                        visit_generic(lattice, states, couplings, &spins, &mut attempt, i);
+                    }
+                    continue;
+                }
+                visit_generic(lattice, states, couplings, &spins, &mut attempt, row);
+                for i in row + 1..row + l2 - 1 {
+                    for state in states.iter_mut() {
+                        let h = cubic_interior_field(spins(state), couplings, i, s0, s1);
+                        attempt(state, i, h);
+                    }
+                }
+                visit_generic(
+                    lattice,
+                    states,
+                    couplings,
+                    &spins,
+                    &mut attempt,
+                    row + l2 - 1,
+                );
+            }
+        }
+        return;
+    }
+
     let Some((height, width)) = lattice
         .square_shape()
         .filter(|&(height, width)| height >= 3 && width >= 3)
     else {
         for i in 0..lattice.n_spins {
-            let h = local_field(lattice, spin_slice, couplings, i);
-            attempt(spin_slice, i, h);
+            visit_generic(lattice, states, couplings, &spins, &mut attempt, i);
         }
         return;
     };
 
     for i in 0..width {
-        let h = local_field(lattice, spin_slice, couplings, i);
-        attempt(spin_slice, i, h);
+        visit_generic(lattice, states, couplings, &spins, &mut attempt, i);
     }
 
     for row in 1..height - 1 {
         let row_start = row * width;
-        let h = local_field(lattice, spin_slice, couplings, row_start);
-        attempt(spin_slice, row_start, h);
+        visit_generic(lattice, states, couplings, &spins, &mut attempt, row_start);
 
         for i in row_start + 1..row_start + width - 1 {
-            let h = square_interior_field(spin_slice, couplings, i, width);
-            attempt(spin_slice, i, h);
+            for state in states.iter_mut() {
+                let h = square_interior_field(spins(state), couplings, i, width);
+                attempt(state, i, h);
+            }
         }
 
-        let row_end = row_start + width - 1;
-        let h = local_field(lattice, spin_slice, couplings, row_end);
-        attempt(spin_slice, row_end, h);
+        visit_generic(
+            lattice,
+            states,
+            couplings,
+            &spins,
+            &mut attempt,
+            row_start + width - 1,
+        );
     }
 
     for i in (height - 1) * width..height * width {
-        let h = local_field(lattice, spin_slice, couplings, i);
-        attempt(spin_slice, i, h);
+        visit_generic(lattice, states, couplings, &spins, &mut attempt, i);
     }
 }
 
@@ -210,35 +285,132 @@ pub(crate) struct UnitSweepDelta {
     pub magnetization: i64,
 }
 
-/// Integer sweep of one system with unit couplings; with `TRACK` it also returns the
-/// exact observable change.
-#[inline(always)]
-fn unit_kernel<const TRACK: bool>(
-    lattice: &Lattice,
-    spin_slice: &mut [i8],
-    rng: &mut Xoshiro256StarStar,
-    lookup: &UnitCouplingLookup,
-    temperature_id: usize,
-) -> UnitSweepDelta {
-    let row = lookup.row(temperature_id);
-    let mut gain_sum = 0i64;
-    let mut magnetization = 0i64;
-    sweep_sites(lattice, spin_slice, &lookup.couplings, |spins, i, h| {
-        let spin = i32::from(spins[i]);
-        let gain = -spin * h;
-        let accept = uniform_draw(rng) < row[(gain + lookup.offset) as usize];
-        if TRACK {
-            let flip = i32::from(accept);
-            gain_sum += i64::from(gain * flip);
-            magnetization -= i64::from(2 * spin * flip);
-        }
-        flip_if(spins, i, accept);
-    });
-    // A flip with gain g = -s h raises -H by 2g.
-    UnitSweepDelta {
-        interaction: 2 * gain_sum,
-        magnetization,
+/// Where a unit-coupling sweep reports its exact observable change, if anywhere.
+pub(crate) trait DeltaSink: Send {
+    const TRACK: bool;
+    fn store(&mut self, delta: UnitSweepDelta);
+}
+
+impl DeltaSink for () {
+    const TRACK: bool = false;
+    fn store(&mut self, _: UnitSweepDelta) {}
+}
+
+impl DeltaSink for UnitSweepDelta {
+    const TRACK: bool = true;
+    fn store(&mut self, delta: UnitSweepDelta) {
+        *self = delta;
     }
+}
+
+type Slot<'a, O> = ReplicaSlot<'a, i8, f32, O>;
+
+/// Systems per task in sequential sweeps; enough independent chains to fill the core.
+const GROUP: usize = 4;
+
+// Kernel states hold the RNG by value: a stack copy lets LLVM keep the generator in
+// registers, which it cannot do behind a reference that spin writes might alias.
+struct UnitState<'a> {
+    spins: &'a mut [i8],
+    rng: Xoshiro256StarStar,
+    row: &'a [i64],
+    gain_sum: i64,
+    magnetization: i64,
+}
+
+#[inline(always)]
+fn unit_group<const K: usize, O: DeltaSink>(
+    lattice: &Lattice,
+    lookup: &UnitCouplingLookup,
+    slots: &mut [Slot<'_, O>],
+) {
+    let slots: &mut [Slot<'_, O>; K] = slots.try_into().unwrap();
+    let offset = lookup.offset;
+    let mut states = slots.each_mut().map(|slot| UnitState {
+        row: lookup.row(slot.temp_id),
+        spins: &mut *slot.spins,
+        rng: slot.rng.clone(),
+        gain_sum: 0,
+        magnetization: 0,
+    });
+    sweep_sites(
+        lattice,
+        &mut states,
+        &lookup.couplings,
+        |state| &mut *state.spins,
+        |state, i, h| {
+            let spin = i32::from(state.spins[i]);
+            let gain = -spin * h;
+            let accept = uniform_draw(&mut state.rng) < state.row[(gain + offset) as usize];
+            if O::TRACK {
+                let flip = i32::from(accept);
+                state.gain_sum += i64::from(gain * flip);
+                state.magnetization -= i64::from(2 * spin * flip);
+            }
+            flip_if(state.spins, i, accept);
+        },
+    );
+    // A flip with gain g = -s h raises -H by 2g.
+    let finished = states.map(|state| {
+        let delta = UnitSweepDelta {
+            interaction: 2 * state.gain_sum,
+            magnetization: state.magnetization,
+        };
+        (state.rng, delta)
+    });
+    for (slot, (rng, delta)) in slots.iter_mut().zip(finished) {
+        *slot.rng = rng;
+        slot.output.store(delta);
+    }
+}
+
+struct GenericState<'a> {
+    spins: &'a mut [i8],
+    rng: Xoshiro256StarStar,
+    beta2: f32,
+}
+
+#[inline(always)]
+fn generic_group<const K: usize, O>(
+    lattice: &Lattice,
+    couplings: &[f32],
+    acceptance: Acceptance,
+    slots: &mut [Slot<'_, O>],
+) {
+    let slots: &mut [Slot<'_, O>; K] = slots.try_into().unwrap();
+    let mut states = slots.each_mut().map(|slot| GenericState {
+        beta2: 2.0 / slot.temp,
+        spins: &mut *slot.spins,
+        rng: slot.rng.clone(),
+    });
+    sweep_sites(
+        lattice,
+        &mut states,
+        couplings,
+        |state| &mut *state.spins,
+        |state, i, h| {
+            let gain = -(state.spins[i] as f32) * h;
+            let accept = acceptance.accepts(&mut state.rng, gain, state.beta2);
+            flip_if(state.spins, i, accept);
+        },
+    );
+    let rngs = states.map(|state| state.rng);
+    for (slot, rng) in slots.iter_mut().zip(rngs) {
+        *slot.rng = rng;
+    }
+}
+
+/// Dispatches a group of up to [`GROUP`] slots to the matching const-width kernel.
+macro_rules! by_group_width {
+    ($slots:expr, $kernel:ident, $($arg:expr),*) => {
+        match $slots.len() {
+            4 => $kernel::<4, _>($($arg,)* $slots),
+            3 => $kernel::<3, _>($($arg,)* $slots),
+            2 => $kernel::<2, _>($($arg,)* $slots),
+            1 => $kernel::<1, _>($($arg,)* $slots),
+            width => unreachable!("group width {width}"),
+        }
+    };
 }
 
 /// Single-spin-flip sweep over all replicas.
@@ -261,52 +433,45 @@ pub(crate) fn single_spin_sweep(
     deltas: Option<&mut [UnitSweepDelta]>,
 ) {
     let n_spins = lattice.n_spins;
-    if let Some(lookup) = lookup {
-        let Some(deltas) = deltas else {
-            par_over_replicas(
-                spins,
-                rngs,
-                temperatures,
-                system_ids,
-                n_spins,
-                sequential,
-                |spin_slice, rng, _temperature, temperature_id, _system_id| {
-                    unit_kernel::<false>(lattice, spin_slice, rng, lookup, temperature_id);
-                },
-            );
-            return;
-        };
-        par_over_replicas_with(
+    // Parallel sweeps keep one system per task: equal large tasks balance poorly
+    // across heterogeneous cores (measured 2.3x slower with groups of four).
+    let group = if sequential { GROUP } else { 1 };
+    let mut no_outputs = vec![(); rngs.len()];
+    match (lookup, deltas) {
+        (Some(lookup), Some(deltas)) => par_over_replica_groups(
             spins,
             rngs,
             temperatures,
             system_ids,
             n_spins,
             sequential,
+            group,
             deltas,
-            |spin_slice, rng, _temperature, temperature_id, _system_id, delta| {
-                *delta = unit_kernel::<true>(lattice, spin_slice, rng, lookup, temperature_id);
-            },
-        );
-        return;
+            |slots| by_group_width!(slots, unit_group, lattice, lookup),
+        ),
+        (Some(lookup), None) => par_over_replica_groups(
+            spins,
+            rngs,
+            temperatures,
+            system_ids,
+            n_spins,
+            sequential,
+            group,
+            &mut no_outputs,
+            |slots| by_group_width!(slots, unit_group, lattice, lookup),
+        ),
+        (None, _) => par_over_replica_groups(
+            spins,
+            rngs,
+            temperatures,
+            system_ids,
+            n_spins,
+            sequential,
+            group,
+            &mut no_outputs,
+            |slots| by_group_width!(slots, generic_group, lattice, couplings, acceptance),
+        ),
     }
-
-    par_over_replicas(
-        spins,
-        rngs,
-        temperatures,
-        system_ids,
-        n_spins,
-        sequential,
-        |spin_slice, rng, temperature, _, _| {
-            let beta2 = 2.0 / temperature;
-            sweep_sites(lattice, spin_slice, couplings, |spins, i, h| {
-                let gain = -(spins[i] as f32) * h;
-                let accept = acceptance.accepts(rng, gain, beta2);
-                flip_if(spins, i, accept);
-            });
-        },
-    );
 }
 
 #[cfg(test)]
@@ -339,6 +504,46 @@ mod tests {
             lookup,
             None,
         );
+    }
+
+    #[test]
+    fn cubic_specialization_matches_generic_trajectory() {
+        let shape = vec![4, 5, 3];
+        let specialized = Lattice::new(shape.clone());
+        let generic = Lattice::with_offsets(shape, hypercubic(3));
+        let n_spins = specialized.n_spins;
+        let initial: Vec<i8> = (0..3 * n_spins)
+            .map(|i| if i % 3 == 0 { -1 } else { 1 })
+            .collect();
+        let couplings: Vec<f32> = (0..n_spins * 3)
+            .map(|i| ((i % 7) as f32 - 3.0) / 3.0)
+            .collect();
+        let temperatures = [0.8, 1.5, 2.5];
+        let system_ids = [1, 2, 0];
+        for acceptance in [Acceptance::Metropolis, Acceptance::Gibbs] {
+            let mut outcomes = Vec::new();
+            for lattice in [&specialized, &generic] {
+                let mut spins = initial.clone();
+                let mut rngs: Vec<_> = (0..3).map(Xoshiro256StarStar::seed_from_u64).collect();
+                for _ in 0..5 {
+                    sweep(
+                        lattice,
+                        &mut spins,
+                        &couplings,
+                        &temperatures,
+                        &system_ids,
+                        &mut rngs,
+                        acceptance,
+                        None,
+                    );
+                }
+                outcomes.push((
+                    spins,
+                    rngs.iter_mut().map(|r| r.next_u64()).collect::<Vec<_>>(),
+                ));
+            }
+            assert_eq!(outcomes[0], outcomes[1], "{acceptance:?}");
+        }
     }
 
     #[test]

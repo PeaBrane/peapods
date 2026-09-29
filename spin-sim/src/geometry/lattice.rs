@@ -24,6 +24,7 @@ pub struct Lattice {
     /// Layout: `bwd_neighbors[i * n_neighbors + d]`.
     bwd_neighbors: Vec<u32>,
     canonical_square_shape: Option<(usize, usize)>,
+    canonical_cubic_shape: Option<[usize; 3]>,
 }
 
 impl Lattice {
@@ -31,8 +32,10 @@ impl Lattice {
     pub fn new(shape: Vec<usize>) -> Self {
         let n_dims = shape.len();
         let canonical_square_shape = (n_dims == 2).then(|| (shape[0], shape[1]));
+        let canonical_cubic_shape = (n_dims == 3).then(|| [shape[0], shape[1], shape[2]]);
         let mut lattice = Self::with_offsets(shape, hypercubic(n_dims));
         lattice.canonical_square_shape = canonical_square_shape;
+        lattice.canonical_cubic_shape = canonical_cubic_shape;
         lattice
     }
 
@@ -89,12 +92,20 @@ impl Lattice {
             fwd_neighbors,
             bwd_neighbors,
             canonical_square_shape: None,
+            canonical_cubic_shape: None,
         }
     }
 
     #[inline]
     pub(crate) fn square_shape(&self) -> Option<(usize, usize)> {
         self.canonical_square_shape
+    }
+
+    /// Shape of a lattice built by [`Lattice::new`] with three dimensions, whose
+    /// directions have strides `L1 * L2`, `L2` and 1.
+    #[inline]
+    pub(crate) fn cubic_shape(&self) -> Option<[usize; 3]> {
+        self.canonical_cubic_shape
     }
 
     #[inline]
