@@ -1,4 +1,5 @@
 use crate::geometry::Lattice;
+use rayon::prelude::*;
 
 /// Compute per-system average energy, and optionally per-spin forward interactions.
 ///
@@ -75,6 +76,89 @@ pub fn compute_energies_and_magnetizations_into(
     );
 }
 
+/// Per-system energies (-H/N) and magnetization sums, parallel over systems unless
+/// `sequential`. Results match [`compute_energies_and_magnetizations_into`] exactly.
+pub(crate) fn refresh_energies_and_magnetizations(
+    lattice: &Lattice,
+    spins: &[i8],
+    couplings: &[f32],
+    energies: &mut [f32],
+    magnetization_sums: &mut [i64],
+    sequential: bool,
+) {
+    let n_spins = lattice.n_spins;
+    assert_eq!(spins.len(), energies.len() * n_spins);
+    assert_eq!(energies.len(), magnetization_sums.len());
+    let refresh = |((system, energy), magnetization): ((&[i8], &mut f32), &mut i64)| {
+        compute_energies_and_magnetizations_into(
+            lattice,
+            system,
+            couplings,
+            std::slice::from_mut(energy),
+            std::slice::from_mut(magnetization),
+        );
+    };
+    let chunks = spins.chunks_exact(n_spins).zip(energies.iter_mut());
+    if sequential {
+        chunks.zip(magnetization_sums.iter_mut()).for_each(refresh);
+        return;
+    }
+    spins
+        .par_chunks_exact(n_spins)
+        .zip(energies.par_iter_mut())
+        .zip(magnetization_sums.par_iter_mut())
+        .for_each(refresh);
+}
+
+/// Exact -H totals and magnetization sums for couplings in {-1, 0, 1}, parallel over
+/// systems unless `sequential`.
+pub(crate) fn refresh_unit_totals(
+    lattice: &Lattice,
+    spins: &[i8],
+    couplings: &[i8],
+    totals: &mut [i64],
+    magnetization_sums: &mut [i64],
+    sequential: bool,
+) {
+    let n_spins = lattice.n_spins;
+    let n_neighbors = lattice.n_neighbors;
+    assert_eq!(spins.len(), totals.len() * n_spins);
+    assert_eq!(totals.len(), magnetization_sums.len());
+    assert_eq!(couplings.len(), n_spins * n_neighbors);
+    let refresh = |((system, total), magnetization): ((&[i8], &mut i64), &mut i64)| {
+        let mut bonds = 0i64;
+        let mut spin_sum = 0i64;
+        for i in 0..n_spins {
+            let spin = system[i];
+            spin_sum += i64::from(spin);
+            let mut field = 0i32;
+            for d in 0..n_neighbors {
+                let j = lattice.neighbor_fwd(i, d);
+                field += i32::from(system[j] * couplings[i * n_neighbors + d]);
+            }
+            bonds += i64::from(i32::from(spin) * field);
+        }
+        *total = bonds;
+        *magnetization = spin_sum;
+    };
+    let chunks = spins.chunks_exact(n_spins).zip(totals.iter_mut());
+    if sequential {
+        chunks.zip(magnetization_sums.iter_mut()).for_each(refresh);
+        return;
+    }
+    spins
+        .par_chunks_exact(n_spins)
+        .zip(totals.par_iter_mut())
+        .zip(magnetization_sums.par_iter_mut())
+        .for_each(refresh);
+}
+
+/// The cached -H/N for an exact -H total, identical to [`compute_energies_into`].
+#[inline]
+pub(crate) fn unit_energy(total: i64, n_spins: usize) -> f32 {
+    (total as f64 / n_spins as f64) as f32
+}
+
 fn compute_energies_inner(
     lattice: &Lattice,
     spins: &[i8],
@@ -144,6 +228,52 @@ mod tests {
                 *energy,
                 system_interactions.iter().sum::<f32>() / lattice.n_spins as f32
             );
+        }
+    }
+
+    #[test]
+    fn refresh_paths_match_serial_energies() {
+        let lattice = Lattice::new(vec![5, 4]);
+        let n = lattice.n_spins;
+        let unit: Vec<i8> = (0..n * 2).map(|i| [1, -1, 0][i % 3]).collect();
+        let couplings: Vec<f32> = unit.iter().map(|&c| f32::from(c)).collect();
+        let spins: Vec<i8> = (0..3 * n)
+            .map(|i| if (i * 31) % 7 < 3 { -1 } else { 1 })
+            .collect();
+        let mut expected = vec![0.0; 3];
+        let mut expected_mags = vec![0; 3];
+        compute_energies_and_magnetizations_into(
+            &lattice,
+            &spins,
+            &couplings,
+            &mut expected,
+            &mut expected_mags,
+        );
+        for sequential in [false, true] {
+            let mut energies = vec![0.0; 3];
+            let mut mags = vec![0; 3];
+            refresh_energies_and_magnetizations(
+                &lattice,
+                &spins,
+                &couplings,
+                &mut energies,
+                &mut mags,
+                sequential,
+            );
+            assert_eq!((&energies, &mags), (&expected, &expected_mags));
+
+            let mut totals = vec![0; 3];
+            let mut unit_mags = vec![0; 3];
+            refresh_unit_totals(
+                &lattice,
+                &spins,
+                &unit,
+                &mut totals,
+                &mut unit_mags,
+                sequential,
+            );
+            let unit_energies: Vec<f32> = totals.iter().map(|&t| unit_energy(t, n)).collect();
+            assert_eq!((&unit_energies, &unit_mags), (&expected, &expected_mags));
         }
     }
 
