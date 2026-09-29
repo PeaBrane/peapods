@@ -201,6 +201,8 @@ pub struct PhysicsCollector {
     components: usize,
     sums: Vec<Vec<f64>>,
     block_sums: Vec<Vec<f64>>,
+    /// Temperatures whose block rows are stored; empty means all.
+    block_temperatures: Vec<bool>,
     block_count: u64,
     block_sweeps: usize,
     blocks: Vec<MomentBlock>,
@@ -298,6 +300,7 @@ impl PhysicsCollector {
             } else {
                 vec![]
             },
+            block_temperatures: vec![],
             block_count: 0,
             block_sweeps: 0,
             blocks: vec![],
@@ -526,12 +529,32 @@ impl PhysicsCollector {
             self.flush_block();
         }
     }
+    /// Stores block rows only for temperatures where `owned` holds; the rest stay
+    /// empty. Collectors that each measure a subset of temperatures use this so
+    /// their blocks do not repeat everyone else's rows.
+    pub(crate) fn own_block_temperatures(&mut self, owned: impl Fn(usize) -> bool) {
+        self.block_temperatures = (0..self.sums.len()).map(owned).collect();
+    }
+
     fn flush_block(&mut self) {
         if self.block_count == 0 {
             return;
         }
+        let sums = self
+            .block_sums
+            .iter()
+            .enumerate()
+            .map(|(t, row)| {
+                let stored = self.block_temperatures.get(t).copied().unwrap_or(true);
+                if stored {
+                    row.clone()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
         self.blocks.push(MomentBlock {
-            sums: self.block_sums.clone(),
+            sums,
             count: self.block_count,
             sweeps: self.block_sweeps,
         });

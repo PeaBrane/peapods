@@ -285,9 +285,16 @@ impl Measurement {
         options: &PhysicsOptions,
         max_groups: usize,
     ) -> Result<Self, String> {
-        let groups = (0..n_temps.min(max_groups).max(1))
-            .map(|_| PhysicsCollector::new(lattice, n_temps, options, 2))
-            .collect::<Result<_, _>>()?;
+        let n_groups = n_temps.min(max_groups).max(1);
+        let groups = (0..n_groups)
+            .map(|group| {
+                let mut collector = PhysicsCollector::new(lattice, n_temps, options, 2)?;
+                if n_groups > 1 {
+                    collector.own_block_temperatures(|t| t % n_groups == group);
+                }
+                Ok(collector)
+            })
+            .collect::<Result<_, String>>()?;
         Ok(Self { groups })
     }
 
