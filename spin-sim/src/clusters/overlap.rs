@@ -1,5 +1,5 @@
 use super::utils::{
-    dfs_cluster, find, find_seed, top4_sizes, uf_bonds, uf_bonds_extend, uf_bonds_with,
+    dfs_cluster, find_seed, top4_sizes, uf_bonds, uf_bonds_extend, uf_bonds_with,
     uf_flatten_counts, uf_histogram, BondMetrics, BondSampler, GraphObservationSlot, PooledUf,
 };
 use crate::config::{ClusterAction, ClusterMode, OverlapClusterBuildMode};
@@ -217,7 +217,8 @@ fn houdayer_step(
         let sp_ptr = sp as *mut i8;
         let slot = t * n_pairs + g;
 
-        if has_snap && systems.len() >= 2 {
+        // Only the first group per temperature is published as a snapshot.
+        if spp != 0 && sidp != 0 && g == 0 && systems.len() >= 2 {
             let base_a = systems[0] * n_spins;
             let base_b = systems[1] * n_spins;
             let spin_slot = &mut *(spp as *mut Vec<[Vec<i8>; 2]>).add(slot);
@@ -251,56 +252,43 @@ fn houdayer_step(
                 uf_bonds(lattice, &mut should_bond)
             };
 
+            // Statistics and snapshots describe the graph, so record them before the
+            // Wolff seed search, which may find no active site.
+            let counts = uf_flatten_counts(&mut uf.parent);
+            if has_csd {
+                let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
+                uf_histogram(&counts, csd_slot.as_mut_slice());
+            }
+            if has_top4 {
+                let out = &mut *(tp as *mut [u32; 4]).add(slot);
+                *out = top4_sizes(&counts);
+            }
+            if has_snap {
+                let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
+                snap_slot.clear();
+                snap_slot.extend_from_slice(&uf.parent[..n_spins]);
+            }
+            if let Some(metrics) = metrics {
+                let observation_slot = &mut *(op as *mut GraphObservationSlot).add(slot);
+                *observation_slot = metrics.finish(&counts);
+            }
+            if action == ClusterAction::Observe {
+                return;
+            }
+
             if wolff {
                 let Some(seed) = find_seed(n_spins, rng, &is_active) else {
                     return;
                 };
-                let seed_root = find(&mut uf.parent, seed as u32);
-                for i in 0..n_spins {
-                    if find(&mut uf.parent, i as u32) == seed_root {
+                let seed_root = uf.parent[seed];
+                for (i, &p) in uf.parent.iter().enumerate().take(n_spins) {
+                    if p == seed_root {
                         for &system in systems {
                             *sp_ptr.add(system * n_spins + i) *= -1;
                         }
                     }
                 }
-                if has_csd || has_top4 || has_snap {
-                    let counts = uf_flatten_counts(&mut uf.parent);
-                    if has_csd {
-                        let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
-                        uf_histogram(&counts, csd_slot.as_mut_slice());
-                    }
-                    if has_top4 {
-                        let out = &mut *(tp as *mut [u32; 4]).add(slot);
-                        *out = top4_sizes(&counts);
-                    }
-                    if has_snap {
-                        let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
-                        snap_slot.clear();
-                        snap_slot.extend_from_slice(&uf.parent[..n_spins]);
-                    }
-                }
             } else {
-                let counts = uf_flatten_counts(&mut uf.parent);
-                if has_csd {
-                    let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
-                    uf_histogram(&counts, csd_slot.as_mut_slice());
-                }
-                if has_top4 {
-                    let out = &mut *(tp as *mut [u32; 4]).add(slot);
-                    *out = top4_sizes(&counts);
-                }
-                if has_snap {
-                    let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
-                    snap_slot.clear();
-                    snap_slot.extend_from_slice(&uf.parent[..n_spins]);
-                }
-                if let Some(metrics) = metrics {
-                    let observation_slot = &mut *(op as *mut GraphObservationSlot).add(slot);
-                    *observation_slot = metrics.finish(&counts);
-                }
-                if action == ClusterAction::Observe {
-                    return;
-                }
                 let storage = &mut *uf;
                 storage.rank.fill(u8::MAX);
                 for &p in storage.parent.iter().take(n_spins) {
@@ -426,7 +414,8 @@ fn jorg_step(
         let sp_ptr = sp as *mut i8;
         let slot = t * n_pairs + g;
 
-        if has_snap {
+        // Only the first pair per temperature is published as a snapshot.
+        if spp != 0 && sidp != 0 && g == 0 {
             let spin_slot = &mut *(spp as *mut Vec<[Vec<i8>; 2]>).add(slot);
             spin_slot.push([
                 std::slice::from_raw_parts(sp_ptr.add(base_a), n_spins).to_vec(),
@@ -461,55 +450,42 @@ fn jorg_step(
                 uf_bonds(lattice, &mut should_bond)
             };
 
+            // Statistics and snapshots describe the graph, so record them before the
+            // Wolff seed search, which may find no active site.
+            let counts = uf_flatten_counts(&mut uf.parent);
+            if has_csd {
+                let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
+                uf_histogram(&counts, csd_slot.as_mut_slice());
+            }
+            if has_top4 {
+                let out = &mut *(tp as *mut [u32; 4]).add(slot);
+                *out = top4_sizes(&counts);
+            }
+            if has_snap {
+                let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
+                snap_slot.clear();
+                snap_slot.extend_from_slice(&uf.parent[..n_spins]);
+            }
+            if let Some(metrics) = metrics {
+                let observation_slot = &mut *(op as *mut GraphObservationSlot).add(slot);
+                *observation_slot = metrics.finish(&counts);
+            }
+            if action == ClusterAction::Observe {
+                return;
+            }
+
             if wolff {
                 let Some(seed) = find_seed(n_spins, rng, &is_active) else {
                     return;
                 };
-                let seed_root = find(&mut uf.parent, seed as u32);
-                for i in 0..n_spins {
-                    if find(&mut uf.parent, i as u32) == seed_root {
+                let seed_root = uf.parent[seed];
+                for (i, &p) in uf.parent.iter().enumerate().take(n_spins) {
+                    if p == seed_root {
                         *sp_ptr.add(base_a + i) *= -1;
                         *sp_ptr.add(base_b + i) *= -1;
                     }
                 }
-                if has_csd || has_top4 || has_snap {
-                    let counts = uf_flatten_counts(&mut uf.parent);
-                    if has_csd {
-                        let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
-                        uf_histogram(&counts, csd_slot.as_mut_slice());
-                    }
-                    if has_top4 {
-                        let out = &mut *(tp as *mut [u32; 4]).add(slot);
-                        *out = top4_sizes(&counts);
-                    }
-                    if has_snap {
-                        let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
-                        snap_slot.clear();
-                        snap_slot.extend_from_slice(&uf.parent[..n_spins]);
-                    }
-                }
             } else {
-                let counts = uf_flatten_counts(&mut uf.parent);
-                if has_csd {
-                    let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
-                    uf_histogram(&counts, csd_slot.as_mut_slice());
-                }
-                if has_top4 {
-                    let out = &mut *(tp as *mut [u32; 4]).add(slot);
-                    *out = top4_sizes(&counts);
-                }
-                if has_snap {
-                    let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
-                    snap_slot.clear();
-                    snap_slot.extend_from_slice(&uf.parent[..n_spins]);
-                }
-                if let Some(metrics) = metrics {
-                    let observation_slot = &mut *(op as *mut GraphObservationSlot).add(slot);
-                    *observation_slot = metrics.finish(&counts);
-                }
-                if action == ClusterAction::Observe {
-                    return;
-                }
                 let storage = &mut *uf;
                 storage.rank.fill(u8::MAX);
                 for &p in storage.parent.iter().take(n_spins) {
@@ -703,7 +679,8 @@ fn cmr_step(
         let sp_ptr = sp as *mut i8;
         let slot = t * n_pairs + g;
 
-        if has_snap {
+        // Only the first pair per temperature is published as a snapshot.
+        if spp != 0 && sidp != 0 && g == 0 {
             let spin_slot = &mut *(spp as *mut Vec<[Vec<i8>; 2]>).add(slot);
             spin_slot.push([
                 std::slice::from_raw_parts(sp_ptr.add(base_a), n_spins).to_vec(),
@@ -1104,6 +1081,50 @@ mod tests {
                 (observed - mean).abs() < 5.0 * se,
                 "{mode:?} {cluster_mode:?} stats={with_stats} {shape:?}: {name} {observed:.5} vs exact {mean:.5} (se {se:.5})"
             );
+        }
+    }
+
+    /// With identical replicas no site is active, so the Wolff seed search fails; the
+    /// all-singleton cluster statistics must still be written for every build mode.
+    #[test]
+    fn wolff_records_statistics_without_active_sites() {
+        let lattice = Lattice::new(vec![4, 4]);
+        let n = lattice.n_spins;
+        let couplings = vec![1.0; n * lattice.n_neighbors];
+        for mode in [
+            OverlapClusterBuildMode::Houdayer(2),
+            OverlapClusterBuildMode::Jorg,
+        ] {
+            let mut spins = vec![1i8; 2 * n];
+            let mut rngs = vec![Xoshiro256StarStar::seed_from_u64(1)];
+            let mut csd = vec![vec![0u64; n + 1]];
+            let mut top4 = vec![[0u32; 4]];
+            let mut snapshot = vec![Vec::new()];
+            overlap_update(
+                &lattice,
+                &mut spins,
+                &couplings,
+                &[1.0],
+                &[0, 1],
+                2,
+                1,
+                &mut rngs,
+                &mode,
+                ClusterMode::Wolff,
+                ClusterAction::Update,
+                Some(&mut csd),
+                Some(&mut top4),
+                None,
+                true,
+                Some(&mut snapshot),
+                None,
+                None,
+                None,
+            );
+            assert_eq!(csd[0][1], n as u64, "{mode:?}");
+            assert_eq!(top4[0], [1; 4], "{mode:?}");
+            assert_eq!(snapshot[0], (0..n as u32).collect::<Vec<_>>(), "{mode:?}");
+            assert!(spins.iter().all(|&s| s == 1));
         }
     }
 
