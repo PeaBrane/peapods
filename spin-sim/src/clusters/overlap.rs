@@ -143,6 +143,9 @@ pub fn overlap_update(
             spin_snap_out,
             sid_snap_out,
         ),
+        OverlapClusterBuildMode::Rmc => {
+            unreachable!("rmc runs through rmc_update, which owns its task layout")
+        }
     }
 }
 

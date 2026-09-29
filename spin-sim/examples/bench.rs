@@ -147,7 +147,7 @@ fn main() {
                 snapshot_interval: None,
             }),
         ),
-        // Any other overlap build mode string, e.g. "pair4" or "jorg4", with PT.
+        // Any other overlap build mode string, e.g. "pair4", "jorg4" or "rmc", with PT.
         other => (
             None,
             Some(1),

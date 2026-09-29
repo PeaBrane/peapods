@@ -5,7 +5,7 @@
 //! per-slot state histograms and energies, per-temperature energy sums, and the overlap
 //! histogram and energy product of every pair of slots.
 
-use super::overlap_update;
+use super::{overlap_update, rmc_update};
 use crate::config::{ClusterAction, ClusterMode, OverlapClusterBuildMode};
 use crate::geometry::Lattice;
 use rand::{Rng, SeedableRng};
@@ -22,6 +22,7 @@ const MAX_Z: f64 = 5.0;
 #[derive(Clone, Copy, Debug)]
 enum Move {
     Overlap(OverlapClusterBuildMode, ClusterMode, bool),
+    Rmc(ClusterMode),
 }
 
 fn couplings(lattice: &Lattice) -> Vec<f32> {
@@ -187,6 +188,18 @@ fn stationarity_failures(
                 None,
                 None,
             ),
+            Move::Rmc(cluster_mode) => rmc_update(
+                &lattice,
+                &mut spins,
+                &couplings,
+                &slot_temps,
+                system_ids,
+                n_replicas,
+                n_temps,
+                &mut rngs,
+                cluster_mode,
+                true,
+            ),
         }
         for (slot, &system) in system_ids.iter().enumerate() {
             let b = bits(&spins[system * n..(system + 1) * n]);
@@ -321,6 +334,26 @@ fn six_replica_pair_moves_preserve_boltzmann() {
                 6,
                 &identity(6),
                 Move::Overlap(mode, cluster_mode, false),
+            );
+        }
+    }
+}
+
+#[test]
+fn replica_monte_carlo_preserves_boltzmann() {
+    // A shuffled permutation checks that temperatures follow slots, not systems.
+    let ladders: [(&[f32], usize, &[usize]); 2] = [
+        (&[2.0, 3.0], 1, &[0, 1]),
+        (&[2.0, 2.6, 3.4], 2, &[4, 0, 2, 1, 5, 3]),
+    ];
+    for (temps, n_replicas, system_ids) in ladders {
+        for cluster_mode in [ClusterMode::Wolff, ClusterMode::Sw] {
+            assert_stationary(
+                &[2, 2],
+                temps,
+                n_replicas,
+                system_ids,
+                Move::Rmc(cluster_mode),
             );
         }
     }
