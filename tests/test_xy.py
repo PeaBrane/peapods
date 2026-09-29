@@ -186,6 +186,39 @@ def test_cluster_clock_and_anisotropic_energy():
     )
 
 
+def test_spins_follow_temperature_slots_and_pt_counts_are_per_call():
+    # Vacant sites have no bonds, so every exchange is accepted; local moves skip
+    # them, so each system keeps its initial spins as an identity tag.
+    shape, n_disorder, n_replicas, n_temps = (3, 3), 2, 2, 3
+    model = XY(
+        shape,
+        temperatures=[0.5, 1.0, 2.0],
+        n_replicas=n_replicas,
+        n_disorder=n_disorder,
+        occupation=np.zeros(shape, dtype=bool),
+        seed=5,
+    )
+    tags = model._sim.get_spins().reshape(n_disorder, n_replicas * n_temps, 9, 2)
+    # Always-accepted full-ladder sweeps cancel in pairs, so use an odd total.
+    for n_sweeps in (11, 12):
+        result = model.sample(
+            n_sweeps,
+            cluster_update_interval=None,
+            pt_interval=1,
+            pt_schedule="full_ladder",
+            warmup_ratio=0,
+        )
+        pt = result["per_disorder"]["parallel_tempering"]
+        np.testing.assert_equal(pt["edge_attempts"], n_sweeps * n_replicas)
+        np.testing.assert_equal(pt["edge_acceptances"], pt["edge_attempts"])
+    ids = model._sim.get_system_ids().reshape(n_disorder, -1)
+    assert not np.array_equal(ids, np.broadcast_to(np.arange(6), ids.shape))
+    expected = np.stack([tags[d, ids[d]] for d in range(n_disorder)])
+    np.testing.assert_equal(
+        model._sim.get_spins(), expected.reshape(model._sim.get_spins().shape)
+    )
+
+
 def test_gibbs_heat_bath_agrees_with_metropolis():
     options = dict(lattice_shape=(4, 4), temperatures=[0.4, 1.0, 2.0], seed=31)
     settings = dict(n_sweeps=16384, cluster_update_interval=None, sequential=True)

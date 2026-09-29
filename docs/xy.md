@@ -53,9 +53,9 @@ built-in disorder batch preserves its prefix. `reset(seed=...)` supplies a
 one-off dynamics seed; bare `reset()` continues to use the constructor seed.
 Reset clears the PT permutation and counters, retaining couplings and masks.
 Sampling retains final configurations, so successive calls continue each chain;
-returned moments and cluster-work counts cover the current call. PT diagnostics
-are cumulative since construction/reset. Existing result arrays on the Python
-object are snapshots of the last completed `sample()` call, even after reset.
+returned moments, cluster-work counts and PT diagnostics cover the current call.
+Existing result arrays on the Python object are snapshots of the last completed
+`sample()` call, even after reset.
 
 ## Updates and measurement clock
 

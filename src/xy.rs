@@ -1,7 +1,18 @@
 use crate::execution::{coupling_count, execute, physics_dict, set_array, warmup_sweeps};
 use numpy::{PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use pyo3::{prelude::*, types::PyDict};
-use spin_sim::{config::*, statistics::physics::PhysicsOptions, XyConfig, XySimulation};
+use spin_sim::{
+    config::*, statistics::physics::PhysicsOptions, XyConfig, XyRealization, XySimulation,
+};
+
+/// Cumulative PT edge attempts, edge acceptances and round trips.
+fn pt_counters(real: &XyRealization) -> [&[u64]; 3] {
+    [
+        real.pt_edge_attempts(),
+        real.pt_edge_acceptances(),
+        real.pt_round_trips(),
+    ]
+}
 
 #[pyclass(name = "XYSimulation")]
 pub(crate) struct PyXySimulation {
@@ -108,6 +119,13 @@ impl PyXySimulation {
                 block_size,
             },
         };
+        // PT counters persist in the realizations; report this call's increments.
+        let pt_before: Vec<_> = self
+            .model
+            .realizations
+            .iter()
+            .map(|r| pt_counters(r).map(<[u64]>::to_vec))
+            .collect();
         let result = execute(
             py,
             n_sweeps,
@@ -167,36 +185,26 @@ impl PyXySimulation {
         }
         if pt_interval.is_some() {
             let pt = PyDict::new(py);
-            for (name, acceptance) in [("edge_attempts", false), ("edge_acceptances", true)] {
-                set_array(
-                    py,
-                    &pt,
-                    name,
-                    &[nd, nt.saturating_sub(1)],
-                    self.model
-                        .realizations
-                        .iter()
-                        .flat_map(|r| {
-                            if acceptance {
-                                r.pt_edge_acceptances().to_vec()
-                            } else {
-                                r.pt_edge_attempts().to_vec()
-                            }
-                        })
-                        .collect(),
-                )?;
-            }
-            set_array(
-                py,
-                &pt,
-                "round_trips",
-                &[nd, nr, nt],
+            let delta = |which: usize| -> Vec<u64> {
                 self.model
                     .realizations
                     .iter()
-                    .flat_map(|r| r.pt_round_trips().iter().copied())
-                    .collect(),
-            )?;
+                    .zip(&pt_before)
+                    .flat_map(|(r, before)| {
+                        pt_counters(r)[which]
+                            .iter()
+                            .zip(&before[which])
+                            .map(|(a, b)| a - b)
+                    })
+                    .collect()
+            };
+            for (which, name) in ["edge_attempts", "edge_acceptances"]
+                .into_iter()
+                .enumerate()
+            {
+                set_array(py, &pt, name, &[nd, nt.saturating_sub(1)], delta(which))?;
+            }
+            set_array(py, &pt, "round_trips", &[nd, nr, nt], delta(2))?;
             per.set_item("parallel_tempering", pt)?;
         }
         Ok(dict)
@@ -205,7 +213,10 @@ impl PyXySimulation {
     fn reset(&mut self, seed: Option<u64>) {
         self.model.reset(seed);
     }
+    /// Spins with shape (disorder, replica, temperature slot, site, 2); tempering
+    /// permutations are resolved, so `[d, r, t]` is the system currently at slot `t`.
     fn get_spins<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::PyAny>> {
+        let n = self.model.lattice.n_spins;
         let dict = PyDict::new(py);
         set_array(
             py,
@@ -221,7 +232,11 @@ impl PyXySimulation {
             self.model
                 .realizations
                 .iter()
-                .flat_map(|r| r.spins.iter().flatten().copied())
+                .flat_map(|r| {
+                    r.system_ids
+                        .iter()
+                        .flat_map(|&id| r.spins[id * n..(id + 1) * n].iter().flatten().copied())
+                })
                 .collect(),
         )?;
         Ok(dict.get_item("spins")?.unwrap())
