@@ -121,7 +121,7 @@ class Ising:
             temperatures: Array of temperatures for the simulation. Defaults to
                 32 points log-spaced from 0.1 to 10.
             n_replicas: Number of independent replicas per temperature. Must be
-                >= 2 for overlap statistics and Houdayer moves.
+                >= 2 for overlap statistics and same-temperature overlap moves.
             n_disorder: Number of disorder realizations. Each realization gets
                 its own coupling array.
             neighbor_offsets: List of integer offset vectors defining nearest
@@ -232,16 +232,25 @@ class Ising:
             pt_schedule: `"single_random_edge"` for legacy PT or
                 `"full_ladder"` to attempt every adjacent edge per event.
             overlap_cluster_update_interval: If set, attempt overlap cluster
-                moves every this many sweeps. Requires `n_replicas >= 2`.
+                moves every this many sweeps. Requires `n_replicas >= 2`, except
+                for `"rmc"`, which needs one replica and two temperatures.
             overlap_cluster_build_mode: Overlap cluster algorithm. `"houdayer"`
                 (deterministic, group_size=2), `"houdN"` where N is even >= 2
                 (e.g. `"houd4"`, `"houd6"` — isoenergetic balanced-site
                 criterion, requires `n_replicas >= N`;
                 **experimental for N > 2: very likely does not satisfy
-                detailed balance**), `"jorg"` (stochastic
-                FK bonds, group_size=2), or `"cmr"` (two-phase grey+blue,
-                group_size=2). Multiple modes can be alternated with `+`,
-                e.g. `"cmr+houdayer"` round-robins each overlap update call.
+                detailed balance**), `"pairN"` (Houdayer clusters for N/2
+                replica pairs swapped jointly, requires `n_replicas >= N`;
+                `"pair2"` equals `"houdayer"`), `"jorg"` (stochastic
+                FK bonds, group_size=2), `"jorgN"` (Jörg bonds for N/2 pairs
+                swapped jointly; `"jorg2"` equals `"jorg"`), `"cmr"`
+                (two-phase grey+blue, group_size=2), or `"rmc"`
+                (Swendsen-Wang replica Monte Carlo between adjacent
+                temperatures; records no cluster statistics). Multiple modes
+                can be alternated with `+`, e.g. `"cmr+houdayer"` round-robins
+                each overlap update call. See the
+                [overlap moves guide](overlap_moves.md) for derivations and
+                recommendations.
             overlap_cluster_mode: Cluster type used inside the overlap move.
                 `"wolff"` or `"sw"`.
             overlap_cluster_action: `"update"` to perform the move or

@@ -156,6 +156,31 @@ def test_unsupported_observe_fails_before_mutation():
     np.testing.assert_array_equal(model._sim.get_spins(), before)
 
 
+def test_rmc_needs_two_temperatures_but_one_replica():
+    ladder = Ising(
+        (4, 4), couplings="bimodal", temperatures=np.array([1.0, 2.0]), seed=3
+    )
+    result = ladder.sample(
+        4,
+        overlap_cluster_update_interval=1,
+        overlap_cluster_build_mode="rmc",
+        overlap_cluster_mode="sw",
+        warmup_ratio=0,
+    )
+    assert np.all(np.isfinite(result["energies"]))
+
+    single = Ising((4, 4), couplings="bimodal", temperatures=np.array([1.0]), seed=3)
+    before = single._sim.get_spins().copy()
+    with pytest.raises(ValueError, match="rmc requires at least two temperatures"):
+        single.sample(
+            1,
+            overlap_cluster_update_interval=1,
+            overlap_cluster_build_mode="rmc",
+            warmup_ratio=0,
+        )
+    np.testing.assert_array_equal(single._sim.get_spins(), before)
+
+
 def test_autocorrelation_backend_defaults_and_fft_agree():
     model_kwargs = {
         "lattice_shape": (4, 4),

@@ -29,6 +29,7 @@ The following algorithms are currently supported:
 - [Houdayer isoenergetic cluster move](https://arxiv.org/abs/cond-mat/0101116) (replica cluster move for spin glasses)
 - [Jörg move](https://arxiv.org/abs/cond-mat/0410328) (stochastic overlap cluster move)
 - [CMR move](https://doi.org/10.1103/PhysRevE.62.8114) (Chayes-Machta-Redner blue-bond overlap cluster move)
+- [Replica Monte Carlo](https://arxiv.org/abs/cond-mat/0407273) (Swendsen-Wang τ-cluster move between adjacent temperatures)
 - Passive full-graph FK and overlap-cluster observations with per-disorder statistics
 - Full-ladder parallel tempering diagnostics and reproducible optional seeds
 

@@ -113,6 +113,8 @@ def add_simulation_args(parser):
     parser.add_argument(
         "--overlap-cluster-build-mode",
         default="houdayer",
+        help="Overlap move, e.g. houdayer, pairN, jorg, jorgN, cmr or rmc; "
+        "join modes with + to alternate them (default: houdayer)",
     )
     parser.add_argument(
         "--overlap-cluster-mode", default="wolff", choices=OVERLAP_CLUSTER_CHOICES
