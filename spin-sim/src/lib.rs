@@ -67,6 +67,8 @@ pub mod statistics;
 mod clusters;
 mod mcmc;
 mod parallel;
+#[cfg(test)]
+mod test_utils;
 
 pub use geometry::Lattice;
 pub use simulation::{run_sweep_loop, run_sweep_parallel, Realization};

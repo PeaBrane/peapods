@@ -1,6 +1,6 @@
 use super::utils::{
     dfs_cluster, uf_bonds_fresh, uf_bonds_fresh_with, uf_flatten, uf_flatten_counts_fresh,
-    uf_histogram, BondMetrics, GraphObservationSlot,
+    uf_histogram, BondMetrics, BondSampler, GraphObservationSlot,
 };
 use crate::config::ClusterAction;
 use crate::geometry::Lattice;
@@ -85,6 +85,7 @@ pub(crate) fn embedded_update<E: Embedding>(
             sequential,
             |spin_slice, rng, temp, temp_id, _| {
                 let axis = E::axis(rng);
+                let bond = E::bond_at(temp);
                 let seed = rng.gen_range(0..n_spins);
                 let mut in_cluster = vec![false; n_spins];
                 let mut stack = Vec::with_capacity(n_spins);
@@ -100,7 +101,7 @@ pub(crate) fn embedded_update<E: Embedding>(
                         } else {
                             couplings[nb * n_neighbors + d]
                         };
-                        E::bond(spin_slice[site], spin_slice[nb], coupling, temp, &axis, rng)
+                        bond(spin_slice[site], spin_slice[nb], coupling, &axis, rng)
                     },
                 );
 
@@ -140,16 +141,15 @@ pub(crate) fn embedded_update<E: Embedding>(
         let spin_slice =
             std::slice::from_raw_parts_mut((sp as *mut E::Spin).add(system_id * n_spins), n_spins);
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(system_id);
-        let temp = temperatures[temp_id];
         let axis = E::axis(rng);
+        let bond = E::bond_at(temperatures[temp_id]);
 
         let mut should_bond = |i: usize, d: usize| {
             let j = lattice.neighbor_fwd(i, d);
-            E::bond(
+            bond(
                 spin_slice[i],
                 spin_slice[j],
                 couplings[i * n_neighbors + d],
-                temp,
                 &axis,
                 rng,
             )
@@ -231,6 +231,19 @@ pub(crate) trait Embedding {
         axis: &Self::Axis,
         rng: &mut Xoshiro256StarStar,
     ) -> bool;
+    /// Bond test at a fixed temperature, letting models hoist per-temperature work.
+    #[allow(clippy::type_complexity)]
+    fn bond_at(
+        temperature: <Self::Spin as Spin>::Value,
+    ) -> impl Fn(
+        Self::Spin,
+        Self::Spin,
+        <Self::Spin as Spin>::Value,
+        &Self::Axis,
+        &mut Xoshiro256StarStar,
+    ) -> bool {
+        move |a, b, j, axis, rng| Self::bond(a, b, j, temperature, axis, rng)
+    }
     fn reflect(spin: &mut Self::Spin, axis: &Self::Axis);
     fn coin(rng: &mut Xoshiro256StarStar) -> bool;
 }
@@ -239,14 +252,80 @@ impl Embedding for IsingEmbedding {
     type Spin = i8;
     type Axis = ();
     fn axis(_: &mut Xoshiro256StarStar) {}
-    fn bond(a: i8, b: i8, j: f32, t: f32, _: &(), rng: &mut Xoshiro256StarStar) -> bool {
-        let interaction = a as f32 * b as f32 * j;
-        interaction > 0.0 && rng.gen::<f32>() < 1.0 - (-2.0 * interaction / t).exp()
+    fn bond(a: i8, b: i8, j: f32, t: f32, axis: &(), rng: &mut Xoshiro256StarStar) -> bool {
+        Self::bond_at(t)(a, b, j, axis, rng)
+    }
+    fn bond_at(t: f32) -> impl Fn(i8, i8, f32, &(), &mut Xoshiro256StarStar) -> bool {
+        let sampler = BondSampler::new(2.0 / t);
+        move |a, b, j, _, rng| {
+            let interaction = f32::from(a * b) * j;
+            interaction > 0.0 && sampler.sample(interaction, rng)
+        }
     }
     fn reflect(spin: &mut i8, _: &()) {
         *spin = -*spin;
     }
     fn coin(rng: &mut Xoshiro256StarStar) -> bool {
         rng.gen::<f32>() < 0.5
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::{chi2_cutoff, ExactLaw};
+    use rand::SeedableRng;
+
+    const CONTINUOUS: [f32; 12] = [
+        0.9, -1.3, 0.4, -0.7, 1.1, -0.2, 0.6, -1.5, 0.3, 1.2, -0.5, 0.8,
+    ];
+    const UNIT: [f32; 12] = [
+        1.0, -1.0, 1.0, 1.0, 0.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0,
+    ];
+
+    /// One FK update applied to exact Boltzmann draws must leave the law invariant.
+    fn assert_fk_preserves_boltzmann(couplings: &[f32], temperature: f32, wolff: bool, csd: bool) {
+        const TRIALS: usize = 60_000;
+        let lattice = Lattice::new(vec![3, 2]);
+        let law = ExactLaw::new(&lattice, couplings, temperature);
+        let mut draw_rng = Xoshiro256StarStar::seed_from_u64(13);
+        let mut rngs = vec![Xoshiro256StarStar::seed_from_u64(17)];
+        let mut histogram = vec![vec![0u64; lattice.n_spins + 1]];
+        let mut counts = vec![0usize; law.states.len()];
+        for _ in 0..TRIALS {
+            let mut spins = law.sample(&mut draw_rng).to_vec();
+            fk_update(
+                &lattice,
+                &mut spins,
+                couplings,
+                &[temperature],
+                &[0],
+                &mut rngs,
+                wolff,
+                ClusterAction::Update,
+                csd.then_some(histogram.as_mut_slice()),
+                None,
+                true,
+            );
+            counts[ExactLaw::index(&spins)] += 1;
+        }
+        let chi2 = law.chi2(&counts);
+        assert!(
+            chi2 < chi2_cutoff(counts.len() - 1),
+            "wolff={wolff} csd={csd} T={temperature}: chi2 {chi2:.1}"
+        );
+    }
+
+    #[test]
+    fn fk_updates_preserve_boltzmann() {
+        for couplings in [&CONTINUOUS, &UNIT] {
+            for temperature in [0.8, 2.5] {
+                for wolff in [false, true] {
+                    for csd in [false, true] {
+                        assert_fk_preserves_boltzmann(couplings, temperature, wolff, csd);
+                    }
+                }
+            }
+        }
     }
 }

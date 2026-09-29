@@ -1,8 +1,48 @@
 use crate::geometry::Lattice;
-use rand::Rng;
+use crate::mcmc::threshold;
+use rand::{Rng, RngCore};
 use rand_xoshiro::Xoshiro256StarStar;
 use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
+
+// --- Bond activation ---
+
+/// Samples bonds with probability `1 - exp(-rate * x)` for bond weight `x > 0`.
+///
+/// Draws compare a uniform `u64` against an exact threshold; unit weights reuse a
+/// precomputed threshold, which is bit-identical to the general formula.
+#[derive(Clone, Copy)]
+pub(crate) struct BondSampler {
+    neg_rate: f32,
+    unit: u64,
+}
+
+impl BondSampler {
+    #[inline]
+    pub(crate) fn new(rate: f32) -> Self {
+        let neg_rate = -rate;
+        Self {
+            neg_rate,
+            unit: Self::general_threshold(neg_rate, 1.0),
+        }
+    }
+
+    #[inline]
+    fn general_threshold(neg_rate: f32, x: f32) -> u64 {
+        // expm1 keeps small activation probabilities accurate at high temperature.
+        threshold(-(x * neg_rate).exp_m1())
+    }
+
+    #[inline]
+    pub(crate) fn sample(self, x: f32, rng: &mut Xoshiro256StarStar) -> bool {
+        let threshold = if x == 1.0 {
+            self.unit
+        } else {
+            Self::general_threshold(self.neg_rate, x)
+        };
+        rng.next_u64() < threshold
+    }
+}
 
 // --- Union-Find ---
 

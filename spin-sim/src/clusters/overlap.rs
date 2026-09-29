@@ -1,6 +1,6 @@
 use super::utils::{
     dfs_cluster, find, find_seed, top4_sizes, uf_bonds, uf_bonds_extend, uf_bonds_with,
-    uf_flatten_counts, uf_histogram, BondMetrics, GraphObservationSlot, PooledUf,
+    uf_flatten_counts, uf_histogram, BondMetrics, BondSampler, GraphObservationSlot, PooledUf,
 };
 use crate::config::{ClusterAction, ClusterMode, OverlapClusterBuildMode};
 use crate::geometry::Lattice;
@@ -420,7 +420,7 @@ fn jorg_step(
     let work = |task_idx: usize| unsafe {
         let (t, g, systems) = tasks.group(task_idx);
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(t * n_pairs + g);
-        let temp = temperatures[t];
+        let jorg_bond = BondSampler::new(4.0 / temperatures[t]);
         let base_a = systems[0] * n_spins;
         let base_b = systems[1] * n_spins;
         let sp_ptr = sp as *mut i8;
@@ -450,7 +450,7 @@ fn jorg_step(
                 if inter <= 0.0 {
                     return false;
                 }
-                rng.gen::<f32>() < 1.0 - (-4.0 * inter / temp).exp()
+                jorg_bond.sample(inter, rng)
             };
             let mut metrics = has_observation.then(|| BondMetrics::new(lattice));
             let mut uf = if let Some(ref mut metrics) = metrics {
@@ -551,7 +551,7 @@ fn jorg_step(
                     if inter <= 0.0 {
                         return false;
                     }
-                    rng.gen::<f32>() < 1.0 - (-4.0 * inter / temp).exp()
+                    jorg_bond.sample(inter, rng)
                 },
             );
             for (i, &in_c) in in_cluster.iter().enumerate() {
@@ -599,7 +599,7 @@ unsafe fn build_cmr_blue_graph(
     base_b: usize,
     couplings: &[f32],
     n_neighbors: usize,
-    temp: f32,
+    blue_bond: BondSampler,
     rng: &mut Xoshiro256StarStar,
     on_bond: impl FnMut(usize, usize),
 ) -> PooledUf {
@@ -616,10 +616,7 @@ unsafe fn build_cmr_blue_graph(
                 return false;
             }
 
-            // Point-of-use activation keeps ownership simple; caching these
-            // factors produced only a modest improvement and needs broader coverage.
-            let r = (-2.0 * coupling.abs() / temp).exp();
-            rng.gen::<f32>() < 1.0 - r * r
+            blue_bond.sample(coupling.abs(), rng)
         },
         on_bond,
     )
@@ -698,7 +695,9 @@ fn cmr_step(
     let work = |task_idx: usize| unsafe {
         let (t, g, systems) = tasks.group(task_idx);
         let rng = &mut *(rp as *mut Xoshiro256StarStar).add(t * n_pairs + g);
-        let temp = temperatures[t];
+        // Blue bonds use 1 - r^2 and red bonds 1 - r, with r = exp(-2|J|/T).
+        let blue_bond = BondSampler::new(4.0 / temperatures[t]);
+        let red_bond = BondSampler::new(2.0 / temperatures[t]);
         let base_a = systems[0] * n_spins;
         let base_b = systems[1] * n_spins;
         let sp_ptr = sp as *mut i8;
@@ -731,7 +730,7 @@ fn cmr_step(
                     base_b,
                     couplings,
                     n_neighbors,
-                    temp,
+                    blue_bond,
                     rng,
                     |site, dim| metrics.record_bond(lattice, site, dim),
                 )
@@ -743,7 +742,7 @@ fn cmr_step(
                     base_b,
                     couplings,
                     n_neighbors,
-                    temp,
+                    blue_bond,
                     rng,
                     |_site, _dim| {},
                 )
@@ -817,8 +816,7 @@ fn cmr_step(
                 if a_sat == b_sat {
                     return false;
                 }
-                let r = (-2.0 * coupling.abs() / temp).exp();
-                rng.gen::<f32>() < 1.0 - r
+                red_bond.sample(coupling.abs(), rng)
             });
 
             let grey_counts = uf_flatten_counts(&mut uf.parent);
@@ -899,8 +897,7 @@ fn cmr_step(
                     if !a_sat || !b_sat {
                         return false;
                     }
-                    let r = (-2.0 * coupling.abs() / temp).exp();
-                    rng.gen::<f32>() < 1.0 - r * r
+                    blue_bond.sample(coupling.abs(), rng)
                 },
             );
 
@@ -929,14 +926,12 @@ fn cmr_step(
                     *sp_ptr.add(base_b + site) as f32 * *sp_ptr.add(base_b + nb) as f32 * coupling
                         > 0.0;
                 if a_sat != b_sat {
-                    let r = (-2.0 * coupling.abs() / temp).exp();
-                    return rng.gen::<f32>() < 1.0 - r;
+                    return red_bond.sample(coupling.abs(), rng);
                 }
                 if !a_sat || in_blue[site] {
                     return false;
                 }
-                let r = (-2.0 * coupling.abs() / temp).exp();
-                rng.gen::<f32>() < 1.0 - r * r
+                blue_bond.sample(coupling.abs(), rng)
             };
 
             while let Some(site) = stack.pop() {

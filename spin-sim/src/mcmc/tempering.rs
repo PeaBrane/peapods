@@ -137,6 +137,48 @@ mod tests {
 }
 
 #[cfg(test)]
+mod stationarity_tests {
+    use super::*;
+    use crate::geometry::Lattice;
+    use crate::test_utils::{bond_sum, chi2_cutoff, ExactLaw};
+    use rand::SeedableRng;
+
+    /// Swapping exact draws from two Boltzmann laws must leave both marginals invariant.
+    #[test]
+    fn exchange_preserves_both_temperatures() {
+        const TRIALS: usize = 60_000;
+        let lattice = Lattice::new(vec![3, 2]);
+        let couplings = [
+            0.9, -1.3, 0.4, -0.7, 1.1, -0.2, 0.6, -1.5, 0.3, 1.2, -0.5, 0.8,
+        ];
+        let temperatures = [0.9f32, 1.6];
+        let laws = temperatures.map(|t| ExactLaw::new(&lattice, &couplings, t));
+        let n = lattice.n_spins;
+        let mut draw_rng = Xoshiro256StarStar::seed_from_u64(19);
+        let mut rng = Xoshiro256StarStar::seed_from_u64(23);
+        let mut counts = [vec![0usize; 1 << n], vec![0usize; 1 << n]];
+        for _ in 0..TRIALS {
+            let states = [
+                laws[0].sample(&mut draw_rng).to_vec(),
+                laws[1].sample(&mut draw_rng).to_vec(),
+            ];
+            let energies = states
+                .clone()
+                .map(|s| (bond_sum(&lattice, &couplings, &s) / n as f64) as f32);
+            let mut ids = vec![0, 1];
+            attempt_edge(&energies, &temperatures, &mut ids, n, &mut rng, 0);
+            for (slot, &id) in ids.iter().enumerate() {
+                counts[slot][ExactLaw::index(&states[id])] += 1;
+            }
+        }
+        for (law, counts) in laws.iter().zip(&counts) {
+            let chi2 = law.chi2(counts);
+            assert!(chi2 < chi2_cutoff(counts.len() - 1), "chi2 {chi2:.1}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod sign_tests {
     use super::*;
     use rand::SeedableRng;
