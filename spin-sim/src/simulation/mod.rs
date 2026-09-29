@@ -633,10 +633,6 @@ fn run_sweep_loop_impl(
             }
 
             if let Some(ref mut acc) = q2_accum {
-                let inv = 1.0 / n_pairs as f64;
-                for v in ov_accum.q2_ac_buf.iter_mut() {
-                    *v *= inv;
-                }
                 acc.push(&ov_accum.q2_ac_buf);
             }
         }

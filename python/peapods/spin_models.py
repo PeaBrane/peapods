@@ -262,7 +262,9 @@ class Ising:
             autocorrelation_max_lag: If set, estimate the integrated
                 autocorrelation times `mags2_tau` (and `overlap2_tau` with
                 `n_replicas >= 2`) in measured sweeps, using lags up to this value
-                (capped at a quarter of the measured sweeps).
+                (capped at a quarter of the measured sweeps). `overlap2_tau` uses
+                q^2 averaged over all replica pairs at each temperature, so moves
+                that only relabel replicas do not count as decorrelation.
             autocorrelation_backend: `"ring"` for exact bounded-memory
                 accumulation or `"fft"` to retain the full measurement history
                 and evaluate autocorrelation with an FFT.
