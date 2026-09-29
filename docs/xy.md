@@ -33,9 +33,10 @@ string coupling modes. Negative bonds are present bonds; zero bonds are absent.
 `occupation` must be Boolean with shape `lattice_shape` or
 `(n_disorder, *lattice_shape)`. A single mask is broadcast over disorder.
 Vacant sites zero all incident bonds and contribute zero to magnetic and
-spatial measurements. Their internal spin vectors still participate in the
-fixed-size simulation state and work counters. Occupied isolated spins remain
-physical spins. Arrays supplied by callers are copied at construction.
+spatial measurements. Local passes skip them; their internal spin vectors still
+participate in the fixed-size simulation state, cluster moves and work counters.
+Occupied isolated spins remain physical spins. Arrays supplied by callers are
+copied at construction.
 
 ```python
 import numpy as np
