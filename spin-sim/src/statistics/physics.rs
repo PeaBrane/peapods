@@ -19,6 +19,31 @@ pub struct PhysicsOptions {
     pub block_size: Option<usize>,
 }
 
+impl PhysicsOptions {
+    /// Checks these options against a lattice without allocating a collector.
+    pub fn validate(&self, lattice: &Lattice, components: usize) -> Result<(), String> {
+        if self.block_size == Some(0) {
+            return Err("block_size must be positive".into());
+        }
+        if self.vortices && (lattice.n_dims != 2 || components != 2) {
+            return Err("angle vortices require a two-dimensional XY lattice".into());
+        }
+        if self.displacements.iter().any(|r| r.len() != lattice.n_dims) {
+            return Err("correlation displacements must match lattice dimensionality".into());
+        }
+        Ok(())
+    }
+}
+
+/// Energy and magnetization of one configuration, already known to the caller.
+#[derive(Clone, Copy, Debug)]
+pub struct CachedTotals {
+    /// Physical energy per site, `H/N`.
+    pub energy: f64,
+    /// Magnetization summed over occupied sites.
+    pub magnetization: [f64; 2],
+}
+
 #[derive(Clone, Debug)]
 pub struct MomentField {
     pub name: &'static str,
@@ -165,7 +190,12 @@ impl PhysicsResult {
 /// Geometry and Fourier phases shared by every measurement of a run.
 pub struct PhysicsCollector {
     fields: Vec<MomentField>,
+    /// `phases[d][x] = (cos, sin)(2π x / L_d)`.
     phases: Vec<Vec<[f64; 2]>>,
+    /// Per-dimension spin sums over the hyperplanes `x_d = x`, `[n_dims][L_d]`.
+    planes: Vec<Vec<[f64; 2]>>,
+    /// Per-site spin angles for vortex detection; empty unless vortices are enabled.
+    angles: Vec<f64>,
     displaced: Vec<Vec<usize>>,
     options: PhysicsOptions,
     components: usize,
@@ -176,7 +206,6 @@ pub struct PhysicsCollector {
     blocks: Vec<MomentBlock>,
     count: u64,
     scratch: Vec<f64>,
-    fourier: Vec<[[f64; 2]; 2]>,
 }
 
 impl PhysicsCollector {
@@ -186,19 +215,7 @@ impl PhysicsCollector {
         options: &PhysicsOptions,
         components: usize,
     ) -> Result<Self, String> {
-        if options.block_size == Some(0) {
-            return Err("block_size must be positive".into());
-        }
-        if options.vortices && (lattice.n_dims != 2 || components != 2) {
-            return Err("angle vortices require a two-dimensional XY lattice".into());
-        }
-        if options
-            .displacements
-            .iter()
-            .any(|r| r.len() != lattice.n_dims)
-        {
-            return Err("correlation displacements must match lattice dimensionality".into());
-        }
+        options.validate(lattice, components)?;
         let mut fields = Vec::new();
         let mut width = 0;
         let mut add = |name, n| {
@@ -225,17 +242,22 @@ impl PhysicsCollector {
             add("angle_vortex_density", 1);
             add("intact_plaquette_fraction", 1);
         }
-        let phases = (0..lattice.n_dims)
-            .map(|d| {
-                (0..lattice.n_spins)
-                    .map(|i| {
-                        let phase = TAU * ((i / lattice.strides[d]) % lattice.shape[d]) as f64
-                            / lattice.shape[d] as f64;
-                        let (s, c) = phase.sin_cos();
+        let phases = lattice
+            .shape
+            .iter()
+            .map(|&extent| {
+                (0..extent)
+                    .map(|x| {
+                        let (s, c) = (TAU * x as f64 / extent as f64).sin_cos();
                         [c, s]
                     })
                     .collect()
             })
+            .collect();
+        let planes = lattice
+            .shape
+            .iter()
+            .map(|&extent| vec![[0.0; 2]; extent])
             .collect();
         let displaced = options
             .displacements
@@ -261,6 +283,12 @@ impl PhysicsCollector {
         Ok(Self {
             fields,
             phases,
+            planes,
+            angles: if options.vortices {
+                vec![0.0; lattice.n_spins]
+            } else {
+                vec![]
+            },
             displaced,
             options: options.clone(),
             components,
@@ -275,7 +303,6 @@ impl PhysicsCollector {
             blocks: vec![],
             count: 0,
             scratch: vec![0.0; width],
-            fourier: vec![[[0.0; 2]; 2]; lattice.n_dims],
         })
     }
 
@@ -288,32 +315,114 @@ impl PhysicsCollector {
         occupied: &[bool],
         temperature: usize,
     ) -> [f64; 2] {
+        self.measure_impl(lattice, spins, couplings, occupied, temperature, None)
+    }
+
+    /// Like [`Self::measure`], but takes energy and magnetization from `cached`
+    /// instead of repeating the bond pass. One-component collectors only; XY
+    /// helicity moments need the bond pass, so two-component collectors ignore it.
+    pub fn measure_cached<S: Spin>(
+        &mut self,
+        lattice: &Lattice,
+        spins: &[S],
+        couplings: &[S::Value],
+        occupied: &[bool],
+        temperature: usize,
+        cached: CachedTotals,
+    ) -> [f64; 2] {
+        debug_assert_eq!(self.components, 1);
+        self.measure_impl(
+            lattice,
+            spins,
+            couplings,
+            occupied,
+            temperature,
+            Some(cached),
+        )
+    }
+
+    fn measure_impl<S: Spin>(
+        &mut self,
+        lattice: &Lattice,
+        spins: &[S],
+        couplings: &[S::Value],
+        occupied: &[bool],
+        temperature: usize,
+        cached: Option<CachedTotals>,
+    ) -> [f64; 2] {
         let n = lattice.n_spins as f64;
         self.scratch.fill(0.0);
-        self.fourier.fill([[0.0; 2]; 2]);
-        let mut magnetization = [0.0; 2];
-        let mut interaction = 0.0;
-        let d_offset = 5;
-        let i_offset = 5 + lattice.n_dims;
         let i2_offset = 5 + 2 * lattice.n_dims;
         let sk_offset = if self.components == 2 {
             5 + 3 * lattice.n_dims
         } else {
             5
         };
+        let (energy, magnetization) = match cached {
+            Some(totals) if self.components == 1 => (totals.energy, totals.magnetization),
+            _ => self.bond_pass(lattice, spins, couplings, occupied),
+        };
+        let m2 = dot(magnetization, magnetization) / (n * n);
+        self.scratch[..5].copy_from_slice(&[energy, energy * energy, m2.sqrt(), m2, m2 * m2]);
+        self.accumulate_planes(lattice, spins, occupied);
+        for d in 0..lattice.n_dims {
+            if self.components == 2 {
+                self.scratch[i2_offset + d] = self.scratch[5 + lattice.n_dims + d].powi(2);
+            }
+            let mut fourier = [[0.0; 2]; 2];
+            for (plane, phase) in self.planes[d].iter().zip(&self.phases[d]) {
+                for k in 0..2 {
+                    for a in 0..2 {
+                        fourier[k][a] += plane[k] * phase[a];
+                    }
+                }
+            }
+            self.scratch[sk_offset + d] = fourier.iter().flatten().map(|v| v * v).sum::<f64>() / n;
+        }
+        let correlation_offset = sk_offset + lattice.n_dims;
+        for (r, neighbors) in self.displaced.iter().enumerate() {
+            self.scratch[correlation_offset + r] = neighbors
+                .iter()
+                .enumerate()
+                .filter(|&(i, &j)| occupied[i] && occupied[j])
+                .map(|(i, &j)| dot(spins[i].components(), spins[j].components()))
+                .sum::<f64>()
+                / n;
+        }
+        if self.options.vortices {
+            let offset = correlation_offset + self.displaced.len();
+            let [density, intact] = self.vortices(lattice, spins, couplings, occupied);
+            self.scratch[offset] = density;
+            self.scratch[offset + 1] = intact;
+        }
+        for (dst, &value) in self.sums[temperature].iter_mut().zip(&self.scratch) {
+            *dst += value;
+        }
+        if self.options.block_size.is_some() {
+            for (dst, &value) in self.block_sums[temperature].iter_mut().zip(&self.scratch) {
+                *dst += value;
+            }
+        }
+        [energy, m2]
+    }
+
+    /// Energy per site and magnetization, plus the XY helicity sums in `scratch`.
+    fn bond_pass<S: Spin>(
+        &mut self,
+        lattice: &Lattice,
+        spins: &[S],
+        couplings: &[S::Value],
+        occupied: &[bool],
+    ) -> (f64, [f64; 2]) {
+        let d_offset = 5;
+        let i_offset = 5 + lattice.n_dims;
+        let mut magnetization = [0.0; 2];
+        let mut interaction = 0.0;
         for i in 0..lattice.n_spins {
             let spin = spins[i].components();
             if occupied[i] {
-                for k in 0..2 {
-                    magnetization[k] += spin[k];
-                }
-                for d in 0..lattice.n_dims {
-                    for (k, &component) in spin.iter().enumerate() {
-                        for a in 0..2 {
-                            self.fourier[d][k][a] += component * self.phases[d][i][a];
-                        }
-                    }
-                }
+                magnetization[0] += spin[0];
+                magnetization[1] += spin[1];
             }
             for d in 0..lattice.n_neighbors {
                 let j = lattice.neighbor_fwd(i, d);
@@ -327,69 +436,83 @@ impl PhysicsCollector {
                 }
             }
         }
-        let energy = -interaction / n;
-        let m2 = dot(magnetization, magnetization) / (n * n);
-        self.scratch[..5].copy_from_slice(&[energy, energy * energy, m2.sqrt(), m2, m2 * m2]);
-        for d in 0..lattice.n_dims {
-            if self.components == 2 {
-                self.scratch[i2_offset + d] = self.scratch[i_offset + d].powi(2);
-            }
-            self.scratch[sk_offset + d] =
-                self.fourier[d].iter().flatten().map(|v| v * v).sum::<f64>() / n;
-        }
-        let correlation_offset = sk_offset + lattice.n_dims;
-        for (r, neighbors) in self.displaced.iter().enumerate() {
-            self.scratch[correlation_offset + r] = neighbors
-                .iter()
-                .enumerate()
-                .filter(|&(i, &j)| occupied[i] && occupied[j])
-                .map(|(i, &j)| dot(spins[i].components(), spins[j].components()))
-                .sum::<f64>()
-                / n;
-        }
-        if self.options.vortices {
-            let mut intact = 0;
-            let mut winding = 0.0;
-            for i in 0..lattice.n_spins {
-                let x = lattice.neighbor_fwd(i, 0);
-                let y = lattice.neighbor_fwd(i, 1);
-                let xy = lattice.neighbor_fwd(x, 1);
-                if ![i, x, xy, y].iter().all(|&j| occupied[j])
-                    || [2 * i, 2 * i + 1, 2 * x + 1, 2 * y]
-                        .iter()
-                        .any(|&b| couplings[b].to_f64() == 0.0)
-                {
+        (-interaction / lattice.n_spins as f64, magnetization)
+    }
+
+    /// Sums occupied spins over each hyperplane `x_d = x`. In row-major order a
+    /// period of `stride_d · L_d` sites holds `L_d` contiguous slabs of `stride_d`.
+    fn accumulate_planes<S: Spin>(&mut self, lattice: &Lattice, spins: &[S], occupied: &[bool]) {
+        for (d, plane) in self.planes.iter_mut().enumerate() {
+            plane.fill([0.0; 2]);
+            let stride = lattice.strides[d];
+            let period = stride * lattice.shape[d];
+            for (spin_period, mask_period) in spins
+                .chunks_exact(period)
+                .zip(occupied.chunks_exact(period))
+            {
+                if stride == 1 {
+                    for (sum, (spin, &occ)) in
+                        plane.iter_mut().zip(spin_period.iter().zip(mask_period))
+                    {
+                        let [a, b] = masked(*spin, occ);
+                        sum[0] += a;
+                        sum[1] += b;
+                    }
                     continue;
                 }
-                intact += 1;
-                let loop_sites = [i, x, xy, y, i];
-                let circulation: f64 = loop_sites
-                    .windows(2)
-                    .map(|edge| {
-                        let a = spins[edge[0]].components();
-                        let b = spins[edge[1]].components();
-                        cross(a, b).atan2(dot(a, b))
-                    })
-                    .sum();
-                winding += (circulation / TAU).round().abs();
-            }
-            let offset = correlation_offset + self.displaced.len();
-            self.scratch[offset] = if intact > 0 {
-                winding / intact as f64
-            } else {
-                f64::NAN
-            };
-            self.scratch[offset + 1] = intact as f64 / n;
-        }
-        for (dst, &value) in self.sums[temperature].iter_mut().zip(&self.scratch) {
-            *dst += value;
-        }
-        if self.options.block_size.is_some() {
-            for (dst, &value) in self.block_sums[temperature].iter_mut().zip(&self.scratch) {
-                *dst += value;
+                let slabs = spin_period
+                    .chunks_exact(stride)
+                    .zip(mask_period.chunks_exact(stride));
+                for (sum, (slab, mask)) in plane.iter_mut().zip(slabs) {
+                    let [a, b] = masked_sum(slab, mask);
+                    sum[0] += a;
+                    sum[1] += b;
+                }
             }
         }
-        [energy, m2]
+    }
+
+    /// Geometric angle winding per intact plaquette, and intact plaquettes per site.
+    fn vortices<S: Spin>(
+        &mut self,
+        lattice: &Lattice,
+        spins: &[S],
+        couplings: &[S::Value],
+        occupied: &[bool],
+    ) -> [f64; 2] {
+        for (angle, spin) in self.angles.iter_mut().zip(spins) {
+            let [c, s] = spin.components();
+            *angle = s.atan2(c);
+        }
+        let angles = &self.angles;
+        // Angle from site a to site b, wrapped to [-π, π].
+        let edge = |a: usize, b: usize| {
+            let delta = angles[b] - angles[a];
+            delta - TAU * (delta / TAU).round()
+        };
+        let mut intact = 0;
+        let mut winding = 0.0;
+        for i in 0..lattice.n_spins {
+            let x = lattice.neighbor_fwd(i, 0);
+            let y = lattice.neighbor_fwd(i, 1);
+            let xy = lattice.neighbor_fwd(x, 1);
+            if ![i, x, xy, y].iter().all(|&j| occupied[j])
+                || [2 * i, 2 * i + 1, 2 * x + 1, 2 * y]
+                    .iter()
+                    .any(|&b| couplings[b].to_f64() == 0.0)
+            {
+                continue;
+            }
+            intact += 1;
+            let circulation = edge(i, x) + edge(x, xy) + edge(xy, y) + edge(y, i);
+            winding += (circulation / TAU).round().abs();
+        }
+        let density = if intact > 0 {
+            winding / intact as f64
+        } else {
+            f64::NAN
+        };
+        [density, intact as f64 / lattice.n_spins as f64]
     }
 
     pub fn end_sweep(&mut self, n_replicas: usize) {
@@ -437,9 +560,44 @@ impl PhysicsCollector {
     }
 }
 
+#[inline]
+fn masked<S: Spin>(spin: S, occupied: bool) -> [f64; 2] {
+    let weight = f64::from(u8::from(occupied));
+    let [a, b] = spin.components();
+    [weight * a, weight * b]
+}
+
+/// Sum of occupied spin components, with four accumulators to break the
+/// floating-point add dependency chain.
+fn masked_sum<S: Spin>(slab: &[S], mask: &[bool]) -> [f64; 2] {
+    let mut lanes = [[0.0; 2]; 4];
+    let spins4 = slab.chunks_exact(4);
+    let masks4 = mask.chunks_exact(4);
+    let mut tail = [0.0; 2];
+    for (&spin, &occ) in spins4.remainder().iter().zip(masks4.remainder()) {
+        let [a, b] = masked(spin, occ);
+        tail[0] += a;
+        tail[1] += b;
+    }
+    for (spins, masks) in spins4.zip(masks4) {
+        for ((lane, &spin), &occ) in lanes.iter_mut().zip(spins).zip(masks) {
+            let [a, b] = masked(spin, occ);
+            lane[0] += a;
+            lane[1] += b;
+        }
+    }
+    let [l0, l1, l2, l3] = lanes;
+    [
+        (l0[0] + l1[0]) + (l2[0] + l3[0]) + tail[0],
+        (l0[1] + l1[1]) + (l2[1] + l3[1]) + tail[1],
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::{Rng, SeedableRng};
+    use rand_xoshiro::Xoshiro256StarStar;
     #[test]
     fn signed_winding_mask_coverage_and_rotation_invariance() {
         let lattice = Lattice::new(vec![3, 3]);
@@ -510,6 +668,131 @@ mod tests {
         assert_eq!(aggregate["heat_capacity"][0][0], 0.0);
         assert_eq!(aggregate["binder_cumulant"][0][0], 0.5);
     }
+    fn random_xy(n: usize, seed: u64) -> Vec<[f64; 2]> {
+        let mut rng = Xoshiro256StarStar::seed_from_u64(seed);
+        (0..n).map(|_| <[f64; 2]>::random(&mut rng)).collect()
+    }
+
+    /// Direct per-site Fourier sum Σ_d |Σ_i s_i e^{2πi x_d/L_d}|² / N.
+    fn direct_structure_factor(
+        lattice: &Lattice,
+        spins: &[[f64; 2]],
+        occupied: &[bool],
+    ) -> Vec<f64> {
+        (0..lattice.n_dims)
+            .map(|d| {
+                let mut f = [[0.0; 2]; 2];
+                for (i, spin) in spins.iter().enumerate().filter(|&(i, _)| occupied[i]) {
+                    let x = (i / lattice.strides[d]) % lattice.shape[d];
+                    let (sin, cos) = (TAU * x as f64 / lattice.shape[d] as f64).sin_cos();
+                    for k in 0..2 {
+                        f[k][0] += spin[k] * cos;
+                        f[k][1] += spin[k] * sin;
+                    }
+                }
+                f.iter().flatten().map(|v| v * v).sum::<f64>() / lattice.n_spins as f64
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plane_sums_match_direct_fourier_sums() {
+        let lattice = Lattice::new(vec![3, 4, 5]);
+        let spins = random_xy(lattice.n_spins, 3);
+        let occupied: Vec<bool> = (0..lattice.n_spins).map(|i| i % 7 != 3).collect();
+        let mut c = PhysicsCollector::new(&lattice, 1, &PhysicsOptions::default(), 2).unwrap();
+        c.measure(
+            &lattice,
+            &spins,
+            &vec![0.0; 3 * lattice.n_spins],
+            &occupied,
+            0,
+        );
+        c.end_sweep(1);
+        let got = &c.finish().values(&lattice.shape, &[1.0], 2)["structure_factor_min"][0];
+        for (a, b) in got
+            .iter()
+            .zip(direct_structure_factor(&lattice, &spins, &occupied))
+        {
+            assert!((a - b).abs() < 1e-12, "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn angle_differences_match_per_edge_atan2_winding() {
+        let lattice = Lattice::new(vec![6, 5]);
+        let couplings = vec![1.0; 2 * lattice.n_spins];
+        let occupied = vec![true; lattice.n_spins];
+        let options = PhysicsOptions {
+            vortices: true,
+            ..Default::default()
+        };
+        for seed in 0..8 {
+            let spins = random_xy(lattice.n_spins, seed);
+            let mut c = PhysicsCollector::new(&lattice, 1, &options, 2).unwrap();
+            c.measure(&lattice, &spins, &couplings, &occupied, 0);
+            c.end_sweep(1);
+            let got = c.finish().values(&lattice.shape, &[1.0], 2)["angle_vortex_density"][0][0];
+            let vortices: f64 = (0..lattice.n_spins)
+                .map(|i| {
+                    let x = lattice.neighbor_fwd(i, 0);
+                    let y = lattice.neighbor_fwd(i, 1);
+                    let xy = lattice.neighbor_fwd(x, 1);
+                    let circulation: f64 = [i, x, xy, y, i]
+                        .windows(2)
+                        .map(|e| {
+                            let (a, b) = (spins[e[0]], spins[e[1]]);
+                            cross(a, b).atan2(dot(a, b))
+                        })
+                        .sum();
+                    (circulation / TAU).round().abs()
+                })
+                .sum();
+            assert_eq!(got, vortices / lattice.n_spins as f64, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn cached_totals_reproduce_the_bond_pass() {
+        // N = 32 keeps the f32 energy cache exact for ±J couplings.
+        let lattice = Lattice::new(vec![4, 8]);
+        let mut rng = Xoshiro256StarStar::seed_from_u64(17);
+        let spins: Vec<i8> = (0..lattice.n_spins).map(|_| i8::random(&mut rng)).collect();
+        let couplings: Vec<f32> = (0..2 * lattice.n_spins)
+            .map(|_| if rng.gen::<bool>() { 1.0 } else { -1.0 })
+            .collect();
+        let occupied = vec![true; lattice.n_spins];
+        let options = PhysicsOptions {
+            displacements: vec![vec![1, 2]],
+            ..Default::default()
+        };
+        let mut energies = [0.0f32];
+        let mut magnetization = [0i64];
+        crate::spins::energy::compute_energies_and_magnetizations_into(
+            &lattice,
+            &spins,
+            &couplings,
+            &mut energies,
+            &mut magnetization,
+        );
+        let mut full = PhysicsCollector::new(&lattice, 1, &options, 1).unwrap();
+        let mut cached = PhysicsCollector::new(&lattice, 1, &options, 1).unwrap();
+        let a = full.measure(&lattice, &spins, &couplings, &occupied, 0);
+        let b = cached.measure_cached(
+            &lattice,
+            &spins,
+            &couplings,
+            &occupied,
+            0,
+            CachedTotals {
+                energy: -(energies[0] as f64),
+                magnetization: [magnetization[0] as f64, 0.0],
+            },
+        );
+        assert_eq!(a, b);
+        assert_eq!(full.sums, cached.sums);
+    }
+
     #[test]
     fn finish_without_measurements_is_zero_not_nan() {
         let lattice = Lattice::new(vec![3, 3]);

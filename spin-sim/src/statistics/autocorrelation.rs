@@ -187,10 +187,11 @@ impl<T: Real> PrecisionAutocorr<T> {
     }
 
     fn finish_fft(&self, series: &[Vec<T>]) -> Vec<Vec<f64>> {
+        // Zero padding to n + max_lag keeps every lag up to max_lag free of wraparound.
         let fft_len = self
             .n_recorded
-            .checked_mul(2)
-            .and_then(usize::checked_next_power_of_two)
+            .checked_add(self.max_lag)
+            .map(fast_fft_len)
             .expect("autocorrelation series is too large for FFT padding");
         let mut planner = FftPlanner::<f64>::new();
         let forward = planner.plan_fft_forward(fft_len);
@@ -247,6 +248,26 @@ impl<T: Real> PrecisionAutocorr<T> {
     }
 }
 
+/// Smallest 5-smooth length (2^a 3^b 5^c) that is at least `min_len`.
+fn fast_fft_len(min_len: usize) -> usize {
+    let min_len = min_len.max(1);
+    let mut best = min_len.next_power_of_two();
+    let mut p5 = 1usize;
+    while p5 < best {
+        let mut p35 = p5;
+        while p35 < best {
+            let mut len = p35;
+            while len < min_len {
+                len *= 2;
+            }
+            best = best.min(len);
+            p35 *= 3;
+        }
+        p5 *= 5;
+    }
+    best
+}
+
 /// Sokal automatic-window estimate of the integrated autocorrelation time.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SokalEstimate {
@@ -289,7 +310,7 @@ pub fn sokal_tau(gamma: &[f64]) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{sokal_estimate, sokal_tau, AutocorrAccum, PrecisionAutocorr};
+    use super::{fast_fft_len, sokal_estimate, sokal_tau, AutocorrAccum, PrecisionAutocorr};
     use crate::config::AutocorrelationBackend;
     use rand::{Rng, SeedableRng};
     use rand_xoshiro::Xoshiro256StarStar;
@@ -454,6 +475,22 @@ mod tests {
         {
             assert!((got - want).abs() < 1e-10, "got {got}, want {want}");
         }
+    }
+
+    #[test]
+    fn fft_length_is_smooth_and_long_enough() {
+        for min_len in [1, 2, 7, 97, 1000, 1025, 65_537, 1_000_001] {
+            let len = fast_fft_len(min_len);
+            assert!(len >= min_len && len <= min_len.next_power_of_two());
+            let mut rest = len;
+            for p in [2, 3, 5] {
+                while rest.is_multiple_of(p) {
+                    rest /= p;
+                }
+            }
+            assert_eq!(rest, 1, "{len} is not 5-smooth");
+        }
+        assert_eq!(fast_fft_len(1025), 1080);
     }
 
     #[test]
