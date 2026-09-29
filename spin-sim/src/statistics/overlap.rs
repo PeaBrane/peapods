@@ -286,10 +286,6 @@ impl OverlapAccum {
         if self.equil_diag {
             self.diag_ql_buf.fill(0.0);
         }
-        if self.collect_q2_ac && record {
-            self.q2_ac_buf.fill(0.0);
-        }
-
         for pair_idx in 0..self.n_pairs {
             let r_a = 2 * pair_idx;
             let r_b = 2 * pair_idx + 1;
@@ -334,12 +330,6 @@ impl OverlapAccum {
                 continue;
             }
 
-            if self.collect_q2_ac {
-                for t in 0..self.n_temps {
-                    self.q2_ac_buf[t] += self.overlaps2_buf[t] as f64;
-                }
-            }
-
             self.overlap_stat.update(&self.overlaps_buf);
             self.overlap2_stat.update(&self.overlaps2_buf);
             self.overlap4_stat.update(&self.overlaps4_buf);
@@ -353,6 +343,39 @@ impl OverlapAccum {
             for v in self.diag_ql_buf.iter_mut() {
                 *v *= inv;
             }
+        }
+        if self.collect_q2_ac && record {
+            self.average_q2_over_all_pairs(spins, system_ids);
+        }
+    }
+
+    /// Mean q^2 over every replica pair at each temperature, for the autocorrelation.
+    ///
+    /// Fixed pairs (2p, 2p + 1) would let moves that merely relabel replicas at one
+    /// temperature (e.g. a spanning Houdayer cluster) look like decorrelation; the
+    /// all-pairs mean is invariant under such relabelings.
+    fn average_q2_over_all_pairs(&mut self, spins: &[i8], system_ids: &[usize]) {
+        let n_replicas = 2 * self.n_pairs;
+        let n_pair_total = (n_replicas * (n_replicas - 1) / 2) as f64;
+        let n = self.n_spins;
+        for t in 0..self.n_temps {
+            let mut sum = 0.0;
+            for a in 0..n_replicas {
+                let sys_a = system_ids[a * self.n_temps + t];
+                let spins_a = &spins[sys_a * n..(sys_a + 1) * n];
+                for b in a + 1..n_replicas {
+                    let sys_b = system_ids[b * self.n_temps + t];
+                    let spins_b = &spins[sys_b * n..(sys_b + 1) * n];
+                    let dot: i64 = spins_a
+                        .iter()
+                        .zip(spins_b)
+                        .map(|(&x, &y)| i64::from(x * y))
+                        .sum();
+                    let q = dot as f64 / n as f64;
+                    sum += q * q;
+                }
+            }
+            self.q2_ac_buf[t] = sum / n_pair_total;
         }
     }
 
@@ -379,6 +402,39 @@ impl OverlapAccum {
 
 #[cfg(test)]
 mod tests {
+
+    /// The autocorrelation observable must not change when replicas at one temperature
+    /// swap labels, and must reduce to the single pair's q^2 for two replicas.
+    #[test]
+    fn q2_autocorrelation_observable_is_relabel_invariant() {
+        let lattice = Lattice::new(vec![4, 4]);
+        let n = lattice.n_spins;
+        let n_temps = 2;
+        let spins: Vec<i8> = (0..4 * n_temps * n)
+            .map(|k| if (k * 37 + k / 5) % 7 < 3 { -1 } else { 1 })
+            .collect();
+        let observable = |system_ids: &[usize], n_pairs: usize| {
+            let mut accum =
+                OverlapAccum::new(n_temps, n, n_pairs, lattice.n_neighbors, false, true);
+            accum.collect(&lattice, &spins, system_ids, true);
+            accum.q2_ac_buf.clone()
+        };
+        let identity: Vec<usize> = (0..4 * n_temps).collect();
+        // Swap replicas 1 and 2 at temperature 0 only.
+        let mut relabelled = identity.clone();
+        relabelled.swap(n_temps, 2 * n_temps);
+        assert_eq!(observable(&identity, 2), observable(&relabelled, 2));
+
+        let two = observable(&identity[..2 * n_temps], 1);
+        for (t, value) in two.iter().enumerate() {
+            let dot: i64 = (0..n)
+                .map(|i| i64::from(spins[t * n + i] * spins[(n_temps + t) * n + i]))
+                .sum();
+            let q = dot as f64 / n as f64;
+            assert!((value - q * q).abs() < 1e-12);
+        }
+    }
+
     use super::*;
     use rand::{Rng, SeedableRng};
     use rand_xoshiro::Xoshiro256StarStar;
