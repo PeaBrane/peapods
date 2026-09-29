@@ -812,14 +812,17 @@ fn run_sweep_loop_impl(
     })?;
 
     let top_cluster_sizes: Vec<Vec<[f64; 4]>> = if collect_top {
+        let modes = &config.overlap_cluster.as_ref().unwrap().modes;
         top4_accum
             .iter()
             .zip(top4_n.iter())
-            .map(|(mode_accum, &count)| {
+            .zip(modes)
+            .map(|((mode_accum, &count), mode)| {
                 if count == 0 {
                     return vec![[0.0; 4]; n_temps];
                 }
-                let denom = (count * n_pairs) as f64;
+                // Each temperature publishes one top-4 record per replica group.
+                let denom = (count * (n_replicas / mode.group_size())) as f64;
                 mode_accum
                     .iter()
                     .map(|arr| {
@@ -1152,6 +1155,84 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Top-4 fractions average over the replica groups that publish them: one group of
+    /// four replicas yields the fractions of its own graph, not half of them.
+    #[test]
+    fn top_cluster_sizes_average_over_replica_groups() {
+        let lattice = Lattice::new(vec![6, 6]);
+        let n = lattice.n_spins;
+        let couplings = vec![1.0; n * lattice.n_neighbors];
+        let mut realization = Realization::new(&lattice, couplings, &[2.0], 4, 3);
+        // The balanced-site graph does not depend on how the group is shuffled.
+        let balanced: Vec<bool> = (0..n)
+            .map(|i| {
+                (0..4)
+                    .map(|r| realization.spins[r * n + i] as i32)
+                    .sum::<i32>()
+                    == 0
+            })
+            .collect();
+        let mut component = vec![usize::MAX; n];
+        let mut sizes = Vec::new();
+        for start in 0..n {
+            if component[start] != usize::MAX {
+                continue;
+            }
+            component[start] = sizes.len();
+            let (mut stack, mut size) = (vec![start], 0);
+            while let Some(i) = stack.pop() {
+                size += 1;
+                for d in 0..lattice.n_neighbors {
+                    for j in [lattice.neighbor_fwd(i, d), lattice.neighbor_bwd(i, d)] {
+                        if balanced[i] && balanced[j] && component[j] == usize::MAX {
+                            component[j] = sizes.len();
+                            stack.push(j);
+                        }
+                    }
+                }
+            }
+            sizes.push(size);
+        }
+        sizes.sort_unstable_by(|a, b| b.cmp(a));
+        let expected: Vec<f64> = sizes[..4].iter().map(|&s| s as f64 / n as f64).collect();
+
+        let config = SimConfig {
+            n_sweeps: 1,
+            warmup_sweeps: 0,
+            sweep_mode: SweepMode::None,
+            cluster_update: None,
+            pt_interval: None,
+            pt_schedule: PtSchedule::SingleRandomEdge,
+            overlap_cluster: Some(OverlapClusterConfig {
+                interval: 1,
+                modes: vec![OverlapClusterBuildMode::Houdayer(4)],
+                cluster_mode: ClusterMode::Sw,
+                action: ClusterAction::Update,
+                collect_stats: true,
+                snapshot_interval: None,
+            }),
+            autocorrelation_max_lag: None,
+            autocorrelation_backend: AutocorrelationBackend::Ring,
+            sequential: true,
+            equilibration_diagnostic: false,
+        };
+        let result = run_sweep_loop(
+            &lattice,
+            &mut realization,
+            4,
+            1,
+            &config,
+            &AtomicBool::new(false),
+            &|| {},
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            result.cluster_stats.top_cluster_sizes[0][0].to_vec(),
+            expected
+        );
     }
 
     #[test]
