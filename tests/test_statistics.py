@@ -17,7 +17,9 @@ def test_heat_capacity_excludes_disorder_variance():
 
     per_sample = physics.physics["per_disorder"]["heat_capacity"].mean(axis=0)
     np.testing.assert_allclose(plain.heat_capacity, per_sample, rtol=1e-6)
-    pooled = 16 * (result["energies2"] - result["energies"] ** 2) / plain.temperatures**2
+    pooled = (
+        16 * (result["energies2"] - result["energies"] ** 2) / plain.temperatures**2
+    )
     assert np.all(pooled > plain.heat_capacity * 1.01)
 
 

@@ -36,14 +36,23 @@ def assert_overlap_binder(model: Ising, tol=0.05):
         )
 
 
-def assert_crossing(temps, results, tc, tol=0.05):
-    """Assert that Binder curves cross at T_c with spread < tol."""
+def assert_crossing(temps, results, tc, tol=0.05, band=None):
+    """Assert that Binder curves cross at T_c with spread < tol.
+
+    `band=(low, high)` also bounds each value at T_c, so curves that coincide at a
+    wrong value (for example a paramagnet-like ~0) cannot pass on spread alone.
+    """
     binders = [np.interp(tc, temps, curve) for curve in results.values()]
     spread = max(binders) - min(binders)
     for label, b in zip(results.keys(), binders):
         print(f"  {label}  binder at T_c: {b:.4f}")
     print(f"  spread: {spread:.4f} (tol={tol})")
     assert spread < tol, f"spread {spread:.4f} >= {tol}, sizes not crossing"
+    if band is not None:
+        low, high = band
+        assert all(low < b < high for b in binders), (
+            f"binder at T_c outside {band}: {[round(b, 4) for b in binders]}"
+        )
     print("  PASSED")
 
 
