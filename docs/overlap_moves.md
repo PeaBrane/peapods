@@ -12,7 +12,7 @@ to alternate them from one overlap call to the next, e.g. `"houd2+rmc"`.
 | `jorg`, `jorg2` | 2 per group | Jörg stochastic bonds | yes |
 | `jorgN` | N per group | Jörg bonds for N/2 replica pairs swapped jointly | yes |
 | `cmr` | 2 per group | Chayes–Machta–Redner blue and grey clusters | yes |
-| `rmc` | 1 per temperature, ≥ 2 temperatures | Swendsen–Wang replica Monte Carlo | yes |
+| `rmc` | pairs adjacent temperatures within each replica row, ≥ 2 temperatures | Swendsen–Wang replica Monte Carlo | yes |
 
 Same-temperature modes shuffle the replicas of every temperature into groups and update
 each group independently. `pair2` is bit-identical to `houd2`, and `jorg2` to `jorg`.
@@ -88,9 +88,9 @@ model with couplings J(β_a + β_b τ_i τ_j).
 - **Relation to PT.** Flipping every τ = −1 domain is exactly a parallel-tempering swap,
   so `rmc` generalizes PT.
 
-`rmc` needs a single replica per temperature and at least two temperatures. It moves
-configuration content between temperature slots without permuting `system_ids`, so PT
-round-trip counters do not see its transport. It records no cluster statistics or
+`rmc` updates every replica row independently and needs at least two temperatures. It
+moves configuration content between temperature slots without permuting `system_ids`, so
+PT round-trip counters do not see its transport. It records no cluster statistics or
 snapshots and is rejected with `overlap_cluster_action="observe"`.
 
 ## Which move to use
@@ -126,10 +126,9 @@ parallel tempering every sweep, with 16 temperatures.
   are unions over several pairs and percolate even more readily.
 - **Measure τ on replica-symmetric observables.** An autocorrelation time measured on
   fixed replica pairs overstates the gain of same-temperature moves, because relabeling
-  replicas decorrelates a fixed pair without moving the ensemble. The built-in
-  `overlap2_tau` uses fixed pairs (0,1), (2,3), …. In the 2D run above at T=0.30, the
-  fixed-pair estimate averaged 39 sweeps for `houd2` against 240 for Q2, while PT alone
-  gave 293 against 555.
+  replicas decorrelates a fixed pair without moving the ensemble. In the 2D run above at
+  T=0.30, a fixed-pair estimate averaged 39 sweeps for `houd2` against 240 for Q2, while
+  PT alone gave 293 against 555. The built-in `overlap2_tau` therefore uses Q2.
 
 ## Statistics
 
