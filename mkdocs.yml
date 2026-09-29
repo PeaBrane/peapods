@@ -21,4 +21,5 @@ plugins:
 nav:
   - Home: index.md
   - XY Guide: xy.md
+  - Overlap Moves: overlap_moves.md
   - API Reference: api.md

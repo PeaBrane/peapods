@@ -8,7 +8,7 @@ The core simulation loop is written in Rust (via PyO3) for performance, with a t
 - Ising ferromagnets and spin glasses on periodic Bravais lattices (hypercubic, triangular, or any custom neighbor offsets)
 - Arbitrary, bimodal (±J), or Gaussian coupling distributions
 - Multiple replicas with overlap statistics for spin glass order parameters
-- Metropolis, Gibbs, Swendsen-Wang, Wolff, parallel tempering, Houdayer ICM, Jörg, and CMR algorithms
+- Metropolis, Gibbs, Swendsen-Wang, Wolff, parallel tempering, Houdayer ICM, Jörg, CMR, and replica Monte Carlo algorithms ([overlap moves guide](overlap_moves.md))
 
 ## Quickstart
 
