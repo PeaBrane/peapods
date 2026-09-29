@@ -110,6 +110,8 @@ pub enum OverlapClusterBuildMode {
     /// the two-replica Jörg move.
     Jorg(usize),
     Cmr,
+    /// Swendsen-Wang replica Monte Carlo between adjacent temperature slots.
+    Rmc,
 }
 
 impl OverlapClusterBuildMode {
@@ -118,6 +120,7 @@ impl OverlapClusterBuildMode {
         match self {
             Self::Houdayer(n) | Self::Pair(n) | Self::Jorg(n) => *n,
             Self::Cmr => 2,
+            Self::Rmc => 1,
         }
     }
 }
@@ -141,6 +144,7 @@ impl TryFrom<&str> for OverlapClusterBuildMode {
             "houdayer" | "houd2" => Ok(Self::Houdayer(2)),
             "jorg" => Ok(Self::Jorg(2)),
             "cmr" | "cmr2" => Ok(Self::Cmr),
+            "rmc" => Ok(Self::Rmc),
             _ if s.starts_with("pair") => parse_group_size(s, "pair", "pair").map(Self::Pair),
             _ if s.starts_with("jorg") => parse_group_size(s, "jorg", "Jörg").map(Self::Jorg),
             _ if s.starts_with("houd") => {
@@ -154,7 +158,7 @@ impl TryFrom<&str> for OverlapClusterBuildMode {
                 Ok(Self::Houdayer(n))
             }
             _ => Err(format!(
-                "unknown overlap_cluster_build_mode '{s}', expected 'houdayer', 'houdN', 'pairN', 'jorg', 'jorgN', or 'cmr'"
+                "unknown overlap_cluster_build_mode '{s}', expected 'houdayer', 'houdN', 'pairN', 'jorg', 'jorgN', 'cmr', or 'rmc'"
             )),
         }
     }
@@ -272,8 +276,10 @@ fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
             }
             // Observed graphs are reported per two-replica build mode only.
             if h.modes.iter().any(|mode| {
-                matches!(mode, OverlapClusterBuildMode::Pair(_))
-                    || matches!(mode, OverlapClusterBuildMode::Jorg(n) if *n > 2)
+                matches!(
+                    mode,
+                    OverlapClusterBuildMode::Pair(_) | OverlapClusterBuildMode::Rmc
+                ) || matches!(mode, OverlapClusterBuildMode::Jorg(n) if *n > 2)
             }) {
                 return Err(ValidationError::new(
                     "overlap_cluster_action='observe' supports only houdayer, jorg and cmr",
@@ -381,11 +387,19 @@ mod tests {
     }
 
     #[test]
-    fn parses_multi_pair_modes() {
+    fn parses_multi_pair_and_replica_monte_carlo_modes() {
         use OverlapClusterBuildMode::*;
         assert_eq!(
-            parse_overlap_modes("jorg+jorg2+jorg4+pair2+pair6+houd2").unwrap(),
-            vec![Jorg(2), Jorg(2), Jorg(4), Pair(2), Pair(6), Houdayer(2)]
+            parse_overlap_modes("jorg+jorg2+jorg4+pair2+pair6+rmc+houd2").unwrap(),
+            vec![
+                Jorg(2),
+                Jorg(2),
+                Jorg(4),
+                Pair(2),
+                Pair(6),
+                Rmc,
+                Houdayer(2)
+            ]
         );
         for bad in ["pair", "pair3", "pair0", "jorg5", "jorgx"] {
             assert!(
@@ -396,10 +410,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_observing_multi_pair_modes() {
+    fn rejects_observing_multi_pair_and_replica_monte_carlo_modes() {
         for mode in [
             OverlapClusterBuildMode::Pair(2),
             OverlapClusterBuildMode::Jorg(4),
+            OverlapClusterBuildMode::Rmc,
         ] {
             let mut config = config();
             config.overlap_cluster = Some(OverlapClusterConfig {

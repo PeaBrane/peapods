@@ -118,6 +118,7 @@ impl ClusterObservationAccums {
             }
             OverlapClusterBuildMode::Jorg(_) => &mut self.jorg,
             OverlapClusterBuildMode::Cmr => &mut self.cmr_blue,
+            OverlapClusterBuildMode::Rmc => return,
         };
         target.get_or_insert_with(|| GraphObservationAccum::new(n_temps, n_spins));
     }
@@ -129,6 +130,7 @@ impl ClusterObservationAccums {
             }
             OverlapClusterBuildMode::Jorg(_) => self.jorg.as_mut(),
             OverlapClusterBuildMode::Cmr => self.cmr_blue.as_mut(),
+            OverlapClusterBuildMode::Rmc => None,
         }
         .expect("observed graph accumulator must be allocated")
     }
@@ -222,6 +224,9 @@ fn run_sweep_loop_impl(
             return Err(format!(
                 "overlap cluster requires n_replicas >= max group_size ({n_replicas} < {max_gs})"
             ));
+        }
+        if n_temps < 2 && oc_cfg.modes.contains(&OverlapClusterBuildMode::Rmc) {
+            return Err("rmc requires at least two temperatures".into());
         }
     }
 
@@ -686,8 +691,10 @@ fn run_sweep_loop_impl(
                     None
                 };
 
+                let is_rmc = *mode == OverlapClusterBuildMode::Rmc;
+                // Replica Monte Carlo builds no overlap graph to publish.
                 let take_snapshot =
-                    snapshot_interval.is_some_and(|si| sweep_id % si == 0) && record;
+                    snapshot_interval.is_some_and(|si| sweep_id % si == 0) && record && !is_rmc;
 
                 let is_cmr = matches!(mode, crate::config::OverlapClusterBuildMode::Cmr);
 
@@ -718,27 +725,42 @@ fn run_sweep_loop_impl(
                     None
                 };
 
-                clusters::overlap_update(
-                    lattice,
-                    &mut real.spins,
-                    &real.couplings,
-                    &real.temperatures,
-                    &real.system_ids,
-                    n_replicas,
-                    n_temps,
-                    &mut real.pair_rngs,
-                    mode,
-                    oc_cfg.cluster_mode,
-                    oc_cfg.action,
-                    ov_csd_out,
-                    top4_out,
-                    observation_out,
-                    config.sequential,
-                    snap,
-                    blue_snap,
-                    spin_snap,
-                    sid_snap,
-                );
+                if is_rmc {
+                    clusters::rmc_update(
+                        lattice,
+                        &mut real.spins,
+                        &real.couplings,
+                        &real.temperatures,
+                        &real.system_ids,
+                        n_replicas,
+                        n_temps,
+                        &mut real.rngs,
+                        oc_cfg.cluster_mode,
+                        config.sequential,
+                    );
+                } else {
+                    clusters::overlap_update(
+                        lattice,
+                        &mut real.spins,
+                        &real.couplings,
+                        &real.temperatures,
+                        &real.system_ids,
+                        n_replicas,
+                        n_temps,
+                        &mut real.pair_rngs,
+                        mode,
+                        oc_cfg.cluster_mode,
+                        oc_cfg.action,
+                        ov_csd_out,
+                        top4_out,
+                        observation_out,
+                        config.sequential,
+                        snap,
+                        blue_snap,
+                        spin_snap,
+                        sid_snap,
+                    );
+                }
 
                 if take_snapshot {
                     let ids: Vec<Vec<u32>> = (0..n_temps)
@@ -822,11 +844,15 @@ fn run_sweep_loop_impl(
             .zip(top4_n.iter())
             .zip(modes)
             .map(|((mode_accum, &count), mode)| {
-                if count == 0 {
+                // Each temperature publishes one top-4 record per replica group.
+                let n_groups = match mode {
+                    OverlapClusterBuildMode::Rmc => 0,
+                    _ => n_replicas / mode.group_size(),
+                };
+                if count == 0 || n_groups == 0 {
                     return vec![[0.0; 4]; n_temps];
                 }
-                // Each temperature publishes one top-4 record per replica group.
-                let denom = (count * (n_replicas / mode.group_size())) as f64;
+                let denom = (count * n_groups) as f64;
                 mode_accum
                     .iter()
                     .map(|arr| {
@@ -1059,7 +1085,7 @@ mod tests {
                 pt_schedule: PtSchedule::FullLadder,
                 overlap_cluster: with_clusters.then_some(OverlapClusterConfig {
                     interval: 5,
-                    modes: vec![OverlapClusterBuildMode::Cmr],
+                    modes: vec![OverlapClusterBuildMode::Cmr, OverlapClusterBuildMode::Rmc],
                     cluster_mode: ClusterMode::Sw,
                     action: ClusterAction::Update,
                     collect_stats: false,
