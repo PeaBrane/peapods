@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicBool;
 
 use crate::config::{ClusterAction, OverlapClusterBuildMode, SimConfig, SweepMode};
 use crate::geometry::Lattice;
-use crate::statistics::physics::{PhysicsCollector, PhysicsOptions};
+use crate::statistics::physics::{CachedTotals, PhysicsCollector, PhysicsOptions};
 use crate::statistics::{
     sokal_tau, AutocorrAccum, ClusterObservations, ClusterSnapshot, ClusterStats, Diagnostics,
     EquilDiagnosticAccum, GraphObservationSummary, OverlapAccum, Statistics, SweepResult,
@@ -633,13 +633,18 @@ fn run_sweep_loop_impl(
         }
 
         if let Some(collector) = physics.as_mut().filter(|_| record) {
+            // Reuse this sweep's energy/magnetization pass; `energies` hold -H/N.
             for (slot, &system) in real.system_ids.iter().enumerate() {
-                collector.measure(
+                collector.measure_cached(
                     lattice,
                     &real.spins[system * n_spins..(system + 1) * n_spins],
                     &real.couplings,
                     &occupied,
                     slot % n_temps,
+                    CachedTotals {
+                        energy: -(real.energies[system] as f64),
+                        magnetization: [magnetization_sums[system] as f64, 0.0],
+                    },
                 );
             }
             collector.end_sweep(n_replicas);
@@ -909,7 +914,7 @@ pub fn run_sweep_parallel_with_physics(
 ) -> Result<SweepResult, String> {
     driver::validate_batch(lattice, realizations, n_replicas, n_temps, config)?;
     if let Some(options) = physics {
-        PhysicsCollector::new(lattice, n_temps, options, 1)?;
+        options.validate(lattice, 1)?;
     }
     let single = realizations.len() == 1;
     let mut results = driver::map_realizations(realizations, |idx, real| {

@@ -185,6 +185,38 @@ pub struct OverlapAccum {
 
     pub diag_ql_buf: Vec<f32>,
     pub q2_ac_buf: Vec<f64>,
+    site_overlap: Vec<i8>,
+}
+
+/// Returns `(Σ_i q_i, Σ_i Σ_d q_i q_{fwd(i,d)})` for site overlaps `q_i = ±1`.
+///
+/// Partial sums are chunked so that each i32 accumulator stays below 2^31 for any
+/// lattice size; the chunk totals are combined in i64.
+fn overlap_sums(lattice: &Lattice, q: &[i8]) -> (i64, i64) {
+    overlap_sums_chunked(lattice, q, i32::MAX as usize / (lattice.n_neighbors + 1))
+}
+
+fn overlap_sums_chunked(lattice: &Lattice, q: &[i8], chunk: usize) -> (i64, i64) {
+    let n_neighbors = lattice.n_neighbors;
+    let chunk = chunk.max(1);
+    let mut dot_spin = 0i64;
+    let mut dot_link = 0i64;
+    for start in (0..q.len()).step_by(chunk) {
+        let mut spin_acc = 0i32;
+        let mut link_acc = 0i32;
+        for j in start..q.len().min(start + chunk) {
+            let qj = q[j] as i32;
+            let mut neighbors = 0i32;
+            for d in 0..n_neighbors {
+                neighbors += q[lattice.neighbor_fwd(j, d)] as i32;
+            }
+            spin_acc += qj;
+            link_acc += qj * neighbors;
+        }
+        dot_spin += spin_acc as i64;
+        dot_link += link_acc as i64;
+    }
+    (dot_spin, dot_link)
 }
 
 impl OverlapAccum {
@@ -245,6 +277,7 @@ impl OverlapAccum {
             } else {
                 vec![]
             },
+            site_overlap: if has_pairs { vec![0; n_spins] } else { vec![] },
         }
     }
 
@@ -264,22 +297,12 @@ impl OverlapAccum {
             for t in 0..self.n_temps {
                 let sys_a = system_ids[r_a * self.n_temps + t];
                 let sys_b = system_ids[r_b * self.n_temps + t];
-                let base_a = sys_a * self.n_spins;
-                let base_b = sys_b * self.n_spins;
-
-                let mut dot_spin = 0i64;
-                let mut dot_link = 0i64;
-                for j in 0..self.n_spins {
-                    let sa = spins[base_a + j] as i64;
-                    let sb = spins[base_b + j] as i64;
-                    let q = sa * sb;
-                    dot_spin += q;
-                    for d in 0..lattice.n_neighbors {
-                        let k = lattice.neighbor_fwd(j, d);
-                        let neighbor_q = spins[base_a + k] as i64 * spins[base_b + k] as i64;
-                        dot_link += q * neighbor_q;
-                    }
+                let spins_a = &spins[sys_a * self.n_spins..(sys_a + 1) * self.n_spins];
+                let spins_b = &spins[sys_b * self.n_spins..(sys_b + 1) * self.n_spins];
+                for ((q, &sa), &sb) in self.site_overlap.iter_mut().zip(spins_a).zip(spins_b) {
+                    *q = sa * sb;
                 }
+                let (dot_spin, dot_link) = overlap_sums(lattice, &self.site_overlap);
 
                 let ql = dot_link as f32 / self.n_bonds as f32;
 
@@ -357,6 +380,26 @@ impl OverlapAccum {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::{Rng, SeedableRng};
+    use rand_xoshiro::Xoshiro256StarStar;
+
+    #[test]
+    fn chunked_overlap_sums_match_direct_definition() {
+        let lattice = Lattice::with_offsets(vec![5, 6], vec![vec![1, 0], vec![0, 1], vec![1, -1]]);
+        let mut rng = Xoshiro256StarStar::seed_from_u64(9);
+        let q: Vec<i8> = (0..lattice.n_spins)
+            .map(|_| if rng.gen::<bool>() { 1 } else { -1 })
+            .collect();
+        let spin: i64 = q.iter().map(|&v| v as i64).sum();
+        let link: i64 = (0..lattice.n_spins)
+            .flat_map(|i| (0..lattice.n_neighbors).map(move |d| (i, d)))
+            .map(|(i, d)| q[i] as i64 * q[lattice.neighbor_fwd(i, d)] as i64)
+            .sum();
+        assert_eq!(overlap_sums(&lattice, &q), (spin, link));
+        for chunk in [1, 7, 29, 30, 1000] {
+            assert_eq!(overlap_sums_chunked(&lattice, &q, chunk), (spin, link));
+        }
+    }
 
     #[test]
     fn empty_aggregate_is_empty() {
