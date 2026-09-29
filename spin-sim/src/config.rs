@@ -136,8 +136,8 @@ impl TryFrom<&str> for OverlapClusterBuildMode {
                 }
                 if n > 2 {
                     eprintln!(
-                        "WARNING: houd{n} (group_size > 2) is experimental and very likely \
-                         does not satisfy detailed balance"
+                        "WARNING: houd{n} (group_size > 2) is experimental and does not satisfy \
+                         detailed balance: flipping a balanced site can change the total energy"
                     );
                 }
                 Ok(Self::Houdayer(n))
@@ -222,6 +222,15 @@ fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
         if h.modes.is_empty() {
             return Err(ValidationError::new(
                 "overlap_cluster modes must not be empty",
+            ));
+        }
+        // Parallel group tasks index per-pair RNG and output slots, which is sound
+        // only for even group sizes >= 2.
+        if h.modes.iter().any(
+            |mode| matches!(mode, OverlapClusterBuildMode::Houdayer(n) if *n < 2 || n % 2 != 0),
+        ) {
+            return Err(ValidationError::new(
+                "Houdayer group size must be even and >= 2",
             ));
         }
         if h.action == ClusterAction::Observe {
@@ -326,6 +335,22 @@ mod tests {
             snapshot_interval: None,
         });
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_houdayer_group_sizes() {
+        for group_size in [0, 1, 3] {
+            let mut config = config();
+            config.overlap_cluster = Some(OverlapClusterConfig {
+                interval: 1,
+                modes: vec![OverlapClusterBuildMode::Houdayer(group_size)],
+                cluster_mode: ClusterMode::Sw,
+                action: ClusterAction::Update,
+                collect_stats: false,
+                snapshot_interval: None,
+            });
+            assert!(config.validate().is_err(), "houd{group_size} accepted");
+        }
     }
 
     #[test]

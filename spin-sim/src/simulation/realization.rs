@@ -288,12 +288,14 @@ impl<S: Spin> ModelRealization<S> {
         if self.couplings.iter().any(|x| !x.to_f64().is_finite()) {
             return Err("couplings must be finite".into());
         }
-        if self
-            .temperatures
-            .iter()
-            .any(|x| !x.to_f64().is_finite() || x.to_f64() <= 0.0)
-        {
-            return Err("temperatures must be positive and finite".into());
+        // Kernels divide by temperature in the model's precision, so 1/T must be finite too.
+        if self.temperatures.iter().any(|&x| {
+            let inverse = S::Value::from_f64(1.0).to_f64() / x.to_f64();
+            !x.to_f64().is_finite()
+                || x.to_f64() <= 0.0
+                || !S::Value::from_f64(inverse).to_f64().is_finite()
+        }) {
+            return Err("temperatures must be positive and finite with a finite inverse".into());
         }
         Ok(())
     }
