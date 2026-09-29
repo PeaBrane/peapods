@@ -617,6 +617,7 @@ def run_simulate(args):
             "mags4",
             "energies",
             "energies2",
+            "energy_variance",
             "overlap",
             "overlap2",
             "overlap4",
@@ -684,7 +685,7 @@ def print_table(model, has_overlap, has_csd):
         if has_csd:
             row.append(f"{model.mean_cluster_size[i]:14.2f}")
         if has_top4:
-            t = model.top_cluster_sizes[i]
+            t = model.top_cluster_sizes[0][i]
             row.append(f"({t[0]:.3f}, {t[1]:.3f}, {t[2]:.3f}, {t[3]:.3f})".rjust(30))
         print("  ".join(row))
 

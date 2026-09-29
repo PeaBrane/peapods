@@ -105,6 +105,7 @@ def _save_data(models, config_label, temperatures, output_dir):
         save_dict[f"{prefix}_binder_cumulant"] = model.binder_cumulant
         save_dict[f"{prefix}_heat_capacity"] = model.heat_capacity
         save_dict[f"{prefix}_energies"] = model.energies_avg
+        save_dict[f"{prefix}_energy_variance"] = model.energy_variance
         if hasattr(model, "sg_binder"):
             save_dict[f"{prefix}_sg_binder"] = model.sg_binder
         if hasattr(model, "mean_cluster_size"):

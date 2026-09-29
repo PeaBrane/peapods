@@ -92,8 +92,9 @@ class Ising:
         couplings: Coupling array with shape `(*lattice_shape, n_neighbors)`.
         binder_cumulant: Binder cumulant `1 - <m^4> / (3 <m^2>^2)`, set after
             [`sample`][peapods.Ising.sample].
-        heat_capacity: Heat capacity `(<E^2> - <E>^2) / T^2`, set after
-            [`sample`][peapods.Ising.sample].
+        heat_capacity: Heat capacity per spin `N [<e^2> - <e>^2] / T^2`, with the
+            thermal variance taken within each disorder realization before the
+            disorder average `[...]`, set after [`sample`][peapods.Ising.sample].
         sg_binder: Spin glass Binder parameter `1 - <q^4> / (3 <q^2>^2)`, set
             after [`sample`][peapods.Ising.sample] with `n_replicas >= 2`.
     """
@@ -208,7 +209,8 @@ class Ising:
         After sampling, the following attributes are set on the instance:
 
         - `binder_cumulant` — Binder cumulant per temperature.
-        - `heat_capacity` — Heat capacity per temperature.
+        - `heat_capacity` — Heat capacity per spin and temperature, from the
+          disorder-averaged thermal energy variance `energy_variance`.
         - `sg_binder` — Spin glass Binder parameter (only with `n_replicas >= 2`).
         - `fk_csd` — FK cluster size distribution (only with
           `collect_cluster_stats=True`).
@@ -314,13 +316,11 @@ class Ising:
         self.mags4 = result["mags4"]
         self.energies_avg = result["energies"]
         self.energies2_avg = result["energies2"]
+        # [<e^2>] - [<e>]^2 would add the disorder variance of <e>.
+        self.energy_variance = result["energy_variance"]
 
         self.binder_cumulant = 1 - self.mags4 / (3 * self.mags2**2)
-        self.heat_capacity = (
-            self.n_spins
-            * (self.energies2_avg - self.energies_avg**2)
-            / self.temperatures**2
-        )
+        self.heat_capacity = self.n_spins * self.energy_variance / self.temperatures**2
 
         if "physics" in result:
             self.physics = result["physics"]
