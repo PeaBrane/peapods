@@ -917,6 +917,11 @@ pub fn run_sweep_parallel_with_physics(
         options.validate(lattice, 1)?;
     }
     let single = realizations.len() == 1;
+    // Once disorder realizations alone occupy every thread, nested replica
+    // parallelism only adds scheduling overhead; results do not depend on it.
+    let mut effective = config.clone();
+    effective.sequential |= realizations.len() >= rayon::current_num_threads();
+    let config = &effective;
     let mut results = driver::map_realizations(realizations, |idx, real| {
         run_sweep_loop_impl(
             lattice,

@@ -149,7 +149,7 @@ impl TryFrom<&str> for OverlapClusterBuildMode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ClusterConfig {
     pub interval: usize,
     pub mode: ClusterMode,
@@ -157,7 +157,7 @@ pub struct ClusterConfig {
     pub collect_stats: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct OverlapClusterConfig {
     pub interval: usize,
     pub modes: Vec<OverlapClusterBuildMode>,
@@ -257,7 +257,7 @@ fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
     Ok(())
 }
 
-#[derive(Debug, Validate)]
+#[derive(Clone, Debug, Validate)]
 #[validate(schema(function = "validate_sim_config"))]
 pub struct SimConfig {
     pub n_sweeps: usize,
