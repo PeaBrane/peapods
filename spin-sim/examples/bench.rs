@@ -25,6 +25,11 @@ fn main() {
     let n_sweeps = env_usize("PEAPODS_SWEEPS", 50);
     let n_realizations = env_usize("PEAPODS_NREAL", 100);
     let sequential = env::var_os("PEAPODS_SEQUENTIAL").is_some();
+    let overlap_cluster_mode = if env::var_os("PEAPODS_OVERLAP_WOLFF").is_some() {
+        ClusterMode::Wolff
+    } else {
+        ClusterMode::Sw
+    };
     let generic_lattice = env::var_os("PEAPODS_GENERIC_LATTICE").is_some();
     let mode = env::var("PEAPODS_MODE").unwrap_or_else(|_| "cmr".to_string());
     let couplings_kind = env::var("PEAPODS_COUPLINGS").unwrap_or_else(|_| "bimodal".to_string());
@@ -42,8 +47,10 @@ fn main() {
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
 
+    let t_min: f32 = env::var("PEAPODS_TMIN").map_or(0.1, |v| v.parse().unwrap());
+    let t_max: f32 = env::var("PEAPODS_TMAX").map_or(5.0, |v| v.parse().unwrap());
     let temps: Vec<f32> = (0..n_temps)
-        .map(|i| 0.1 * (50.0f32).powf(i as f32 / (n_temps.max(2) - 1) as f32))
+        .map(|i| t_min * (t_max / t_min).powf(i as f32 / (n_temps.max(2) - 1) as f32))
         .collect();
 
     let n_pairs = n_replicas / 2;
@@ -108,7 +115,7 @@ fn main() {
             Some(OverlapClusterConfig {
                 interval: 1,
                 modes: vec![OverlapClusterBuildMode::Cmr],
-                cluster_mode: ClusterMode::Sw,
+                cluster_mode: overlap_cluster_mode,
                 action: ClusterAction::Update,
                 collect_stats: false,
                 snapshot_interval: None,
@@ -134,7 +141,7 @@ fn main() {
                 } else {
                     OverlapClusterBuildMode::Houdayer(2)
                 }],
-                cluster_mode: ClusterMode::Sw,
+                cluster_mode: overlap_cluster_mode,
                 action: ClusterAction::Update,
                 collect_stats: false,
                 snapshot_interval: None,
