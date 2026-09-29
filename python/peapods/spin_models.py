@@ -527,8 +527,10 @@ class XY:
     ):
         """Sample physical moments, with Metropolis plus embedded SW by default.
 
-        ``n_sweeps`` includes warmup. Set ``sweep_mode="none"`` for cluster-only
-        sampling, or ``cluster_update_interval=None`` for Metropolis only.
+        ``n_sweeps`` includes warmup. ``sweep_mode="gibbs"`` uses an exact
+        heat-bath (von Mises) local pass. Set ``sweep_mode="none"`` for
+        cluster-only sampling, or ``cluster_update_interval=None`` for local
+        updates only.
         ``cluster_updates`` is a fixed count per scheduled event. Overrelaxation
         and tempering are off by default. Blocks retain sums and counts over
         ``block_size`` measured sweeps; autocorrelation diagnostics use measured

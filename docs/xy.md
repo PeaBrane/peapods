@@ -60,12 +60,17 @@ object are snapshots of the last completed `sample()` call, even after reset.
 ## Updates and measurement clock
 
 By default each sweep performs one uniform-angle Metropolis pass and one
-embedded Swendsen–Wang update. Optional overrelaxation passes run after the local
-pass and before clusters, reflecting spins about their signed local field;
-zero fields are skipped. Measurements follow these updates; PT follows
-measurement. `n_sweeps` includes warmup, rounded from `warmup_ratio`.
+embedded Swendsen–Wang update. `sweep_mode="gibbs"` replaces the Metropolis pass
+by an exact heat-bath pass, drawing each spin from the von Mises law
+\(p(\theta)\propto e^{\beta|h|\cos\theta}\) about its local field \(h\)
+([Best and Fisher, 1979](https://doi.org/10.2307/2346732)); it always moves,
+which helps at low temperature, where uniform proposals are rarely accepted.
+Optional overrelaxation passes run after the local pass and before clusters,
+reflecting spins about their signed local field; zero fields are skipped.
+Measurements follow these updates; PT follows measurement. `n_sweeps` includes
+warmup, rounded from `warmup_ratio`.
 
-- Metropolis only: `cluster_update_interval=None`.
+- Local updates only: `cluster_update_interval=None`.
 - Cluster only: `sweep_mode="none"`, with `cluster_mode="sw"` or `"wolff"`.
 - `cluster_updates=k` performs a **fixed** number of updates per scheduled cluster
   event. `cluster_update_interval` controls events per sweep; it does not adapt
