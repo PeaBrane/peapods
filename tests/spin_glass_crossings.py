@@ -141,6 +141,48 @@ def spin_glass_3d_jorg():
     )
 
 
+def spin_glass_3d_rmc():
+    name = "3D EA spin glass (replica MC)"
+    temps = np.linspace(0.8, 1.4, 12).astype(np.float32)
+    sizes = [8, 10]
+
+    print(f"\n{'=' * 60}")
+    print(f"  {name}  (T_c = {TC_EA_3D:.4f})")
+    print(f"{'=' * 60}")
+
+    results = {}
+    for L in sizes:
+        model = Ising(
+            (L, L, L),
+            couplings="bimodal",
+            temperatures=temps,
+            n_replicas=2,
+            n_disorder=25,
+            seed=TEST_SEED,
+        )
+        model.sample(
+            N_SWEEPS,
+            sweep_mode="metropolis",
+            pt_interval=1,
+            overlap_cluster_update_interval=1,
+            overlap_cluster_build_mode="rmc",
+            overlap_cluster_mode="wolff",
+            warmup_ratio=0.25,
+        )
+        assert_overlap_binder(model)
+        results[f"L={L}"] = model.sg_binder
+
+    assert_crossing(temps, results, TC_EA_3D, tol=0.3, band=SG_BINDER_BAND)
+    plot_crossing(
+        temps,
+        results,
+        TC_EA_3D,
+        ylabel="SG Binder ratio",
+        title=f"{name} Binder crossing",
+        out_path=OUT_DIR / "3d_ea_spin_glass_rmc.png",
+    )
+
+
 def spin_glass_3d_cmr_houd4():
     name = "3D EA spin glass (CMR+Houd4)"
     temps = np.linspace(0.8, 1.4, 12).astype(np.float32)
@@ -187,6 +229,7 @@ def run():
     spin_glass_3d()
     spin_glass_3d_cmr()
     spin_glass_3d_jorg()
+    spin_glass_3d_rmc()
     # spin_glass_3d_cmr_houd4() is not run: houdN > 2 is experimental and does not
     # satisfy detailed balance (Binder ~0 at T_c), so it would fail the band.
 
