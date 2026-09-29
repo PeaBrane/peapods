@@ -124,6 +124,12 @@ def add_simulation_args(parser):
         default="update",
         choices=["update", "observe"],
     )
+    parser.add_argument(
+        "--overlap-cluster-max-temperature",
+        type=float,
+        default=None,
+        help="Apply overlap moves only at temperatures up to this value",
+    )
     _add_common_args(parser)
 
 
@@ -304,6 +310,7 @@ def sample_kwargs(args):
         overlap_cluster_build_mode=args.overlap_cluster_build_mode,
         overlap_cluster_mode=args.overlap_cluster_mode,
         overlap_cluster_action=args.overlap_cluster_action,
+        overlap_cluster_max_temperature=args.overlap_cluster_max_temperature,
         collect_cluster_stats=args.collect_cluster_stats,
         autocorrelation_max_lag=args.autocorrelation_max_lag,
         autocorrelation_backend=args.autocorrelation_backend,

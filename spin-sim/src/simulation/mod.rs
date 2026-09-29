@@ -231,6 +231,16 @@ fn run_sweep_loop_impl(
     }
 
     let n_pairs = n_replicas / 2;
+    let overlap_active: Vec<bool> = real.temperatures[..n_temps]
+        .iter()
+        .map(|&t| {
+            config
+                .overlap_cluster
+                .as_ref()
+                .and_then(|oc| oc.max_temperature)
+                .is_none_or(|max| t <= max)
+        })
+        .collect();
     let observe_fk = config
         .cluster_update
         .as_ref()
@@ -730,6 +740,7 @@ fn run_sweep_loop_impl(
                         &real.system_ids,
                         n_replicas,
                         n_temps,
+                        &overlap_active,
                         &mut real.rngs,
                         oc_cfg.cluster_mode,
                         config.sequential,
@@ -743,6 +754,7 @@ fn run_sweep_loop_impl(
                         &real.system_ids,
                         n_replicas,
                         n_temps,
+                        &overlap_active,
                         &mut real.pair_rngs,
                         mode,
                         oc_cfg.cluster_mode,
@@ -1086,6 +1098,7 @@ mod tests {
                     action: ClusterAction::Update,
                     collect_stats: false,
                     snapshot_interval: None,
+                    max_temperature: None,
                 }),
                 autocorrelation_max_lag: None,
                 autocorrelation_backend: AutocorrelationBackend::Ring,
@@ -1116,6 +1129,66 @@ mod tests {
                 realization.energies, expected,
                 "{sweep_mode:?} clusters={with_clusters}"
             );
+        }
+    }
+
+    /// Overlap moves above `max_temperature` must leave those systems untouched, while
+    /// the colder temperatures keep moving.
+    #[test]
+    fn overlap_moves_respect_max_temperature() {
+        let lattice = Lattice::new(vec![6, 6]);
+        let couplings: Vec<f32> = (0..lattice.n_spins * lattice.n_neighbors)
+            .map(|i| if i % 3 == 0 { -1.0 } else { 1.0 })
+            .collect();
+        let temps = [0.5, 1.0, 3.0];
+        for mode in [
+            OverlapClusterBuildMode::Houdayer(2),
+            OverlapClusterBuildMode::Rmc,
+        ] {
+            let mut realization = Realization::new(&lattice, couplings.clone(), &temps, 2, 31);
+            let initial = realization.spins.clone();
+            let config = SimConfig {
+                n_sweeps: 20,
+                warmup_sweeps: 0,
+                sweep_mode: SweepMode::None,
+                cluster_update: None,
+                pt_interval: None,
+                pt_schedule: PtSchedule::SingleRandomEdge,
+                overlap_cluster: Some(OverlapClusterConfig {
+                    interval: 1,
+                    modes: vec![mode],
+                    cluster_mode: ClusterMode::Sw,
+                    action: ClusterAction::Update,
+                    collect_stats: false,
+                    snapshot_interval: None,
+                    max_temperature: Some(1.0),
+                }),
+                autocorrelation_max_lag: None,
+                autocorrelation_backend: AutocorrelationBackend::Ring,
+                sequential: true,
+                equilibration_diagnostic: false,
+            };
+            run_sweep_loop(
+                &lattice,
+                &mut realization,
+                2,
+                temps.len(),
+                &config,
+                &AtomicBool::new(false),
+                &|| {},
+                0,
+            )
+            .unwrap();
+            let n = lattice.n_spins;
+            let changed = |t: usize| {
+                (0..2).any(|r| {
+                    let system = realization.system_ids[r * temps.len() + t];
+                    realization.spins[system * n..(system + 1) * n]
+                        != initial[system * n..(system + 1) * n]
+                })
+            };
+            assert!(!changed(2), "{mode:?} moved the T = 3.0 systems");
+            assert!(changed(0), "{mode:?} never moved the T = 0.5 systems");
         }
     }
 
@@ -1151,6 +1224,7 @@ mod tests {
                     action: ClusterAction::Update,
                     collect_stats,
                     snapshot_interval: None,
+                    max_temperature: None,
                 }),
                 autocorrelation_max_lag: None,
                 autocorrelation_backend: AutocorrelationBackend::Ring,
@@ -1238,6 +1312,7 @@ mod tests {
                 action: ClusterAction::Update,
                 collect_stats: true,
                 snapshot_interval: None,
+                max_temperature: None,
             }),
             autocorrelation_max_lag: None,
             autocorrelation_backend: AutocorrelationBackend::Ring,
@@ -1365,6 +1440,7 @@ mod tests {
             action: ClusterAction::Observe,
             collect_stats: true,
             snapshot_interval: None,
+            max_temperature: None,
         });
         let result = run_sweep_loop(
             &lattice,

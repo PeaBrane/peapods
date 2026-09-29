@@ -193,6 +193,7 @@ class Ising:
         overlap_cluster_build_mode="houdayer",
         overlap_cluster_mode="wolff",
         overlap_cluster_action="update",
+        overlap_cluster_max_temperature=None,
         warmup_ratio=0.25,
         collect_cluster_stats=False,
         autocorrelation_max_lag=None,
@@ -255,6 +256,12 @@ class Ising:
                 `"wolff"` or `"sw"`.
             overlap_cluster_action: `"update"` to perform the move or
                 `"observe"` to record the full graph without acting on replicas.
+            overlap_cluster_max_temperature: If set, apply overlap moves only at
+                temperatures up to this value (for `"rmc"`, only edges whose two
+                temperatures both qualify). Same-temperature cluster moves pay off
+                mainly well below T_c (Zhu, Ochoa & Katzgraber 2015), so this
+                saves their cost where they barely help. Skipped temperatures
+                report no overlap cluster statistics.
             warmup_ratio: Fraction of sweeps discarded as warmup before
                 collecting statistics. Default 0.25.
             collect_cluster_stats: If `True`, collect FK cluster size
@@ -318,6 +325,9 @@ class Ising:
             overlap_cluster_build_mode=overlap_cluster_build_mode if oci else None,
             overlap_cluster_mode=overlap_cluster_mode if oci else None,
             overlap_cluster_action=overlap_cluster_action if oci else None,
+            overlap_cluster_max_temperature=overlap_cluster_max_temperature
+            if oci
+            else None,
             warmup_ratio=warmup_ratio,
             collect_cluster_stats=collect_cluster_stats,
             autocorrelation_max_lag=autocorrelation_max_lag,

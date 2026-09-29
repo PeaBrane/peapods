@@ -180,6 +180,10 @@ pub struct OverlapClusterConfig {
     pub action: ClusterAction,
     pub collect_stats: bool,
     pub snapshot_interval: Option<usize>,
+    /// Apply overlap moves only at temperatures <= this value (rmc: both ends of an
+    /// edge). Same-temperature cluster moves pay off only well below T_c (Zhu, Ochoa
+    /// & Katzgraber, PRL 115, 077201 (2015)); `None` applies them everywhere.
+    pub max_temperature: Option<f32>,
 }
 
 impl OverlapClusterConfig {
@@ -237,6 +241,13 @@ fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
         if h.modes.is_empty() {
             return Err(ValidationError::new(
                 "overlap_cluster modes must not be empty",
+            ));
+        }
+        if h.max_temperature
+            .is_some_and(|t| !(t.is_finite() && t > 0.0))
+        {
+            return Err(ValidationError::new(
+                "overlap_cluster max_temperature must be positive and finite",
             ));
         }
         // Parallel group tasks index per-pair RNG and output slots, which is sound
@@ -343,6 +354,7 @@ mod tests {
             action: ClusterAction::Update,
             collect_stats: false,
             snapshot_interval: None,
+            max_temperature: None,
         });
         assert!(config.validate().is_err());
     }
@@ -366,6 +378,7 @@ mod tests {
             action: ClusterAction::Observe,
             collect_stats: true,
             snapshot_interval: None,
+            max_temperature: None,
         });
         assert!(config.validate().is_err());
     }
@@ -381,6 +394,7 @@ mod tests {
                 action: ClusterAction::Update,
                 collect_stats: false,
                 snapshot_interval: None,
+                max_temperature: None,
             });
             assert!(config.validate().is_err(), "houd{group_size} accepted");
         }
@@ -424,6 +438,7 @@ mod tests {
                 action: ClusterAction::Observe,
                 collect_stats: true,
                 snapshot_interval: None,
+                max_temperature: None,
             });
             assert!(config.validate().is_err(), "{mode:?} observe accepted");
         }
