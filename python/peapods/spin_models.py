@@ -233,13 +233,13 @@ class Ising:
                 `"full_ladder"` to attempt every adjacent edge per event.
             overlap_cluster_update_interval: If set, attempt overlap cluster
                 moves every this many sweeps. Requires `n_replicas >= 2`, except
-                for `"rmc"`, which needs one replica and two temperatures.
+                for `"rmc"`, which needs at least one replica and two temperatures.
             overlap_cluster_build_mode: Overlap cluster algorithm. `"houdayer"`
                 (deterministic, group_size=2), `"houdN"` where N is even >= 2
                 (e.g. `"houd4"`, `"houd6"` — isoenergetic balanced-site
                 criterion, requires `n_replicas >= N`;
-                **experimental for N > 2: very likely does not satisfy
-                detailed balance**), `"pairN"` (Houdayer clusters for N/2
+                **experimental for N > 2: does not satisfy detailed
+                balance**), `"pairN"` (Houdayer clusters for N/2
                 replica pairs swapped jointly, requires `n_replicas >= N`;
                 `"pair2"` equals `"houdayer"`), `"jorg"` (stochastic
                 FK bonds, group_size=2), `"jorgN"` (Jörg bonds for N/2 pairs
