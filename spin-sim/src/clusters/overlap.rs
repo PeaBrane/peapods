@@ -239,6 +239,10 @@ fn houdayer_step(
         };
 
         if use_uf {
+            // The O(N) graph pass would otherwise re-sum the group for both endpoints
+            // of every bond.
+            let active: Vec<bool> = (0..n_spins).map(is_active).collect();
+            let is_active = |i: usize| active[i];
             let mut should_bond = |i: usize, d: usize| {
                 let j = lattice.neighbor_fwd(i, d);
                 is_active(i) && is_active(j)
@@ -428,6 +432,8 @@ fn jorg_step(
         let is_active = |i: usize| -> bool { *sp_ptr.add(base_a + i) != *sp_ptr.add(base_b + i) };
 
         if use_uf {
+            let active: Vec<bool> = (0..n_spins).map(is_active).collect();
+            let is_active = |i: usize| active[i];
             let mut should_bond = |i: usize, d: usize| {
                 let j = lattice.neighbor_fwd(i, d);
                 if !is_active(i) || !is_active(j) {
