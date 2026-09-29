@@ -1,6 +1,8 @@
 mod execution;
 mod xy;
-use execution::{coupling_count, execute, physics_dict, warmup_sweeps};
+use execution::{
+    coupling_count, execute, physics_dict, pt_delta, pt_snapshot, set_array, warmup_sweeps,
+};
 use spin_sim::simulation::realization::realization_seed;
 use spin_sim::simulation::run_sweep_parallel_with_physics;
 use spin_sim::statistics::physics::PhysicsOptions;
@@ -296,6 +298,8 @@ impl IsingSimulation {
                 block_size,
                 vortices: false,
             });
+        // PT counters persist in the realizations; report this call's increments.
+        let pt_before = pt_snapshot(&self.realizations);
         let agg = execute(
             py,
             n_sweeps,
@@ -460,29 +464,21 @@ impl IsingSimulation {
         if pt_interval.is_some() {
             let n_edges = self.n_temps.saturating_sub(1);
             let pt = PyDict::new(py);
-            pt.set_item(
-                "edge_attempts",
-                Array2::from_shape_fn((self.n_realizations, n_edges), |(d, edge)| {
-                    self.realizations[d].pt_edge_attempts()[edge]
-                })
-                .into_pyarray(py),
-            )?;
-            pt.set_item(
-                "edge_acceptances",
-                Array2::from_shape_fn((self.n_realizations, n_edges), |(d, edge)| {
-                    self.realizations[d].pt_edge_acceptances()[edge]
-                })
-                .into_pyarray(py),
-            )?;
-            pt.set_item(
+            let delta = |which| pt_delta(&self.realizations, &pt_before, which);
+            for (which, name) in ["edge_attempts", "edge_acceptances"]
+                .into_iter()
+                .enumerate()
+            {
+                set_array(py, &pt, name, &[self.n_realizations, n_edges], delta(which))?;
+            }
+            // Round trips are counted per walker: index (replica, t) is the system that
+            // started at that slot, not whichever system sits there now.
+            set_array(
+                py,
+                &pt,
                 "round_trips",
-                Array3::from_shape_fn(
-                    (self.n_realizations, self.n_replicas, self.n_temps),
-                    |(d, replica, temp)| {
-                        self.realizations[d].pt_round_trips()[replica * self.n_temps + temp]
-                    },
-                )
-                .into_pyarray(py),
+                &[self.n_realizations, self.n_replicas, self.n_temps],
+                delta(2),
             )?;
             per_disorder.set_item("parallel_tempering", pt)?;
             has_per_disorder = true;

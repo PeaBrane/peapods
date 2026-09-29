@@ -284,6 +284,11 @@ class Ising:
 
         Returns:
             Raw results dictionary with keys like `"mags"`, `"energies"`, etc.
+            With `pt_interval`, `result["per_disorder"]["parallel_tempering"]`
+            holds this call's PT edge attempts, edge acceptances and completed
+            round trips (not running totals); a round trip that began in an
+            earlier call counts when it completes. `round_trips[d, r, t]` is
+            indexed by the walker that started in replica row r at slot t.
         """
         if cluster_action not in {"update", "observe"}:
             raise ValueError("cluster_action must be 'update' or 'observe'")
