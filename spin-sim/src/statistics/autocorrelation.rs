@@ -5,8 +5,11 @@ use rustfft::FftPlanner;
 
 enum AutocorrStorage<T: Real> {
     Ring {
-        ring_len: usize,
-        ring: Vec<Vec<T>>,
+        /// Last `max_lag + 1` shifted samples per temperature.
+        ring: Vec<Vec<f64>>,
+        /// First `max_lag` shifted samples per temperature.
+        head: Vec<Vec<f64>>,
+        /// `sum_prod[t][δ] = Σ_i x_i x_{i+δ}` over shifted samples.
         sum_prod: Vec<Vec<f64>>,
         ring_pos: usize,
     },
@@ -17,14 +20,24 @@ enum AutocorrStorage<T: Real> {
 
 /// Streaming autocorrelation accumulator.
 ///
+/// Estimates the normalized autocovariance
+/// `Γ(δ) = [Σ_{i<n-δ} (o_i - ō)(o_{i+δ} - ō) / (n - δ)] / [Σ_i (o_i - ō)² / n]`.
+///
 /// [`AutocorrAccum::new`] uses the exact bounded-memory ring backend. The FFT
 /// backend is available through simulation configuration and retains the full
 /// measurement history, using O(n_recorded * n_temps) memory.
+///
+/// Samples are rounded to `T` and then shifted by the first sample of each
+/// temperature before any moment is accumulated. The autocovariance is
+/// shift-invariant, and the shift keeps the accumulated moments of order σ
+/// rather than ō, so the centring below does not cancel catastrophically when
+/// `|ō| ≫ σ` (e.g. m² below T_c or the XY energy).
 pub struct PrecisionAutocorr<T: Real> {
     max_lag: usize,
     n_temps: usize,
-    sum_o: Vec<f64>,
-    sum_o2: Vec<f64>,
+    reference: Vec<f64>,
+    sum_x: Vec<f64>,
+    sum_x2: Vec<f64>,
     n_recorded: usize,
     storage: AutocorrStorage<T>,
 }
@@ -43,15 +56,12 @@ impl<T: Real> PrecisionAutocorr<T> {
         expected_samples: usize,
     ) -> Self {
         let storage = match backend {
-            AutocorrelationBackend::Ring => {
-                let ring_len = max_lag + 1;
-                AutocorrStorage::Ring {
-                    ring_len,
-                    ring: (0..n_temps).map(|_| vec![T::default(); ring_len]).collect(),
-                    sum_prod: (0..n_temps).map(|_| vec![0.0; max_lag + 1]).collect(),
-                    ring_pos: 0,
-                }
-            }
+            AutocorrelationBackend::Ring => AutocorrStorage::Ring {
+                ring: (0..n_temps).map(|_| vec![0.0; max_lag + 1]).collect(),
+                head: (0..n_temps).map(|_| Vec::with_capacity(max_lag)).collect(),
+                sum_prod: (0..n_temps).map(|_| vec![0.0; max_lag + 1]).collect(),
+                ring_pos: 0,
+            },
             AutocorrelationBackend::Fft => AutocorrStorage::Fft {
                 series: (0..n_temps)
                     .map(|_| Vec::with_capacity(expected_samples))
@@ -62,8 +72,9 @@ impl<T: Real> PrecisionAutocorr<T> {
         Self {
             max_lag,
             n_temps,
-            sum_o: vec![0.0; n_temps],
-            sum_o2: vec![0.0; n_temps],
+            reference: vec![0.0; n_temps],
+            sum_x: vec![0.0; n_temps],
+            sum_x2: vec![0.0; n_temps],
             n_recorded: 0,
             storage,
         }
@@ -71,45 +82,50 @@ impl<T: Real> PrecisionAutocorr<T> {
 
     #[allow(clippy::needless_range_loop)]
     pub fn push(&mut self, values: &[f64]) {
-        for t in 0..self.n_temps {
-            let o = T::from_f64(values[t]);
-            self.sum_o[t] += o.to_f64();
-            self.sum_o2[t] += (o.to_f64()) * (o.to_f64());
+        if self.n_recorded == 0 {
+            for (reference, &value) in self.reference.iter_mut().zip(values) {
+                *reference = T::from_f64(value).to_f64();
+            }
         }
 
-        match &mut self.storage {
-            AutocorrStorage::Ring {
-                ring_len,
-                ring,
-                sum_prod,
-                ring_pos,
-            } => {
-                let pos = *ring_pos;
-                let n_back = self.n_recorded.min(self.max_lag);
-                for t in 0..self.n_temps {
-                    let o = T::from_f64(values[t]);
+        let ring_len = self.max_lag + 1;
+        let n_back = self.n_recorded.min(self.max_lag);
+        for t in 0..self.n_temps {
+            let o = T::from_f64(values[t]);
+            let x = o.to_f64() - self.reference[t];
+            self.sum_x[t] += x;
+            self.sum_x2[t] += x * x;
+
+            match &mut self.storage {
+                AutocorrStorage::Ring {
+                    ring,
+                    head,
+                    sum_prod,
+                    ring_pos,
+                } => {
+                    let pos = *ring_pos;
                     let temp_ring = &mut ring[t];
                     let temp_sum_prod = &mut sum_prod[t];
-                    temp_ring[pos] = o;
+                    temp_ring[pos] = x;
+                    if self.n_recorded < self.max_lag {
+                        head[t].push(x);
+                    }
 
                     let no_wrap = pos.min(n_back);
                     for delta in 0..=no_wrap {
-                        temp_sum_prod[delta] += o.to_f64() * temp_ring[pos - delta].to_f64();
+                        temp_sum_prod[delta] += x * temp_ring[pos - delta];
                     }
                     for delta in pos + 1..=n_back {
-                        temp_sum_prod[delta] +=
-                            o.to_f64() * temp_ring[pos + *ring_len - delta].to_f64();
+                        temp_sum_prod[delta] += x * temp_ring[pos + ring_len - delta];
                     }
                 }
-                *ring_pos = (pos + 1) % *ring_len;
-            }
-            AutocorrStorage::Fft { series } => {
-                for t in 0..self.n_temps {
-                    series[t].push(T::from_f64(values[t]));
-                }
+                AutocorrStorage::Fft { series } => series[t].push(o),
             }
         }
 
+        if let AutocorrStorage::Ring { ring_pos, .. } = &mut self.storage {
+            *ring_pos = (*ring_pos + 1) % ring_len;
+        }
         self.n_recorded += 1;
     }
 
@@ -119,11 +135,55 @@ impl<T: Real> PrecisionAutocorr<T> {
         }
 
         match &self.storage {
-            AutocorrStorage::Ring { sum_prod, .. } => (0..self.n_temps)
-                .map(|t| self.normalize_products(t, |delta| sum_prod[t][delta]))
+            AutocorrStorage::Ring {
+                ring,
+                head,
+                sum_prod,
+                ring_pos,
+            } => (0..self.n_temps)
+                .map(|t| self.finish_ring(t, &ring[t], &head[t], &sum_prod[t], *ring_pos))
                 .collect(),
             AutocorrStorage::Fft { series } => self.finish_fft(series),
         }
+    }
+
+    /// Population mean and variance of the shifted samples of one temperature.
+    fn moments(&self, temp: usize) -> (f64, f64) {
+        let n = self.n_recorded as f64;
+        let mean = self.sum_x[temp] / n;
+        (mean, self.sum_x2[temp] / n - mean * mean)
+    }
+
+    /// Centres the raw lag products exactly:
+    /// `Σ_{i<n-δ} (x_i - x̄)(x_{i+δ} - x̄) = S(δ) - x̄ (A(δ) + B(δ)) + (n - δ) x̄²`,
+    /// where `A(δ)` omits the last δ samples and `B(δ)` omits the first δ.
+    fn finish_ring(
+        &self,
+        temp: usize,
+        ring: &[f64],
+        head: &[f64],
+        sum_prod: &[f64],
+        ring_pos: usize,
+    ) -> Vec<f64> {
+        let (mean, var) = self.moments(temp);
+        if var <= 0.0 {
+            return self.degenerate_row();
+        }
+        let n = self.n_recorded;
+        let ring_len = ring.len();
+        let newest = (ring_pos + ring_len - 1) % ring_len;
+        let total = self.sum_x[temp];
+        let mut last_sum = 0.0;
+        let mut first_sum = 0.0;
+        self.normalize(var, |delta| {
+            if delta > 0 {
+                last_sum += ring[(newest + ring_len - (delta - 1)) % ring_len];
+                first_sum += head[delta - 1];
+            }
+            let pairs = (n - delta) as f64;
+            sum_prod[delta] - mean * ((total - last_sum) + (total - first_sum))
+                + pairs * mean * mean
+        })
     }
 
     fn finish_fft(&self, series: &[Vec<T>]) -> Vec<Vec<f64>> {
@@ -143,16 +203,14 @@ impl<T: Real> PrecisionAutocorr<T> {
 
         (0..self.n_temps)
             .map(|t| {
-                let m = self.n_recorded as f64;
-                let mean = self.sum_o[t] / m;
-                let var = self.sum_o2[t] / m - mean * mean;
+                let (mean, var) = self.moments(t);
                 if var <= 0.0 {
                     return self.degenerate_row();
                 }
 
                 spectrum.fill(Complex64::default());
                 for (value, &sample) in spectrum.iter_mut().zip(&series[t]) {
-                    value.re = sample.to_f64();
+                    value.re = (sample.to_f64() - self.reference[t]) - mean;
                 }
                 forward.process_with_scratch(&mut spectrum, &mut scratch);
                 for value in &mut spectrum {
@@ -160,30 +218,20 @@ impl<T: Real> PrecisionAutocorr<T> {
                 }
                 inverse.process_with_scratch(&mut spectrum, &mut scratch);
 
-                self.normalize_products(t, |delta| spectrum[delta].re / fft_len as f64)
+                self.normalize(var, |delta| spectrum[delta].re / fft_len as f64)
             })
             .collect()
     }
 
-    fn normalize_products(
-        &self,
-        temp: usize,
-        mut sum_product: impl FnMut(usize) -> f64,
-    ) -> Vec<f64> {
-        let m = self.n_recorded as f64;
-        let mean = self.sum_o[temp] / m;
-        let var = self.sum_o2[temp] / m - mean * mean;
-        if var <= 0.0 {
-            return self.degenerate_row();
-        }
-
+    /// Maps centred lag sums to Γ(δ); lags without any pair are zero.
+    fn normalize(&self, var: f64, mut centred_sum: impl FnMut(usize) -> f64) -> Vec<f64> {
         (0..=self.max_lag)
             .map(|delta| {
-                let count = self.n_recorded.saturating_sub(delta) as f64;
-                if count <= 0.0 {
+                if delta >= self.n_recorded {
                     return if delta == 0 { 1.0 } else { 0.0 };
                 }
-                (sum_product(delta) / count - mean * mean) / var
+                let pairs = (self.n_recorded - delta) as f64;
+                centred_sum(delta) / pairs / var
             })
             .collect()
     }
@@ -199,91 +247,55 @@ impl<T: Real> PrecisionAutocorr<T> {
     }
 }
 
-pub fn sokal_tau(gamma: &[f64]) -> f64 {
+/// Sokal automatic-window estimate of the integrated autocorrelation time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SokalEstimate {
+    /// `τ_int = 1/2 + Σ_{δ=1}^{W} Γ(δ)`.
+    pub tau: f64,
+    /// Window `W` at which the sum stopped.
+    pub window: usize,
+    /// Whether `W ≥ 5 τ_int` was reached within the available lags. When false,
+    /// `tau` is truncated at `max_lag` and is a lower bound in practice; increase
+    /// `autocorrelation_max_lag` or the run length.
+    pub converged: bool,
+}
+
+/// Sokal's self-consistent window `W ≥ 5 τ_int(W)` applied to `Γ`.
+pub fn sokal_estimate(gamma: &[f64]) -> SokalEstimate {
     let mut tau = 0.5;
     for (w, &g) in gamma.iter().enumerate().skip(1) {
         tau += g;
         if w as f64 >= 5.0 * tau {
-            return tau;
+            return SokalEstimate {
+                tau,
+                window: w,
+                converged: true,
+            };
         }
     }
-    tau
+    SokalEstimate {
+        tau,
+        window: gamma.len().saturating_sub(1),
+        converged: false,
+    }
+}
+
+/// τ_int from [`sokal_estimate`]. If the window never closes within the
+/// available lags this silently returns the truncated sum; use
+/// [`sokal_estimate`] to detect that case.
+pub fn sokal_tau(gamma: &[f64]) -> f64 {
+    sokal_estimate(gamma).tau
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{sokal_tau, AutocorrAccum};
+    use super::{sokal_estimate, sokal_tau, AutocorrAccum, PrecisionAutocorr};
     use crate::config::AutocorrelationBackend;
+    use rand::{Rng, SeedableRng};
+    use rand_xoshiro::Xoshiro256StarStar;
 
-    struct LegacyRing {
-        max_lag: usize,
-        ring_len: usize,
-        ring: Vec<Vec<f32>>,
-        sum_o: Vec<f64>,
-        sum_o2: Vec<f64>,
-        sum_prod: Vec<Vec<f64>>,
-        n_recorded: usize,
-        ring_pos: usize,
-    }
-
-    impl LegacyRing {
-        fn new(max_lag: usize, n_temps: usize) -> Self {
-            let ring_len = max_lag + 1;
-            Self {
-                max_lag,
-                ring_len,
-                ring: (0..n_temps).map(|_| vec![0.0; ring_len]).collect(),
-                sum_o: vec![0.0; n_temps],
-                sum_o2: vec![0.0; n_temps],
-                sum_prod: (0..n_temps).map(|_| vec![0.0; max_lag + 1]).collect(),
-                n_recorded: 0,
-                ring_pos: 0,
-            }
-        }
-
-        fn push(&mut self, values: &[f64]) {
-            let pos = self.ring_pos;
-            for (t, &value) in values.iter().enumerate() {
-                let o = value as f32;
-                self.ring[t][pos] = o;
-                self.sum_o[t] += o as f64;
-                self.sum_o2[t] += (o as f64) * (o as f64);
-                for delta in 0..=self.n_recorded.min(self.max_lag) {
-                    let idx = if pos >= delta {
-                        pos - delta
-                    } else {
-                        pos + self.ring_len - delta
-                    } % self.ring_len;
-                    self.sum_prod[t][delta] += o as f64 * self.ring[t][idx] as f64;
-                }
-            }
-            self.n_recorded += 1;
-            self.ring_pos = (pos + 1) % self.ring_len;
-        }
-
-        fn finish(&self) -> Vec<Vec<f64>> {
-            let m = self.n_recorded as f64;
-            self.sum_prod
-                .iter()
-                .enumerate()
-                .map(|(t, products)| {
-                    let mean = self.sum_o[t] / m;
-                    let var = self.sum_o2[t] / m - mean * mean;
-                    products
-                        .iter()
-                        .enumerate()
-                        .map(|(delta, &product)| {
-                            let count = self.n_recorded.saturating_sub(delta) as f64;
-                            if count <= 0.0 || var <= 0.0 {
-                                return if delta == 0 { 1.0 } else { 0.0 };
-                            }
-                            (product / count - mean * mean) / var
-                        })
-                        .collect()
-                })
-                .collect()
-        }
-    }
+    const BACKENDS: [AutocorrelationBackend; 2] =
+        [AutocorrelationBackend::Ring, AutocorrelationBackend::Fft];
 
     fn deterministic_values(sample: usize) -> [f64; 2] {
         [
@@ -292,10 +304,29 @@ mod tests {
         ]
     }
 
+    /// Stationary AR(1) `x_{i+1} = φ x_i + ε_i` with unit marginal variance.
+    fn ar1(phi: f64, n: usize, offset: f64, seed: u64) -> Vec<f64> {
+        let mut rng = Xoshiro256StarStar::seed_from_u64(seed);
+        let mut gaussian = || {
+            let u: f64 = 1.0 - rng.gen::<f64>();
+            let v: f64 = rng.gen();
+            (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+        };
+        let innovation = (1.0 - phi * phi).sqrt();
+        let mut x = gaussian();
+        (0..n)
+            .map(|_| {
+                x = phi * x + innovation * gaussian();
+                offset + x
+            })
+            .collect()
+    }
+
+    /// Two-pass centred reference estimator.
     fn brute_force_gamma(series: &[f64], max_lag: usize) -> Vec<f64> {
         let count = series.len() as f64;
         let mean = series.iter().sum::<f64>() / count;
-        let variance = series.iter().map(|value| value * value).sum::<f64>() / count - mean * mean;
+        let variance = series.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / count;
         (0..=max_lag)
             .map(|delta| {
                 let pairs = series.len().saturating_sub(delta);
@@ -303,44 +334,94 @@ mod tests {
                     return if delta == 0 { 1.0 } else { 0.0 };
                 }
                 let product_sum = (delta..series.len())
-                    .map(|index| series[index] * series[index - delta])
+                    .map(|index| (series[index] - mean) * (series[index - delta] - mean))
                     .sum::<f64>();
-                (product_sum / pairs as f64 - mean * mean) / variance
+                product_sum / pairs as f64 / variance
             })
             .collect()
     }
 
-    #[test]
-    fn streamlined_ring_is_bitwise_equal_across_wraps() {
-        let mut current = AutocorrAccum::new(7, 2);
-        let mut legacy = LegacyRing::new(7, 2);
-        for sample in 0..41 {
-            let values = deterministic_values(sample);
-            current.push(&values);
-            legacy.push(&values);
+    fn gamma_of<T: crate::spins::model::Real>(
+        series: &[f64],
+        max_lag: usize,
+        backend: AutocorrelationBackend,
+    ) -> Vec<f64> {
+        let mut accum = PrecisionAutocorr::<T>::with_backend(max_lag, 1, backend, series.len());
+        for &value in series {
+            accum.push(&[value]);
         }
+        accum.finish().remove(0)
+    }
 
-        for (got, want) in current
-            .finish()
+    #[test]
+    fn ring_and_fft_match_centred_brute_force_across_wraps() {
+        // Large offset relative to σ: the uncentred estimator misses by ~ ō·δ/(nσ).
+        let series: Vec<f64> = ar1(0.7, 257, 1.0e3, 3)
             .iter()
-            .flatten()
-            .zip(legacy.finish().iter().flatten())
-        {
-            assert_eq!(got.to_bits(), want.to_bits());
+            .map(|&v| v as f32 as f64)
+            .collect();
+        for max_lag in [7, 64, 256] {
+            let want = brute_force_gamma(&series, max_lag);
+            for backend in BACKENDS {
+                let got = gamma_of::<f32>(&series, max_lag, backend);
+                for (delta, (g, w)) in got.iter().zip(&want).enumerate() {
+                    assert!(
+                        (g - w).abs() < 1e-9,
+                        "{backend:?} max_lag={max_lag} delta={delta}: got {g}, want {w}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ar1_tau_is_recovered_with_large_mean_offset() {
+        // τ_int = (1 + φ) / (2 (1 - φ)) = 4.5 with ō/σ = 100; the uncentred
+        // estimator averaged τ ≈ 7.6 on these series.
+        let phi = 0.8;
+        let expected = (1.0 + phi) / (2.0 * (1.0 - phi));
+        let n_series = 16;
+        for backend in BACKENDS {
+            let mut mean_tau = 0.0;
+            for seed in 0..n_series {
+                let series = ar1(phi, 1 << 13, 100.0, seed);
+                let estimate = sokal_estimate(&gamma_of::<f32>(&series, 100, backend));
+                assert!(estimate.converged, "{backend:?}: {estimate:?}");
+                mean_tau += estimate.tau / n_series as f64;
+            }
+            assert!(
+                (mean_tau - expected).abs() < 0.1 * expected,
+                "{backend:?}: mean τ = {mean_tau}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn gamma_is_shift_invariant_for_huge_offsets() {
+        let series = ar1(0.5, 4096, 0.0, 5);
+        let shifted: Vec<f64> = series.iter().map(|v| v + 1.0e6).collect();
+        for backend in BACKENDS {
+            let base = gamma_of::<f64>(&series, 32, backend);
+            let moved = gamma_of::<f64>(&shifted, 32, backend);
+            for (a, b) in base.iter().zip(&moved) {
+                assert!((a - b).abs() < 1e-6, "{backend:?}: {a} vs {b}");
+            }
         }
     }
 
     #[test]
     fn empty_and_constant_series_are_degenerate() {
-        for backend in [AutocorrelationBackend::Ring, AutocorrelationBackend::Fft] {
+        for backend in BACKENDS {
             let empty = AutocorrAccum::with_backend(4, 1, backend, 0);
             assert_eq!(empty.finish(), vec![vec![1.0, 0.0, 0.0, 0.0, 0.0]]);
 
-            let mut constant = AutocorrAccum::with_backend(4, 1, backend, 8);
-            for _ in 0..8 {
-                constant.push(&[3.5]);
+            for value in [3.5, 0.1] {
+                let mut constant = AutocorrAccum::with_backend(4, 1, backend, 8);
+                for _ in 0..8 {
+                    constant.push(&[value]);
+                }
+                assert_eq!(constant.finish(), vec![vec![1.0, 0.0, 0.0, 0.0, 0.0]]);
             }
-            assert_eq!(constant.finish(), vec![vec![1.0, 0.0, 0.0, 0.0, 0.0]]);
         }
     }
 
@@ -373,5 +454,19 @@ mod tests {
         {
             assert!((got - want).abs() < 1e-10, "got {got}, want {want}");
         }
+    }
+
+    #[test]
+    fn sokal_estimate_flags_unclosed_windows() {
+        let fast = [1.0, 0.5, 0.25, 0.125, 0.0625, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let closed = sokal_estimate(&fast);
+        assert!(closed.converged);
+        assert_eq!(closed.tau, sokal_tau(&fast));
+
+        let slow = [1.0; 10];
+        let open = sokal_estimate(&slow);
+        assert!(!open.converged);
+        assert_eq!(open.window, 9);
+        assert_eq!(open.tau, 9.5);
     }
 }
