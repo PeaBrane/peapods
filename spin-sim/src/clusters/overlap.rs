@@ -578,9 +578,9 @@ unsafe fn build_cmr_blue_graph(
     lattice: &Lattice,
     sp_ptr: *mut i8,
     base_a: usize,
-    base_b: usize,
     couplings: &[f32],
     n_neighbors: usize,
+    overlap: &[i8],
     blue_bond: BondSampler,
     rng: &mut Xoshiro256StarStar,
     on_bond: impl FnMut(usize, usize),
@@ -589,16 +589,14 @@ unsafe fn build_cmr_blue_graph(
         lattice,
         |i, d| {
             let j = lattice.neighbor_fwd(i, d);
-            let coupling = couplings[i * n_neighbors + d];
-            let a_satisfied =
-                *sp_ptr.add(base_a + i) as f32 * *sp_ptr.add(base_a + j) as f32 * coupling > 0.0;
-            let b_satisfied =
-                *sp_ptr.add(base_b + i) as f32 * *sp_ptr.add(base_b + j) as f32 * coupling > 0.0;
-            if !a_satisfied || !b_satisfied {
+            // Equal site overlaps make replica b satisfied exactly when a is.
+            if overlap[i] != overlap[j] {
                 return false;
             }
-
-            blue_bond.sample(coupling.abs(), rng)
+            let coupling = couplings[i * n_neighbors + d];
+            let satisfied =
+                *sp_ptr.add(base_a + i) as f32 * *sp_ptr.add(base_a + j) as f32 * coupling > 0.0;
+            satisfied && blue_bond.sample(coupling.abs(), rng)
         },
         on_bond,
     )
@@ -703,6 +701,12 @@ fn cmr_step(
                 0 // unused
             };
 
+            // Site overlaps q_i = a_i b_i classify bonds: an edge is singly satisfied
+            // iff q_i != q_j (J != 0), and blue flips negate both replicas, leaving q.
+            let overlap: Vec<i8> = (0..n_spins)
+                .map(|i| *sp_ptr.add(base_a + i) * *sp_ptr.add(base_b + i))
+                .collect();
+
             // === Phase 1: Blue clusters ===
             let mut metrics = has_observation.then(|| BondMetrics::new(lattice));
             let mut uf = if let Some(ref mut metrics) = metrics {
@@ -710,9 +714,9 @@ fn cmr_step(
                     lattice,
                     sp_ptr,
                     base_a,
-                    base_b,
                     couplings,
                     n_neighbors,
+                    &overlap,
                     blue_bond,
                     rng,
                     |site, dim| metrics.record_bond(lattice, site, dim),
@@ -722,9 +726,9 @@ fn cmr_step(
                     lattice,
                     sp_ptr,
                     base_a,
-                    base_b,
                     couplings,
                     n_neighbors,
+                    &overlap,
                     blue_bond,
                     rng,
                     |_site, _dim| {},
@@ -788,18 +792,7 @@ fn cmr_step(
             uf_bonds_extend(&mut storage.parent, &mut storage.rank, lattice, |i, d| {
                 let j = lattice.neighbor_fwd(i, d);
                 let coupling = couplings[i * n_neighbors + d];
-
-                let a_sat =
-                    *sp_ptr.add(base_a + i) as f32 * *sp_ptr.add(base_a + j) as f32 * coupling
-                        > 0.0;
-                let b_sat =
-                    *sp_ptr.add(base_b + i) as f32 * *sp_ptr.add(base_b + j) as f32 * coupling
-                        > 0.0;
-
-                if a_sat == b_sat {
-                    return false;
-                }
-                red_bond.sample(coupling.abs(), rng)
+                overlap[i] != overlap[j] && coupling != 0.0 && red_bond.sample(coupling.abs(), rng)
             });
 
             let grey_counts = uf_flatten_counts(&mut uf.parent);
