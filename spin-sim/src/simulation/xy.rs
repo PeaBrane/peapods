@@ -7,16 +7,14 @@ use crate::{
         SweepMode,
     },
     geometry::Lattice,
-    spins::{
-        model::Spin,
-        xy::{local_sweep, LocalMove, XyEmbedding},
-    },
+    spins::xy::{interaction, local_sweep, LocalMove, XyEmbedding},
     statistics::{
         autocorrelation::PrecisionAutocorr,
-        physics::{PhysicsCollector, PhysicsOptions, PhysicsResult, PhysicsValues},
+        physics::{MomentBlock, PhysicsCollector, PhysicsOptions, PhysicsResult, PhysicsValues},
         sokal_tau,
     },
 };
+use rayon::prelude::*;
 use std::sync::atomic::AtomicBool;
 use validator::Validate;
 
@@ -241,6 +239,12 @@ impl XySimulation {
                 }
             }
         }
+        // Disorder batches already measure in parallel; split temperatures only for idle threads.
+        let measurement_groups = if config.simulation.sequential {
+            1
+        } else {
+            (rayon::current_num_threads() / self.realizations.len()).max(1)
+        };
         let per_disorder = driver::map_realizations(&mut self.realizations, |d, real| {
             run_xy(
                 &self.lattice,
@@ -249,6 +253,7 @@ impl XySimulation {
                 self.n_replicas,
                 self.n_temps,
                 config,
+                measurement_groups,
                 interrupted,
                 on_sweep,
             )
@@ -266,6 +271,94 @@ impl XySimulation {
     }
 }
 
+/// Physics collectors, each owning a fixed residue class of temperatures.
+///
+/// A temperature's moments are accumulated by one collector in replica order,
+/// exactly as with a single collector, so results do not depend on the grouping.
+struct Measurement {
+    groups: Vec<PhysicsCollector>,
+}
+impl Measurement {
+    fn new(
+        lattice: &Lattice,
+        n_temps: usize,
+        options: &PhysicsOptions,
+        max_groups: usize,
+    ) -> Result<Self, String> {
+        let groups = (0..n_temps.min(max_groups).max(1))
+            .map(|_| PhysicsCollector::new(lattice, n_temps, options, 2))
+            .collect::<Result<_, _>>()?;
+        Ok(Self { groups })
+    }
+
+    /// Measure every system; returns per-slot physical energy/site and m².
+    fn measure(
+        &mut self,
+        lattice: &Lattice,
+        real: &XyRealization,
+        occupation: &[bool],
+        n_temps: usize,
+        out: &mut [[f64; 2]],
+    ) {
+        let n_groups = self.groups.len();
+        let n = lattice.n_spins;
+        let measure_group = |(group, collector): (usize, &mut PhysicsCollector)| {
+            let mut measured = Vec::new();
+            for t in (group..n_temps).step_by(n_groups) {
+                for slot in (t..real.system_ids.len()).step_by(n_temps) {
+                    let id = real.system_ids[slot];
+                    let spins = &real.spins[id * n..(id + 1) * n];
+                    let values = collector.measure(lattice, spins, &real.couplings, occupation, t);
+                    measured.push((slot, values));
+                }
+            }
+            measured
+        };
+        let measured: Vec<_> = if n_groups == 1 {
+            vec![measure_group((0, &mut self.groups[0]))]
+        } else {
+            self.groups
+                .par_iter_mut()
+                .enumerate()
+                .map(measure_group)
+                .collect()
+        };
+        for (slot, values) in measured.into_iter().flatten() {
+            out[slot] = values;
+        }
+    }
+
+    fn end_sweep(&mut self, n_replicas: usize) {
+        for collector in &mut self.groups {
+            collector.end_sweep(n_replicas);
+        }
+    }
+
+    fn finish(self, n_temps: usize) -> PhysicsResult {
+        let mut groups: Vec<_> = self.groups.into_iter().map(|c| c.finish()).collect();
+        if groups.len() == 1 {
+            return groups.pop().unwrap();
+        }
+        let n_groups = groups.len();
+        let owner = |t: usize| &groups[t % n_groups];
+        let blocks = (0..groups[0].blocks.len())
+            .map(|b| MomentBlock {
+                sums: (0..n_temps)
+                    .map(|t| owner(t).blocks[b].sums[t].clone())
+                    .collect(),
+                count: groups[0].blocks[b].count,
+                sweeps: groups[0].blocks[b].sweeps,
+            })
+            .collect();
+        PhysicsResult {
+            fields: groups[0].fields.clone(),
+            moments: (0..n_temps).map(|t| owner(t).moments[t].clone()).collect(),
+            count: groups[0].count,
+            blocks,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_xy(
     lattice: &Lattice,
@@ -274,11 +367,12 @@ fn run_xy(
     n_replicas: usize,
     n_temps: usize,
     config: &XyConfig,
+    measurement_groups: usize,
     interrupted: &AtomicBool,
     on_sweep: &(dyn Fn() + Sync),
 ) -> Result<XyDisorderResult, String> {
     let cfg = &config.simulation;
-    let mut physics = PhysicsCollector::new(lattice, n_temps, &config.physics, 2)?;
+    let mut physics = Measurement::new(lattice, n_temps, &config.physics, measurement_groups)?;
     let n_measures = cfg.n_sweeps - cfg.warmup_sweeps;
     let lag = cfg
         .autocorrelation_max_lag
@@ -291,6 +385,7 @@ fn run_xy(
     });
     let mut energy_buf = vec![0.0; n_temps];
     let mut m2_buf = vec![0.0; n_temps];
+    let mut measured = vec![[0.0; 2]; real.system_ids.len()];
     let mut visits = vec![0; n_temps * n_replicas];
     let mut updates = vec![0; n_temps];
     let occupied = (!occupation.iter().all(|&o| o)).then_some(occupation);
@@ -340,20 +435,14 @@ fn run_xy(
             }
         }
         if step.record {
+            physics.measure(lattice, real, occupation, n_temps, &mut measured);
             energy_buf.fill(0.0);
             m2_buf.fill(0.0);
             for (slot, &id) in real.system_ids.iter().enumerate() {
                 let t = slot % n_temps;
-                let measured = physics.measure(
-                    lattice,
-                    &real.spins[id * lattice.n_spins..(id + 1) * lattice.n_spins],
-                    &real.couplings,
-                    occupation,
-                    t,
-                );
-                real.energies[id] = -measured[0];
-                energy_buf[t] += measured[0] / n_replicas as f64;
-                m2_buf[t] += measured[1] / n_replicas as f64;
+                real.energies[id] = -measured[slot][0];
+                energy_buf[t] += measured[slot][0] / n_replicas as f64;
+                m2_buf[t] += measured[slot][1] / n_replicas as f64;
             }
             physics.end_sweep(n_replicas);
             if let Some(ac) = &mut energy_ac {
@@ -363,7 +452,21 @@ fn run_xy(
                 ac.push(&m2_buf);
             }
         } else if step.temper {
-            <[f64; 2]>::interactions(lattice, &real.spins, &real.couplings, &mut real.energies);
+            let n = lattice.n_spins;
+            let refresh = |(energy, spins): (&mut f64, &[[f64; 2]])| {
+                *energy = interaction(lattice, spins, &real.couplings) / n as f64;
+            };
+            if cfg.sequential {
+                real.energies
+                    .iter_mut()
+                    .zip(real.spins.chunks_exact(n))
+                    .for_each(refresh);
+            } else {
+                real.energies
+                    .par_iter_mut()
+                    .zip(real.spins.par_chunks_exact(n))
+                    .for_each(refresh);
+            }
         }
         if step.temper {
             real.temper(lattice.n_spins, n_replicas, n_temps, cfg.pt_schedule);
@@ -378,10 +481,88 @@ fn run_xy(
         visited_spins[slot % n_temps] += visited;
     }
     Ok(XyDisorderResult {
-        physics: physics.finish(),
+        physics: physics.finish(n_temps),
         energy_tau: tau(energy_ac),
         mags2_tau: tau(m2_ac),
         cluster_updates: updates,
         visited_spins,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_with_threads(sequential: bool, threads: usize) -> (XyResult, Vec<u64>) {
+        let couplings = (0..40).map(|i| ((i * 7) % 11) as f64 / 5.0 - 0.6).collect();
+        let occupation = (0..20).map(|i| i != 6).collect();
+        let temperatures = [0.5, 0.8, 1.1, 1.6, 2.4];
+        let mut simulation = XySimulation::new(
+            vec![5, 4],
+            vec![couplings],
+            &temperatures,
+            2,
+            Some(vec![occupation]),
+            21,
+        )
+        .unwrap();
+        let mut config = XyConfig::default();
+        let cfg = &mut config.simulation;
+        (cfg.n_sweeps, cfg.warmup_sweeps, cfg.sequential) = (64, 21, sequential);
+        (cfg.pt_interval, cfg.autocorrelation_max_lag) = (Some(1), Some(4));
+        config.overrelaxation_sweeps = 1;
+        config.physics = PhysicsOptions {
+            displacements: vec![vec![1, 1]],
+            vortices: true,
+            block_size: Some(7),
+        };
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        let result = pool
+            .install(|| simulation.sample(&config, &AtomicBool::new(false), &|| {}))
+            .unwrap();
+        let spins = simulation.realizations[0]
+            .spins
+            .iter()
+            .flatten()
+            .map(|v| v.to_bits())
+            .collect();
+        (result, spins)
+    }
+
+    #[test]
+    fn parallel_measurement_matches_sequential_for_any_thread_count() {
+        let bits = |rows: &[Vec<f64>]| -> Vec<Vec<u64>> {
+            rows.iter()
+                .map(|row| row.iter().map(|v| v.to_bits()).collect())
+                .collect()
+        };
+        let (reference, reference_spins) = sample_with_threads(true, 1);
+        let expected = &reference.per_disorder[0];
+        // Two, three and five temperature groups.
+        for threads in [2, 3, 8] {
+            let (result, spins) = sample_with_threads(false, threads);
+            assert_eq!(spins, reference_spins);
+            for (name, rows) in &reference.values {
+                assert_eq!(bits(rows), bits(&result.values[name]), "{name}");
+            }
+            let actual = &result.per_disorder[0];
+            assert_eq!(
+                bits(&actual.physics.moments),
+                bits(&expected.physics.moments)
+            );
+            assert_eq!(actual.physics.blocks.len(), expected.physics.blocks.len());
+            for (a, b) in actual.physics.blocks.iter().zip(&expected.physics.blocks) {
+                assert_eq!((a.count, a.sweeps), (b.count, b.sweeps));
+                assert_eq!(bits(&a.sums), bits(&b.sums));
+            }
+            assert_eq!(
+                bits(&[actual.energy_tau.clone(), actual.mags2_tau.clone()]),
+                bits(&[expected.energy_tau.clone(), expected.mags2_tau.clone()])
+            );
+            assert_eq!(actual.visited_spins, expected.visited_spins);
+        }
+    }
 }

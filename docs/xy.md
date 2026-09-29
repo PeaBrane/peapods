@@ -94,11 +94,12 @@ promise efficient equilibration of large frustrated samples.
 `(n_disorder, n_temps)`, sum over replicas, and include warmup. A SW update visits
 all `N` spins; Wolff visits its seed cluster. Neither counts only accepted spin
 reflections. `sequential=True` processes replicas on each realization's current
-thread. Disorder batches use the same global Rayon pool; no nested pools are
-created. Set `RAYON_NUM_THREADS` before sampling to bound it. Python releases the
-GIL during sampling. Unsupported options and inconsistent batches are rejected
-before mutation; interruption can leave a partially advanced simulation and
-returns `KeyboardInterrupt`, with no partial result published.
+thread; otherwise measurements are also split over temperatures, with results
+identical to sequential runs. Disorder batches use the same global Rayon pool; no
+nested pools are created. Set `RAYON_NUM_THREADS` before sampling to bound it.
+Python releases the GIL during sampling. Unsupported options and inconsistent
+batches are rejected before mutation; interruption can leave a partially advanced
+simulation and returns `KeyboardInterrupt`, with no partial result published.
 
 ## Observable definitions
 
