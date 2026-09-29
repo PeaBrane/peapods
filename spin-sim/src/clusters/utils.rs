@@ -1,6 +1,6 @@
 use crate::geometry::Lattice;
-use crate::mcmc::threshold;
-use rand::{Rng, RngCore};
+use crate::mcmc::uniform_draw;
+use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
@@ -9,18 +9,18 @@ use std::ops::{Deref, DerefMut};
 
 /// Samples bonds with probability `1 - exp(-rate * x)` for bond weight `x > 0`.
 ///
-/// Draws compare a uniform `u64` against an exact threshold; unit weights reuse a
+/// Draws compare a uniform integer against an exact threshold; unit weights reuse a
 /// precomputed threshold, which is bit-identical to the general formula.
 #[derive(Clone, Copy)]
 pub(crate) struct BondSampler {
-    neg_rate: f32,
-    unit: u64,
+    neg_rate: f64,
+    unit: i64,
 }
 
 impl BondSampler {
     #[inline]
     pub(crate) fn new(rate: f32) -> Self {
-        let neg_rate = -rate;
+        let neg_rate = -f64::from(rate);
         Self {
             neg_rate,
             unit: Self::general_threshold(neg_rate, 1.0),
@@ -28,9 +28,11 @@ impl BondSampler {
     }
 
     #[inline]
-    fn general_threshold(neg_rate: f32, x: f32) -> u64 {
-        // expm1 keeps small activation probabilities accurate at high temperature.
-        threshold(-(x * neg_rate).exp_m1())
+    fn general_threshold(neg_rate: f64, x: f32) -> i64 {
+        // f64 exp keeps 1 - e^-y accurate to ~1e-16 / y (better than f32 for y > 1e-9)
+        // and is far cheaper than expm1f.
+        let p = 1.0 - (f64::from(x) * neg_rate).exp();
+        (p * TWO_POW_62) as i64
     }
 
     #[inline]
@@ -40,9 +42,11 @@ impl BondSampler {
         } else {
             Self::general_threshold(self.neg_rate, x)
         };
-        rng.next_u64() < threshold
+        uniform_draw(rng) < threshold
     }
 }
+
+const TWO_POW_62: f64 = 4_611_686_018_427_387_904.0;
 
 // --- Union-Find ---
 

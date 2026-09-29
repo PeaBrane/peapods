@@ -1,7 +1,6 @@
-use super::threshold;
+use super::{threshold, uniform_draw, uniform_f32};
 use crate::geometry::Lattice;
 use crate::parallel::{par_over_replicas, par_over_replicas_with};
-use rand::RngCore;
 use rand_xoshiro::Xoshiro256StarStar;
 use std::ops::Add;
 
@@ -120,8 +119,9 @@ impl Acceptance {
     /// Flip probability for `gain = -s_i h_i` (a flip changes -H by `2 * gain`)
     /// at `beta2 = 2 / T`.
     ///
-    /// Lookup tables and the generic kernel share this f32 arithmetic, so both
-    /// paths make bit-identical decisions for unit couplings.
+    /// Lookup tables and the generic Gibbs kernel share this f32 arithmetic, so their
+    /// decisions are bit-identical for unit couplings; generic Metropolis compares in
+    /// the log domain and agrees except within ~1e-7 relative of the threshold.
     #[inline]
     fn probability(self, gain: f32, beta2: f32) -> f32 {
         match self {
@@ -129,12 +129,23 @@ impl Acceptance {
             Self::Gibbs => 1.0 / (1.0 + (-gain * beta2).exp()),
         }
     }
+
+    /// One acceptance decision for arbitrary couplings.
+    #[inline]
+    fn accepts(self, rng: &mut Xoshiro256StarStar, gain: f32, beta2: f32) -> bool {
+        match self {
+            // ln(u) <= -dH/T costs one logf, as exp plus a float-to-int conversion is
+            // slower; the full-precision uniform keeps small rates exact.
+            Self::Metropolis => uniform_f32(rng).ln() <= gain * beta2,
+            Self::Gibbs => uniform_draw(rng) < threshold(self.probability(gain, beta2)),
+        }
+    }
 }
 
 /// Acceptance thresholds for couplings in {-1, 0, 1}, indexed by temperature
 /// slot and integer gain.
 pub(crate) struct UnitCouplingLookup {
-    thresholds: Vec<u64>,
+    thresholds: Vec<i64>,
     couplings: Vec<i8>,
     offset: i32,
     table_width: usize,
@@ -180,7 +191,7 @@ impl UnitCouplingLookup {
     }
 
     #[inline]
-    fn row(&self, temperature_id: usize) -> &[u64] {
+    fn row(&self, temperature_id: usize) -> &[i64] {
         let start = temperature_id * self.table_width;
         &self.thresholds[start..start + self.table_width]
     }
@@ -215,7 +226,7 @@ fn unit_kernel<const TRACK: bool>(
     sweep_sites(lattice, spin_slice, &lookup.couplings, |spins, i, h| {
         let spin = i32::from(spins[i]);
         let gain = -spin * h;
-        let accept = rng.next_u64() < row[(gain + lookup.offset) as usize];
+        let accept = uniform_draw(rng) < row[(gain + lookup.offset) as usize];
         if TRACK {
             let flip = i32::from(accept);
             gain_sum += i64::from(gain * flip);
@@ -291,7 +302,7 @@ pub(crate) fn single_spin_sweep(
             let beta2 = 2.0 / temperature;
             sweep_sites(lattice, spin_slice, couplings, |spins, i, h| {
                 let gain = -(spins[i] as f32) * h;
-                let accept = rng.next_u64() < threshold(acceptance.probability(gain, beta2));
+                let accept = acceptance.accepts(rng, gain, beta2);
                 flip_if(spins, i, accept);
             });
         },
@@ -303,7 +314,7 @@ mod tests {
     use super::*;
     use crate::geometry::hypercubic;
     use crate::test_utils::{chi2_cutoff, ExactLaw};
-    use rand::SeedableRng;
+    use rand::{RngCore, SeedableRng};
 
     #[allow(clippy::too_many_arguments)]
     fn sweep(
@@ -389,7 +400,7 @@ mod tests {
         assert!(UnitCouplingLookup::new(&[-1.0, 1.0], &[f32::from_bits(1)], 2, rule).is_none());
     }
 
-    /// `draw < threshold` accepts with probability threshold / 2^64, which must match the
+    /// `draw < threshold` accepts with probability threshold / 2^62, which must match the
     /// exact rule in relative terms, including rates far below the old 2^-24 floor.
     #[test]
     fn acceptance_thresholds_are_relatively_exact() {
@@ -409,13 +420,15 @@ mod tests {
                     (&lookup_metropolis, exact_metropolis),
                     (&lookup_gibbs, exact_gibbs),
                 ] {
-                    let rate = lookup.row(0)[(gain + 6) as usize] as f64 / 2f64.powi(64);
+                    // Saturated thresholds (p >= 1) accept every draw.
+                    let rate =
+                        lookup.row(0)[(gain + 6) as usize].min(1 << 62) as f64 / 2f64.powi(62);
                     if exact < 1e-37 {
-                        assert!(rate <= exact.max(2f64.powi(-64)) * 2.0);
+                        assert!(rate <= exact.max(2f64.powi(-62)) * 2.0);
                         continue;
                     }
                     assert!(
-                        (rate - exact).abs() <= tolerance * exact + 2f64.powi(-64),
+                        (rate - exact).abs() <= tolerance * exact + 2f64.powi(-62),
                         "T={temperature} gain={gain}: rate {rate:e} vs exact {exact:e}"
                     );
                 }
