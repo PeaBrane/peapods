@@ -35,6 +35,10 @@ pub struct MomentBlock {
     pub sweeps: usize,
 }
 
+/// Per-disorder moments averaged over measured configurations.
+///
+/// `energies` is the physical energy per site `+H/N`, the opposite sign of
+/// [`super::SweepResult::energies`] (`-H/N`).
 #[derive(Clone, Debug)]
 pub struct PhysicsResult {
     pub fields: Vec<MomentField>,
@@ -414,11 +418,14 @@ impl PhysicsCollector {
         self.block_count = 0;
         self.block_sweeps = 0;
     }
+    /// Moments are zero, not NaN, when no sweep was measured.
     pub fn finish(mut self) -> PhysicsResult {
         self.flush_block();
-        for row in &mut self.sums {
-            for value in row {
-                *value /= self.count as f64;
+        if self.count > 0 {
+            for row in &mut self.sums {
+                for value in row {
+                    *value /= self.count as f64;
+                }
             }
         }
         PhysicsResult {
@@ -503,6 +510,15 @@ mod tests {
         assert_eq!(aggregate["heat_capacity"][0][0], 0.0);
         assert_eq!(aggregate["binder_cumulant"][0][0], 0.5);
     }
+    #[test]
+    fn finish_without_measurements_is_zero_not_nan() {
+        let lattice = Lattice::new(vec![3, 3]);
+        let c = PhysicsCollector::new(&lattice, 2, &PhysicsOptions::default(), 1).unwrap();
+        let result = c.finish();
+        assert_eq!(result.count, 0);
+        assert!(result.moments.iter().flatten().all(|&v| v == 0.0));
+    }
+
     #[test]
     fn antiferromagnetic_uniform_length_is_undefined_without_clamping() {
         let lattice = Lattice::new(vec![4, 4]);
