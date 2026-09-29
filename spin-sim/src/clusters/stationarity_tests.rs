@@ -104,19 +104,26 @@ impl Law {
 }
 
 /// Wilson-Hilferty normal score of Pearson's statistic; infinite if a bin with zero
-/// probability is hit.
+/// probability is hit. Bins expecting fewer than five counts are pooled into one.
 fn chi_square_z(counts: &[u64], p: &[f64]) -> f64 {
     let trials = counts.iter().sum::<u64>() as f64;
     let (mut x, mut bins) = (0.0, 0usize);
+    let (mut rare_observed, mut rare_expected) = (0.0, 0.0);
     for (&observed, &prob) in counts.iter().zip(p) {
-        if prob == 0.0 {
-            if observed > 0 {
-                return f64::INFINITY;
-            }
+        let expected = trials * prob;
+        if prob == 0.0 && observed > 0 {
+            return f64::INFINITY;
+        }
+        if expected < 5.0 {
+            rare_observed += observed as f64;
+            rare_expected += expected;
             continue;
         }
-        let expected = trials * prob;
         x += (observed as f64 - expected).powi(2) / expected;
+        bins += 1;
+    }
+    if rare_expected > 0.0 {
+        x += (rare_observed - rare_expected).powi(2) / rare_expected;
         bins += 1;
     }
     let k = (bins - 1) as f64;
