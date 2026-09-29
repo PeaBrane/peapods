@@ -57,7 +57,6 @@ def test_reset_and_parallel_replay_with_signed_disorder_and_tempering():
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"sweep_mode": "gibbs"},
         {"sweep_mode": "none", "cluster_update_interval": None},
         {"cluster_update_interval": 0},
         {"cluster_updates": 0},
@@ -185,6 +184,15 @@ def test_cluster_clock_and_anisotropic_energy():
     np.testing.assert_allclose(
         result["helicity_d"].sum(axis=-1) / 16, -result["energies"], atol=1e-12
     )
+
+
+def test_gibbs_heat_bath_agrees_with_metropolis():
+    options = dict(lattice_shape=(4, 4), temperatures=[0.4, 1.0, 2.0], seed=31)
+    settings = dict(n_sweeps=16384, cluster_update_interval=None, sequential=True)
+    metropolis = XY(**options).sample(**settings)
+    gibbs = XY(**options).sample(sweep_mode="gibbs", **settings)
+    np.testing.assert_allclose(gibbs["energies"], metropolis["energies"], atol=0.02)
+    np.testing.assert_allclose(gibbs["mags2"], metropolis["mags2"], atol=0.02)
 
 
 def test_opt_in_ising_physics_and_thermal_disorder_variance():

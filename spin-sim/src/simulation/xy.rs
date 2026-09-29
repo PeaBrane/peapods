@@ -62,11 +62,11 @@ impl XyConfig {
         if cfg.n_sweeps <= cfg.warmup_sweeps {
             return Err("XY sampling requires at least one measurement sweep".into());
         }
-        if cfg.sweep_mode == SweepMode::Gibbs
-            || cfg.overlap_cluster.is_some()
-            || cfg.equilibration_diagnostic
-        {
-            return Err("Gibbs, overlap updates and Ising equilibration diagnostics are not supported for XY".into());
+        if cfg.overlap_cluster.is_some() || cfg.equilibration_diagnostic {
+            return Err(
+                "overlap updates and Ising equilibration diagnostics are not supported for XY"
+                    .into(),
+            );
         }
         if self.cluster_updates == 0 {
             return Err("cluster_updates must be positive".into());
@@ -79,7 +79,7 @@ impl XyConfig {
             return Err("XY clusters support updates and visited-spin counts; Ising graph collectors are unsupported".into());
         }
         if cfg.sweep_mode == SweepMode::None && cfg.cluster_update.is_none() {
-            return Err("XY sampling requires Metropolis or cluster updates".into());
+            return Err("XY sampling requires Metropolis, Gibbs or cluster updates".into());
         }
         Ok(())
     }
@@ -294,7 +294,11 @@ fn run_xy(
     let mut visits = vec![0; n_temps * n_replicas];
     let mut updates = vec![0; n_temps];
     let occupied = (!occupation.iter().all(|&o| o)).then_some(occupation);
-    let local_move = (cfg.sweep_mode == SweepMode::Metropolis).then_some(LocalMove::Metropolis);
+    let local_move = match cfg.sweep_mode {
+        SweepMode::Metropolis => Some(LocalMove::Metropolis),
+        SweepMode::Gibbs => Some(LocalMove::HeatBath),
+        SweepMode::None => None,
+    };
     driver::run_sweeps(cfg, interrupted, on_sweep, |step| {
         let moves = local_move.into_iter().chain(std::iter::repeat_n(
             LocalMove::Overrelaxation,

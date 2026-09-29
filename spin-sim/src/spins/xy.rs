@@ -88,6 +88,60 @@ pub(crate) fn random_unit(rng: &mut Xoshiro256StarStar) -> XySpin {
     [(x * x - y * y) * inverse, 2.0 * x * y * inverse]
 }
 
+/// Outside these concentrations the von Mises draw is uniform, or equal to the
+/// field axis, far below `f64` resolution; they also bound the envelope arithmetic.
+const HEAT_BATH_KAPPA_RANGE: (f64, f64) = (1e-150, 1e300);
+
+/// Exact draw from `p(s) ∝ exp(β s·h)` with the Best–Fisher (1979) wrapped-Cauchy
+/// rejection sampler, rewritten in the complements `r-1` and `1-cos θ` so that no
+/// step cancels for large concentrations.
+#[inline]
+fn heat_bath(rng: &mut Xoshiro256StarStar, h: XySpin, beta: f64) -> XySpin {
+    let h2 = dot(h, h);
+    let norm = if h2.is_normal() {
+        h2.sqrt()
+    } else {
+        h[0].hypot(h[1])
+    };
+    let kappa = beta * norm;
+    // NaN is a zero field at infinite β, whose conditional law is still uniform.
+    if kappa.is_nan() || kappa < HEAT_BATH_KAPPA_RANGE.0 {
+        return random_unit(rng);
+    }
+    let axis = [h[0] / norm, h[1] / norm];
+    if kappa > HEAT_BATH_KAPPA_RANGE.1 {
+        return axis;
+    }
+    // Envelope parameter rho = 2κ/(τ+√(2τ)) with τ = 1+√(1+4κ²); r = (1+ρ²)/(2ρ).
+    let q = 1.0f64.hypot(2.0 * kappa);
+    let root = (2.0 * (1.0 + q)).sqrt();
+    let denominator = 1.0 + q + root;
+    let rho = 2.0 * kappa / denominator;
+    // 1-ρ = (τ-2κ+√(2τ))/(τ+√(2τ)), using τ-2κ = 1+1/(q+2κ).
+    let one_minus_rho = (1.0 + 1.0 / (q + 2.0 * kappa) + root) / denominator;
+    let r_minus_one = one_minus_rho * one_minus_rho / (2.0 * rho);
+    loop {
+        // z = cos ψ for uniform ψ; 1+z and 1-z are formed without cancellation.
+        let (x, y, r2) = disk_point(rng);
+        let (one_plus_z, one_minus_z) = (2.0 * x * x / r2, 2.0 * y * y / r2);
+        // 1-f for the wrapped-Cauchy proposal f = (1+rz)/(r+z) = cos θ.
+        let one_minus_f = r_minus_one * one_minus_z / (r_minus_one + one_plus_z);
+        let c = kappa * (r_minus_one + one_minus_f);
+        let u = rng.gen::<f64>();
+        if c * (2.0 - c) <= u && (c / u).ln() + 1.0 - c < 0.0 {
+            continue;
+        }
+        let cosine = 1.0 - one_minus_f;
+        let sine = (one_minus_f * (2.0 - one_minus_f)).sqrt();
+        // The sign of x·y is uniform and independent of the accepted |x|, |y|.
+        let sine = if x * y < 0.0 { -sine } else { sine };
+        return [
+            cosine * axis[0] - sine * axis[1],
+            cosine * axis[1] + sine * axis[0],
+        ];
+    }
+}
+
 /// Visit every site in index order with its local field, skipping vacancies.
 #[inline(always)]
 fn sweep_sites(
@@ -137,6 +191,7 @@ fn sweep_sites(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LocalMove {
     Metropolis,
+    HeatBath,
     Overrelaxation,
 }
 
@@ -170,6 +225,9 @@ pub(crate) fn local_sweep(
                     if delta <= 0.0 || rng.gen::<f64>() < (-delta * beta).exp() {
                         s[i] = proposal;
                     }
+                }),
+                LocalMove::HeatBath => sweep_sites(lattice, s, couplings, occupied, |s, i, h| {
+                    s[i] = heat_bath(rng, h, beta);
                 }),
                 LocalMove::Overrelaxation => {
                     sweep_sites(lattice, s, couplings, occupied, |s, i, h| {
@@ -248,10 +306,11 @@ mod tests {
         );
     }
 
-    /// Kernels: 0 Metropolis, 1 SW, 2 Wolff.
+    /// Kernels: 0 Metropolis, 1 SW, 2 Wolff, 3 heat bath.
     fn apply(lattice: &Lattice, real: &mut XyRealization, kernel: usize) {
         match kernel {
             0 => sweep(lattice, real, LocalMove::Metropolis),
+            3 => sweep(lattice, real, LocalMove::HeatBath),
             _ => embedded_update::<XyEmbedding>(
                 lattice,
                 &mut real.spins,
@@ -315,7 +374,7 @@ mod tests {
         for j in [-1.0, 1.0] {
             let exact = pair_quadrature(j / 0.8, 2048);
             assert!((exact - pair_quadrature(j / 0.8, 1024)).abs() < 1e-13);
-            for kernel in 0..3 {
+            for kernel in 0..4 {
                 let mut couplings = vec![0.0; 18];
                 couplings[0] = j;
                 let mut real =
@@ -365,7 +424,7 @@ mod tests {
         let finer = frustrated_quadrature(48);
         assert!(exact.iter().zip(finer).all(|(a, b)| (a - b).abs() < 1e-11));
         let lattice = Lattice::new(vec![3, 3]);
-        for kernel in 0..3 {
+        for kernel in 0..4 {
             let mut couplings = vec![0.0; 18];
             for (i, j) in [(0, 1.0), (7, 1.0), (2, 1.0), (1, -1.0)] {
                 couplings[i] = j;
@@ -415,6 +474,80 @@ mod tests {
         assert!(chi2 < 110.0, "chi2 = {chi2}");
     }
 
+    /// Heat-bath angles about the field versus the exact von Mises law: the
+    /// scaled Kolmogorov–Smirnov distance and the z-score of the mean cosine.
+    fn von_mises_statistics(h: XySpin, beta: f64, seed: u64) -> [f64; 2] {
+        let n = 100_000;
+        let norm = h[0].hypot(h[1]);
+        let kappa = beta * norm;
+        let axis = if norm > 0.0 {
+            [h[0] / norm, h[1] / norm]
+        } else {
+            [1.0, 0.0]
+        };
+        let mut rng = Xoshiro256StarStar::seed_from_u64(seed);
+        let mut angles: Vec<f64> = (0..n)
+            .map(|_| {
+                let s = heat_bath(&mut rng, h, beta);
+                assert!((dot(s, s) - 1.0).abs() < 1e-14);
+                cross(axis, s).atan2(dot(axis, s))
+            })
+            .collect();
+        angles.sort_by(f64::total_cmp);
+        // Trapezoid quadrature on a window holding all but a negligible tail.
+        let half_width = std::f64::consts::PI.min(14.0 / kappa.sqrt());
+        let grid = 40_000;
+        let step = 2.0 * half_width / grid as f64;
+        let angle = |i: usize| i as f64 * step - half_width;
+        let density = |i: usize| (kappa * (angle(i).cos() - 1.0)).exp();
+        let mut cdf = vec![0.0; grid + 1];
+        let mut moments = [0.0; 2];
+        for i in 1..=grid {
+            cdf[i] = cdf[i - 1] + 0.5 * step * (density(i - 1) + density(i));
+            for (k, moment) in moments.iter_mut().enumerate() {
+                let term = |j: usize| density(j) * angle(j).cos().powi(k as i32 + 1);
+                *moment += 0.5 * step * (term(i - 1) + term(i));
+            }
+        }
+        let total = cdf[grid];
+        let exact = |theta: f64| {
+            let x = ((theta + half_width) / step).clamp(0.0, grid as f64);
+            let i = (x as usize).min(grid - 1);
+            (cdf[i] + (x - i as f64) * (cdf[i + 1] - cdf[i])) / total
+        };
+        let ks = angles
+            .iter()
+            .enumerate()
+            .map(|(i, &theta)| {
+                let f = exact(theta);
+                (f - i as f64 / n as f64).max((i + 1) as f64 / n as f64 - f)
+            })
+            .fold(0.0, f64::max)
+            * (n as f64).sqrt();
+        let [mean, second] = moments.map(|m| m / total);
+        let measured = angles.iter().map(|a| a.cos()).sum::<f64>() / n as f64;
+        let z = (measured - mean) / ((second - mean * mean) / n as f64).sqrt();
+        [ks, z]
+    }
+
+    #[test]
+    fn heat_bath_matches_von_mises_distribution() {
+        let direction = [0.7f64.cos(), 0.7f64.sin()];
+        let cases = [0.0, 1e-3, 0.3, 1.0, 4.0, 40.0, 1e4, 1e9]
+            .map(|kappa| direction.map(|c| c * kappa / 0.8))
+            .into_iter()
+            .chain([[1e-200, -2e-200]]);
+        for (seed, h) in cases.enumerate() {
+            let [ks, z] = von_mises_statistics(h, 0.8, 90 + seed as u64);
+            // Asymptotic KS 0.999 quantile; the mean cosine resolves ~2% errors in kappa.
+            assert!(ks < 1.95 && z.abs() < 4.5, "h={h:?}: ks={ks}, z={z}");
+        }
+        let mut rng = Xoshiro256StarStar::seed_from_u64(8);
+        assert_eq!(heat_bath(&mut rng, [0.0, -3.0], f64::INFINITY), [0.0, -1.0]);
+        let s = heat_bath(&mut rng, [0.0, 0.0], f64::INFINITY);
+        assert!((dot(s, s) - 1.0).abs() < 1e-15);
+    }
+
     #[test]
     fn square_specialization_matches_generic_trajectory() {
         let square = Lattice::new(vec![5, 7]);
@@ -432,6 +565,7 @@ mod tests {
             let initial = a.spins.clone();
             for kind in [
                 LocalMove::Metropolis,
+                LocalMove::HeatBath,
                 LocalMove::Overrelaxation,
                 LocalMove::Metropolis,
             ] {
