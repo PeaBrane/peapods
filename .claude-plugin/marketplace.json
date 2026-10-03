@@ -1,0 +1,15 @@
+{
+  "name": "peapods",
+  "description": "PeaPods spin-model Monte Carlo skills",
+  "owner": {
+    "name": "PeaBrane",
+    "url": "https://github.com/PeaBrane"
+  },
+  "plugins": [
+    {
+      "name": "peapods",
+      "source": "./",
+      "description": "Skills for running, analyzing, benchmarking and developing peapods spin-model Monte Carlo simulations"
+    }
+  ]
+}

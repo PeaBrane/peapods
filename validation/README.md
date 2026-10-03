@@ -1,7 +1,7 @@
 # Validation
 
 Checks of peapods against published results: bounded scripts that run in CI and
-longer reproductions whose outputs are committed.
+longer reproductions run offline.
 
 | Result | Reference | Where |
 |---|---|---|
@@ -11,5 +11,7 @@ longer reproductions whose outputs are committed.
 | 3D ±J spin glass Binder crossings with each overlap move (Houdayer, Jörg, CMR, replica Monte Carlo) | — | [`tests/spin_glass_crossings.py`](../tests/spin_glass_crossings.py) (CI) |
 
 [`plot/`](plot/) holds visualization scripts: the README banner
-([`xy_quench_banner.py`](plot/xy_quench_banner.py)) and overlap-cluster snapshots
-([`cluster_snapshots.py`](plot/cluster_snapshots.py)).
+([`xy_quench_banner.py`](plot/xy_quench_banner.py)), overlap-cluster snapshots
+([`cluster_snapshots.py`](plot/cluster_snapshots.py)) and the CMR blue-cluster size
+distribution of the 2D ±J spin glass ([`overlap_csd.py`](plot/overlap_csd.py), after
+Pei and Di Ventra, arXiv:2105.01188).
