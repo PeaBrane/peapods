@@ -14,7 +14,7 @@
 | metropolis + Wolff cluster | 3.99 | 7.10 |
 | metropolis + PT | 1.35 | 3.19 |
 
-Median of 5 interleaved runs. Run: `.venv/bin/python benchmarks/sweep_modes.py`
+Median of 5 interleaved runs of `benchmarks/sweep_modes.py` (removed 2026-10-03; in git history).
 
 Rust bench: `cargo run --release --example bench -p spin-sim` (configure with `PEAPODS_*` env vars, see the example). It prints a state checksum; behavior-neutral changes must leave it unchanged.
 
