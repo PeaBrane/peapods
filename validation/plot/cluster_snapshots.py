@@ -2,11 +2,11 @@
 """Visualize cluster snapshots from peapods sweep .npz files.
 
 Usage:
-    python plot/cluster_snapshots.py results.npz
-    python plot/cluster_snapshots.py results.npz -s 3 -t 5
-    python plot/cluster_snapshots.py results.npz --all-temps
-    python plot/cluster_snapshots.py results.npz --all-snaps -t 8
-    python plot/cluster_snapshots.py results.npz -o snapshot.png
+    python validation/plot/cluster_snapshots.py results.npz
+    python validation/plot/cluster_snapshots.py results.npz -s 3 -t 5
+    python validation/plot/cluster_snapshots.py results.npz --all-temps
+    python validation/plot/cluster_snapshots.py results.npz --all-snaps -t 8
+    python validation/plot/cluster_snapshots.py results.npz -o snapshot.png
 """
 
 import argparse

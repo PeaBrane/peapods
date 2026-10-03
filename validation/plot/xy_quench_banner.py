@@ -8,7 +8,7 @@ Color is the spin angle on matplotlib's cyclic "twilight" map. For display only,
 each site shows the mean of its 3x3 neighborhood of unit vectors, which removes
 single-site thermal jitter but keeps the vortex cores.
 
-    python plot/xy_quench_banner.py --out docs/assets/xy_quench.webp
+    python validation/plot/xy_quench_banner.py --out docs/assets/xy_quench.webp
 """
 
 import argparse
