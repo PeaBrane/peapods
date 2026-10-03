@@ -594,15 +594,15 @@ fn masked<S: Spin>(spin: S, occupied: bool) -> [f64; 2] {
 /// floating-point add dependency chain.
 fn masked_sum<S: Spin>(slab: &[S], mask: &[bool]) -> [f64; 2] {
     let mut lanes = [[0.0; 2]; 4];
-    let spins4 = slab.chunks_exact(4);
-    let masks4 = mask.chunks_exact(4);
+    let (spins4, spin_tail) = slab.as_chunks::<4>();
+    let (masks4, mask_tail) = mask.as_chunks::<4>();
     let mut tail = [0.0; 2];
-    for (&spin, &occ) in spins4.remainder().iter().zip(masks4.remainder()) {
+    for (&spin, &occ) in spin_tail.iter().zip(mask_tail) {
         let [a, b] = masked(spin, occ);
         tail[0] += a;
         tail[1] += b;
     }
-    for (spins, masks) in spins4.zip(masks4) {
+    for (spins, masks) in spins4.iter().zip(masks4) {
         for ((lane, &spin), &occ) in lanes.iter_mut().zip(spins).zip(masks) {
             let [a, b] = masked(spin, occ);
             lane[0] += a;

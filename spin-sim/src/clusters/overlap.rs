@@ -162,7 +162,9 @@ pub fn overlap_update(
 #[inline]
 unsafe fn any_pair_differs(sp_ptr: *const i8, systems: &[usize], n_spins: usize, i: usize) -> bool {
     systems
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .any(|pair| *sp_ptr.add(pair[0] * n_spins + i) != *sp_ptr.add(pair[1] * n_spins + i))
 }
 
@@ -177,7 +179,7 @@ unsafe fn flip_group_site(
     i: usize,
     pairwise: bool,
 ) {
-    for pair in systems.chunks_exact(2) {
+    for pair in systems.as_chunks::<2>().0 {
         let a = sp_ptr.add(pair[0] * n_spins + i);
         let b = sp_ptr.add(pair[1] * n_spins + i);
         if pairwise && *a == *b {
@@ -492,7 +494,9 @@ fn jorg_step(
         // ΔE / 4J of swapping the pairs at one endpoint of an active-active bond.
         let aligned = |i: usize, j: usize| -> i32 {
             systems
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| {
                     let (a, b) = (pair[0] * n_spins, pair[1] * n_spins);
                     let (ai, aj) = (*sp_ptr.add(a + i), *sp_ptr.add(a + j));
