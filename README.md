@@ -8,9 +8,28 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![arXiv](https://img.shields.io/badge/arXiv-2602.19045-b31b1b.svg)](https://arxiv.org/abs/2602.19045)
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/PeaBrane/peapods/main/docs/assets/xy_quench.webp" alt="Animated 2D XY model quenched below the BKT temperature: vortex-antivortex pairs annihilate until a single ordered domain remains" width="100%">
+</p>
+<p align="center"><sub>A 2D XY model quenched to T = 0.1: vortex–antivortex pairs, where every color meets, annihilate until one domain remains (<a href="plot/xy_quench_banner.py">script</a>).</sub></p>
+
 A Python library for simulating Ising and XY spin systems with modern Monte Carlo methods.
 The core simulation loop is written in Rust (via PyO3) for performance, with a thin Python wrapper for ease of use.
 Currently focused on spin glass simulation, where the combination of parallel tempering, replica cluster moves, and overlap statistics is of particular interest.
+
+## Reproduces published results
+
+- **2D XY at the BKT point.** At β = 1.1199 the helicity modulus, ξ/L and χ for
+  L = 16 and 32 agree with Hasenbusch (2005), Table 1, within 1.9 combined standard
+  errors ([`validation/xy_finite_size.py`](validation/xy_finite_size.py)).
+- **Ising ferromagnets.** Binder cumulants of square and triangular lattices (exact
+  T_c) and simple-cubic, BCC and FCC lattices cross at the known T_c on every CI run
+  ([`tests/binder_crossings.py`](tests/binder_crossings.py)).
+- **3D ±J spin glass.** [`reproducers/spin_glass_3d/`](reproducers/spin_glass_3d/)
+  measures spin-glass correlation-length crossings for comparison with the Janus
+  collaboration's T_c = 1.1019(29).
+
+Commands for each result are in [`reproducers/`](reproducers/).
 
 ## Features
 
@@ -85,7 +104,12 @@ default. Set `autocorrelation_backend="fft"` together with
 `autocorrelation_max_lag` for faster evaluation when retaining the full
 measurement history and its higher memory use are acceptable.
 
-For a more complete example, check out [examples/energy_vs_temperature.py](examples/energy_vs_temperature.py).
+More complete examples:
+
+- [`examples/energy_vs_temperature.py`](examples/energy_vs_temperature.py): energy curve of a 2D ferromagnet with cluster updates and parallel tempering
+- [`examples/overlap_csd.py`](examples/overlap_csd.py): CMR blue-cluster size distribution of the 2D ±J spin glass
+- [`examples/xy.py`](examples/xy.py): signed, diluted XY model
+- [`reproducers/spin_glass_3d/`](reproducers/spin_glass_3d/): spin-glass correlation length and T_c crossings, end to end
 
 ## XY models
 

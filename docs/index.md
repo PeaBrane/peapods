@@ -1,6 +1,8 @@
 # PeaPods
 
-A Python library for simulating Ising spin systems with modern Monte Carlo methods.
+![A 2D XY model quenched below the BKT temperature: vortex-antivortex pairs annihilate until one domain remains](assets/xy_quench.webp)
+
+A Python library for simulating Ising and XY spin systems with modern Monte Carlo methods.
 The core simulation loop is written in Rust (via PyO3) for performance, with a thin Python wrapper for ease of use.
 
 ## Features
