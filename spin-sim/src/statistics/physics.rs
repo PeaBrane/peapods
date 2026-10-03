@@ -115,26 +115,43 @@ impl PhysicsResult {
             }]);
             s0.push(vec![n * m2]);
             chi.push(vec![beta * n * m2 / components as f64]);
-            let mut length = Vec::new();
-            let mut ratio = Vec::new();
-            let mut stiffness = Vec::new();
-            for (d, &extent) in shape.iter().enumerate() {
-                let sk = out["structure_factor_min"][t][d];
-                let radicand = n * m2 / sk - 1.0;
-                let value = if sk > 0.0 && radicand >= 0.0 {
-                    radicand.sqrt() / (2.0 * (PI / extent as f64).sin())
-                } else {
-                    f64::NAN
-                };
-                length.push(value);
-                ratio.push(value / extent as f64);
-                if components == 2 {
-                    stiffness.push((out["helicity_d"][t][d] - beta * out["helicity_i2"][t][d]) / n);
-                }
+            let (length, ratio) =
+                second_moment_lengths(n * m2, &out["structure_factor_min"][t], shape);
+            if components == 2 {
+                helicity.push(
+                    (0..shape.len())
+                        .map(|d| (out["helicity_d"][t][d] - beta * out["helicity_i2"][t][d]) / n)
+                        .collect(),
+                );
             }
-            helicity.push(stiffness);
             xi.push(length);
             xi_ratio.push(ratio);
+        }
+        if out.contains_key("overlap2") {
+            let mut sg_binder = Vec::new();
+            let mut sg_s0 = Vec::new();
+            let mut sg_xi = Vec::new();
+            let mut sg_xi_ratio = Vec::new();
+            let rows = out["overlap2"]
+                .iter()
+                .zip(&out["overlap4"])
+                .zip(&out["overlap_structure_factor_min"]);
+            for ((q2, q4), sk_min) in rows {
+                let (q2, q4) = (q2[0], q4[0]);
+                sg_binder.push(vec![if q2 > 0.0 {
+                    1.0 - q4 / (3.0 * q2 * q2)
+                } else {
+                    f64::NAN
+                }]);
+                sg_s0.push(vec![n * q2]);
+                let (length, ratio) = second_moment_lengths(n * q2, sk_min, shape);
+                sg_xi.push(length);
+                sg_xi_ratio.push(ratio);
+            }
+            out.insert("sg_binder", sg_binder);
+            out.insert("sg_structure_factor_0", sg_s0);
+            out.insert("sg_correlation_length", sg_xi);
+            out.insert("sg_correlation_length_ratio", sg_xi_ratio);
         }
         for (name, values) in [
             ("heat_capacity", heat),
@@ -187,6 +204,24 @@ impl PhysicsResult {
     }
 }
 
+/// Second-moment correlation lengths `ξ_d` and `ξ_d / L_d` along each axis, from
+/// the structure factor at zero and at the smallest nonzero wavevector `2π/L_d`.
+fn second_moment_lengths(s0: f64, sk_min: &[f64], shape: &[usize]) -> (Vec<f64>, Vec<f64>) {
+    shape
+        .iter()
+        .zip(sk_min)
+        .map(|(&extent, &sk)| {
+            let radicand = s0 / sk - 1.0;
+            let length = if sk > 0.0 && radicand >= 0.0 {
+                radicand.sqrt() / (2.0 * (PI / extent as f64).sin())
+            } else {
+                f64::NAN
+            };
+            (length, length / extent as f64)
+        })
+        .unzip()
+}
+
 /// Geometry and Fourier phases shared by every measurement of a run.
 pub struct PhysicsCollector {
     fields: Vec<MomentField>,
@@ -208,6 +243,10 @@ pub struct PhysicsCollector {
     blocks: Vec<MomentBlock>,
     count: u64,
     scratch: Vec<f64>,
+    /// First column of the replica-overlap moments, when enabled.
+    overlap_offset: Option<usize>,
+    /// Site overlaps `q_i = s_i^a s_i^b` of the pair being measured.
+    overlap_sites: Vec<i8>,
 }
 
 impl PhysicsCollector {
@@ -306,7 +345,89 @@ impl PhysicsCollector {
             blocks: vec![],
             count: 0,
             scratch: vec![0.0; width],
+            overlap_offset: None,
+            overlap_sites: vec![],
         })
+    }
+
+    /// Adds replica-overlap moments `overlap2`, `overlap4` and
+    /// `overlap_structure_factor_min`, filled by [`Self::measure_overlap`]. Call
+    /// before the first measurement.
+    pub fn with_overlap(mut self, lattice: &Lattice) -> Self {
+        let offset = self.scratch.len();
+        let mut width = offset;
+        for (name, n) in [
+            ("overlap2", 1),
+            ("overlap4", 1),
+            ("overlap_structure_factor_min", lattice.n_dims),
+        ] {
+            self.fields.push(MomentField {
+                name,
+                width: n,
+                offset: width,
+            });
+            width += n;
+        }
+        for row in self.sums.iter_mut().chain(&mut self.block_sums) {
+            row.resize(width, 0.0);
+        }
+        self.scratch.resize(width, 0.0);
+        self.overlap_offset = Some(offset);
+        self.overlap_sites = vec![0; lattice.n_spins];
+        self
+    }
+
+    /// Accumulates the overlap `q_i = a_i b_i` of one replica pair at `temperature`.
+    ///
+    /// [`Self::end_sweep`] counts replicas, not pairs, so `weight` should be
+    /// replicas per measured pair to normalize these moments per pair.
+    pub fn measure_overlap(
+        &mut self,
+        lattice: &Lattice,
+        a: &[i8],
+        b: &[i8],
+        occupied: &[bool],
+        temperature: usize,
+        weight: f64,
+    ) {
+        let Some(offset) = self.overlap_offset else {
+            return;
+        };
+        let mut sites = std::mem::take(&mut self.overlap_sites);
+        for ((q, &x), &y) in sites.iter_mut().zip(a).zip(b) {
+            *q = x * y;
+        }
+        let n = lattice.n_spins as f64;
+        let q = sites.iter().map(|&v| i64::from(v)).sum::<i64>() as f64 / n;
+        self.accumulate_planes(lattice, &sites, occupied);
+        self.overlap_sites = sites;
+        self.scratch[offset] = q * q;
+        self.scratch[offset + 1] = q.powi(4);
+        for d in 0..lattice.n_dims {
+            self.scratch[offset + 2 + d] = self.plane_structure_factor(d, n);
+        }
+        let values = &self.scratch[offset..];
+        let rows = std::iter::once(&mut self.sums[temperature]);
+        let block_rows = self.block_sums.get_mut(temperature);
+        for row in rows.chain(block_rows) {
+            for (dst, &value) in row[offset..].iter_mut().zip(values) {
+                *dst += weight * value;
+            }
+        }
+    }
+
+    /// `|Σ_x P_d(x) e^{2πi x/L_d}|² / N` for the hyperplane sums from
+    /// [`Self::accumulate_planes`].
+    fn plane_structure_factor(&self, d: usize, n: f64) -> f64 {
+        let mut fourier = [[0.0; 2]; 2];
+        for (plane, phase) in self.planes[d].iter().zip(&self.phases[d]) {
+            for k in 0..2 {
+                for a in 0..2 {
+                    fourier[k][a] += plane[k] * phase[a];
+                }
+            }
+        }
+        fourier.iter().flatten().map(|v| v * v).sum::<f64>() / n
     }
 
     /// Returns (physical energy/site, magnetization squared/site²) for diagnostics.
@@ -372,15 +493,7 @@ impl PhysicsCollector {
             if self.components == 2 {
                 self.scratch[i2_offset + d] = self.scratch[5 + lattice.n_dims + d].powi(2);
             }
-            let mut fourier = [[0.0; 2]; 2];
-            for (plane, phase) in self.planes[d].iter().zip(&self.phases[d]) {
-                for k in 0..2 {
-                    for a in 0..2 {
-                        fourier[k][a] += plane[k] * phase[a];
-                    }
-                }
-            }
-            self.scratch[sk_offset + d] = fourier.iter().flatten().map(|v| v * v).sum::<f64>() / n;
+            self.scratch[sk_offset + d] = self.plane_structure_factor(d, n);
         }
         let correlation_offset = sk_offset + lattice.n_dims;
         for (r, neighbors) in self.displaced.iter().enumerate() {
@@ -814,6 +927,41 @@ mod tests {
         );
         assert_eq!(a, b);
         assert_eq!(full.sums, cached.sums);
+    }
+
+    #[test]
+    fn overlap_moments_match_direct_sums_per_pair() {
+        let lattice = Lattice::new(vec![3, 4, 5]);
+        let mut rng = Xoshiro256StarStar::seed_from_u64(5);
+        let mut ising = || -> Vec<i8> {
+            (0..lattice.n_spins)
+                .map(|_| if rng.gen::<bool>() { 1 } else { -1 })
+                .collect()
+        };
+        let (a, b) = (ising(), ising());
+        let occupied = vec![true; lattice.n_spins];
+        let mut c = PhysicsCollector::new(&lattice, 1, &PhysicsOptions::default(), 1)
+            .unwrap()
+            .with_overlap(&lattice);
+        // One pair of two replicas: weight 2 against a replica count of 2.
+        c.measure_overlap(&lattice, &a, &b, &occupied, 0, 2.0);
+        c.end_sweep(2);
+        let values = c.finish().values(&lattice.shape, &[1.0], 1);
+
+        let q: Vec<[f64; 2]> = a
+            .iter()
+            .zip(&b)
+            .map(|(&x, &y)| [f64::from(x * y), 0.0])
+            .collect();
+        let mean = q.iter().map(|v| v[0]).sum::<f64>() / lattice.n_spins as f64;
+        assert!((values["overlap2"][0][0] - mean.powi(2)).abs() < 1e-12);
+        assert!((values["overlap4"][0][0] - mean.powi(4)).abs() < 1e-12);
+        for (got, want) in values["overlap_structure_factor_min"][0]
+            .iter()
+            .zip(direct_structure_factor(&lattice, &q, &occupied))
+        {
+            assert!((got - want).abs() < 1e-12, "{got} vs {want}");
+        }
     }
 
     #[test]

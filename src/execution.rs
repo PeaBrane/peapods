@@ -134,6 +134,9 @@ fn is_vector(name: &str) -> bool {
             | "correlations"
             | "correlation_length"
             | "correlation_length_ratio"
+            | "overlap_structure_factor_min"
+            | "sg_correlation_length"
+            | "sg_correlation_length_ratio"
     )
 }
 

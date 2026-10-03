@@ -281,6 +281,17 @@ class Ising:
             equilibration_diagnostic: If `True`, record replica-averaged energy
                 and link overlap over log-binned windows for
                 [`equilibration_delta`][peapods.Ising.equilibration_delta].
+            collect_physics: If `True`, also return `result["physics"]`: physical
+                moments with per-disorder values under `"per_disorder"`. With
+                `n_replicas >= 2` it includes the replica pairs' `overlap2`,
+                `overlap4` and `overlap_structure_factor_min`, and from them
+                `sg_binder`, `sg_structure_factor_0`, `sg_correlation_length` and
+                `sg_correlation_length_ratio` (second-moment ξ_SG and ξ_SG/L per
+                axis). Off by default to keep the default measurement cost.
+            displacements: Spin correlation displacements for `"physics"`;
+                implies `collect_physics`.
+            block_size: Also keep `"physics"` sums over blocks of this many
+                measured sweeps; implies `collect_physics`.
 
         Returns:
             Raw results dictionary with keys like `"mags"`, `"energies"`, etc.

@@ -1,4 +1,6 @@
 use spin_sim::config::*;
+use spin_sim::simulation::run_sweep_parallel_with_physics;
+use spin_sim::statistics::physics::{PhysicsOptions, PhysicsResult};
 use spin_sim::{run_sweep_parallel, Lattice, Realization};
 use std::sync::atomic::AtomicBool;
 
@@ -61,6 +63,48 @@ fn every_overlap_mode_keeps_top_cluster_shape_when_one_never_measures() {
     assert!(tops.iter().all(|mode| mode.len() == temps.len()));
     assert!(tops[0].iter().flatten().all(|&v| v == 0.0));
     assert!(tops[1].iter().all(|sizes| sizes[0] > 0.0));
+}
+
+#[test]
+fn physics_overlap_moments_match_legacy_overlap_statistics() {
+    let lattice = Lattice::new(vec![4, 4, 4]);
+    let temps = [0.8, 1.6, 3.0];
+    let mut config = config(64, 16);
+    // Tempering permutes system ids, so pairs must be read through them.
+    config.pt_interval = Some(1);
+    for n_replicas in [2, 3, 4] {
+        let mut reals = realizations(&lattice, &temps, n_replicas, 3);
+        let result = run_sweep_parallel_with_physics(
+            &lattice,
+            &mut reals,
+            n_replicas,
+            temps.len(),
+            &config,
+            &AtomicBool::new(false),
+            &|| {},
+            Some(&PhysicsOptions::default()),
+        )
+        .unwrap();
+        let physics = PhysicsResult::aggregate(
+            &result.per_disorder_physics,
+            &lattice.shape,
+            &temps.map(f64::from),
+            1,
+        );
+        let legacy = &result.overlap_stats;
+        for (name, expected) in [
+            ("overlap2", &legacy.overlap2),
+            ("overlap4", &legacy.overlap4),
+        ] {
+            for (t, (got, expected)) in physics[name].iter().zip(expected).enumerate() {
+                assert!(
+                    (got[0] - expected).abs() < 1e-6,
+                    "{n_replicas} replicas, T[{t}] {name}: {} vs {expected}",
+                    got[0]
+                );
+            }
+        }
+    }
 }
 
 #[test]
