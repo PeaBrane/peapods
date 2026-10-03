@@ -29,7 +29,7 @@ Currently focused on spin glass simulation, where the combination of parallel te
   measures spin-glass correlation-length crossings for comparison with the Janus
   collaboration's T_c = 1.1019(29).
 
-Commands for each result are in [`validation/`](validation/).
+Scripts and references for each result are listed in [`validation/`](validation/).
 
 ## Features
 
@@ -106,10 +106,10 @@ measurement history and its higher memory use are acceptable.
 
 More complete examples:
 
-- [`examples/energy_vs_temperature.py`](examples/energy_vs_temperature.py): energy curve of a 2D ferromagnet with cluster updates and parallel tempering
-- [`examples/overlap_csd.py`](examples/overlap_csd.py): CMR blue-cluster size distribution of the 2D ±J spin glass
-- [`examples/xy.py`](examples/xy.py): signed, diluted XY model
 - [`validation/spin_glass_3d/`](validation/spin_glass_3d/): spin-glass correlation length and T_c crossings, end to end
+- [`validation/plot/overlap_csd.py`](validation/plot/overlap_csd.py): CMR blue-cluster size distribution of the 2D ±J spin glass
+- [`skills/simulate/sweep_config.toml`](skills/simulate/sweep_config.toml): a `peapods sweep --config` template
+- The [agent skills](#agent-skills) index every model, lattice, move and output
 
 ## XY models
 
@@ -138,6 +138,22 @@ uv pip install peapods
 ```
 
 Pre-built wheels are available for Linux (x86_64, aarch64), macOS (Intel, Apple Silicon), and Windows (x86_64).
+
+## Agent skills
+
+[`skills/`](skills/) holds [Agent Skills](https://agentskills.io) that index peapods for
+coding agents: [`simulate`](skills/simulate/SKILL.md) (models, lattices, moves, outputs),
+[`analyze`](skills/analyze/SKILL.md) (equilibration, errors, critical points),
+[`benchmark`](skills/benchmark/SKILL.md) and [`develop`](skills/develop/SKILL.md). In
+Claude Code, install them as a plugin:
+
+<!--pytest-codeblocks:skip-->
+```text
+/plugin marketplace add PeaBrane/peapods
+/plugin install peapods@peapods
+```
+
+Other agents can load the `SKILL.md` files directly.
 
 ## Building from source
 

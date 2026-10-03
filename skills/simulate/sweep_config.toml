@@ -36,6 +36,7 @@ interval = 1
 build_modes = ["houdayer", "cmr"]
 cluster_mode = "sw"
 action = "update"
+# max_temperature = 1.2  # apply overlap moves only at T <= 1.2
 # snapshot_interval = 10000  # save cluster IDs every 10k sweeps
 
 [diagnostics]
@@ -45,6 +46,8 @@ collect_cluster_stats = false
 max_lag = 2000
 backend = "ring" # use "fft" to trade higher memory use for faster evaluation
 plot_temp = 1.102
+
+# equilibration_diagnostic = true  # under [diagnostics]: Gaussian-coupling check
 
 [output]
 save_plots = true

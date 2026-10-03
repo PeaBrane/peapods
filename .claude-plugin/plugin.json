@@ -1,0 +1,13 @@
+{
+  "name": "peapods",
+  "displayName": "PeaPods",
+  "description": "Skills for running, analyzing, benchmarking and developing peapods spin-model Monte Carlo simulations",
+  "author": {
+    "name": "PeaBrane",
+    "url": "https://github.com/PeaBrane"
+  },
+  "homepage": "https://peabrane.github.io/peapods/",
+  "repository": "https://github.com/PeaBrane/peapods",
+  "license": "MIT",
+  "keywords": ["monte-carlo", "ising", "spin-glass", "xy-model", "parallel-tempering"]
+}
