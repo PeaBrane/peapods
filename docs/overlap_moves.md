@@ -98,6 +98,17 @@ snapshots and is rejected with `overlap_cluster_action="observe"`.
 The benchmark below uses ±J couplings, 4 replicas, and Metropolis plus full-ladder
 parallel tempering every sweep, with 16 temperatures.
 
+It predates a fix of 2026-10-03: the full-ladder schedule used to flip the order of its
+even and odd passes every event, so consecutive passes could undo each other, and
+walkers crossed the ladder 10–40× more slowly than they now do (none at all when every
+swap is accepted). The "PT alone" times below are therefore upper bounds.
+
+A first re-measurement after the fix, for 2D L=16 with 16 temperatures from 0.3 to 1.5
+and 4 replicas (12 disorder samples, τ of Q2 from batch means), gave τ ≈ 8 sweeps for
+PT alone at T=0.30 instead of 236. `rmc` with `"wolff"` shortened τ by about 1.5× at 4.7×
+the cost per sweep (every 4th sweep: 1.9× the cost), so PT alone was the cheaper choice
+there. The 3D rows have not been re-measured.
+
 - **Observable.** τ is the integrated autocorrelation time of the replica-symmetric
   Q2 = mean over all replica pairs of q_ab², in sweeps (median over 16–32 disorder
   samples).
