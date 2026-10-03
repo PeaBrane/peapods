@@ -461,7 +461,14 @@ fn run_sweep_loop_impl(
 
     let mut physics = physics_options
         .map(|options| PhysicsCollector::new(lattice, n_temps, options, 1))
-        .transpose()?;
+        .transpose()?
+        .map(|collector| {
+            if n_pairs > 0 {
+                collector.with_overlap(lattice)
+            } else {
+                collector
+            }
+        });
     let occupied = if physics.is_some() {
         vec![true; n_spins]
     } else {
@@ -661,6 +668,22 @@ fn run_sweep_loop_impl(
                         magnetization: [magnetization_sums[system] as f64, 0.0],
                     },
                 );
+            }
+            // Same pairs (2p, 2p + 1) as the legacy overlap statistics.
+            let weight = n_replicas as f64 / n_pairs.max(1) as f64;
+            for pair in 0..n_pairs {
+                for t in 0..n_temps {
+                    let a = real.system_ids[2 * pair * n_temps + t];
+                    let b = real.system_ids[(2 * pair + 1) * n_temps + t];
+                    collector.measure_overlap(
+                        lattice,
+                        &real.spins[a * n_spins..(a + 1) * n_spins],
+                        &real.spins[b * n_spins..(b + 1) * n_spins],
+                        &occupied,
+                        t,
+                        weight,
+                    );
+                }
             }
             collector.end_sweep(n_replicas);
         }

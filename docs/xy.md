@@ -195,6 +195,10 @@ block_size=128, displacements=[[1, 0]])`, or Rust
 `simulation::run_sweep_parallel_with_physics`. Results are under `physics` and
 include physical energy, thermodynamics, magnetic moments, structure factors,
 uniform lengths and requested correlations; they omit XY helicity and winding.
+With `n_replicas >= 2`, Ising also records replica-overlap moments of the pairs
+`(2p, 2p + 1)` and the overlap structure factor at the smallest wavevector, giving
+the spin-glass Binder ratio and second-moment correlation length `sg_correlation_length`
+(and `/L`) per disorder realization.
 Ising Binder and susceptibility use one-component normalizations. Legacy output
 keys and default measurement cost are preserved. The default Ising heat-capacity
 attribute uses `energy_variance`, the disorder average of each realization's
