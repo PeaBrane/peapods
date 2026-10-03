@@ -8,7 +8,7 @@
 //! | Move | Function |
 //! |------|----------|
 //! | Metropolis / Gibbs sweep | [`run_sweep_loop`] (`sweep_mode`) |
-//! | Wolff / Swendsen-Wang | [`run_sweep_loop`] (`cluster_mode`) |
+//! | Wolff / Swendsen-Wang | [`run_sweep_loop`] (`cluster_update`) |
 //! | Parallel tempering | [`run_sweep_loop`] (`pt_interval`) |
 //! | Houdayer / Jörg / CMR / replica Monte Carlo | [`run_sweep_loop`] (`overlap_cluster`) |
 //!

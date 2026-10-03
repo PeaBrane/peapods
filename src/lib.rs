@@ -258,8 +258,11 @@ impl IsingSimulation {
 
                 let modes = spin_sim::config::parse_overlap_modes(build_mode_str)
                     .map_err(pyo3::exceptions::PyValueError::new_err)?;
-                let oc_mode = ClusterMode::try_from(oc_mode_str)
-                    .map_err(pyo3::exceptions::PyValueError::new_err)?;
+                let oc_mode = ClusterMode::try_from(oc_mode_str).map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "unknown overlap_cluster_mode '{oc_mode_str}', expected 'wolff' or 'sw'"
+                    ))
+                })?;
                 let action = ClusterAction::try_from(overlap_cluster_action.unwrap_or("update"))
                     .map_err(pyo3::exceptions::PyValueError::new_err)?;
 

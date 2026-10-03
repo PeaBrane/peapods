@@ -15,7 +15,7 @@ use rayon::prelude::*;
 /// When `wolff` is false, performs Swendsen-Wang (flip each cluster with p=0.5).
 /// When `wolff` is true, performs Wolff (flip only the seed's cluster).
 ///
-/// Uses a BFS fast path when `wolff && csd_out.is_none()`. Otherwise uses
+/// Uses a DFS fast path when `action == Update && wolff && csd_out.is_none()`. Otherwise uses
 /// union-find, computing interactions on-the-fly from `couplings`.
 ///
 /// When `csd_out` is `Some`, cluster sizes are histogrammed into the
@@ -74,7 +74,7 @@ pub(crate) fn embedded_update<E: Embedding>(
     let n_neighbors = lattice.n_neighbors;
     let vp = visited_out.as_mut().map_or(0, |v| v.as_mut_ptr() as usize);
 
-    // BFS fast path: Wolff without CSD collection
+    // DFS fast path: Wolff updates without CSD collection
     if action == ClusterAction::Update && wolff && csd_out.is_none() {
         par_over_replicas(
             spins,

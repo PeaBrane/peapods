@@ -15,7 +15,7 @@ pub struct TemperingAttempt {
 /// Picks a random adjacent pair (temp_id, temp_id+1) and applies the
 /// Metropolis criterion using total energies.
 ///
-/// `energies`: per-replica average energy (energy per spin)
+/// `energies`: cached -H/N per system id
 /// `n_spins`: total number of spins (for converting to total energy)
 #[cfg_attr(feature = "profile", inline(never))]
 pub fn parallel_tempering<T: Real>(
