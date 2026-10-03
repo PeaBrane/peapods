@@ -25,11 +25,11 @@ Currently focused on spin glass simulation, where the combination of parallel te
 - **Ising ferromagnets.** Binder cumulants of square and triangular lattices (exact
   T_c) and simple-cubic, BCC and FCC lattices cross at the known T_c on every CI run
   ([`tests/binder_crossings.py`](tests/binder_crossings.py)).
-- **3D ±J spin glass.** [`reproducers/spin_glass_3d/`](reproducers/spin_glass_3d/)
+- **3D ±J spin glass.** [`validation/spin_glass_3d/`](validation/spin_glass_3d/)
   measures spin-glass correlation-length crossings for comparison with the Janus
   collaboration's T_c = 1.1019(29).
 
-Commands for each result are in [`reproducers/`](reproducers/).
+Commands for each result are in [`validation/`](validation/).
 
 ## Features
 
@@ -109,7 +109,7 @@ More complete examples:
 - [`examples/energy_vs_temperature.py`](examples/energy_vs_temperature.py): energy curve of a 2D ferromagnet with cluster updates and parallel tempering
 - [`examples/overlap_csd.py`](examples/overlap_csd.py): CMR blue-cluster size distribution of the 2D ±J spin glass
 - [`examples/xy.py`](examples/xy.py): signed, diluted XY model
-- [`reproducers/spin_glass_3d/`](reproducers/spin_glass_3d/): spin-glass correlation length and T_c crossings, end to end
+- [`validation/spin_glass_3d/`](validation/spin_glass_3d/): spin-glass correlation length and T_c crossings, end to end
 
 ## XY models
 
