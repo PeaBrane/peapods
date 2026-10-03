@@ -11,7 +11,7 @@
 <p align="center">
   <img src="https://raw.githubusercontent.com/PeaBrane/peapods/main/docs/assets/xy_quench.webp" alt="Animated 2D XY model quenched below the BKT temperature: vortex-antivortex pairs annihilate until a single ordered domain remains" width="100%">
 </p>
-<p align="center"><sub>A 2D XY model quenched to T = 0.1: vortex–antivortex pairs, where every color meets, annihilate until one domain remains (<a href="plot/xy_quench_banner.py">script</a>).</sub></p>
+<p align="center"><sub>A 2D XY model quenched to T = 0.1: vortex–antivortex pairs, where every color meets, annihilate until one domain remains (<a href="validation/plot/xy_quench_banner.py">script</a>).</sub></p>
 
 A Python library for simulating Ising and XY spin systems with modern Monte Carlo methods.
 The core simulation loop is written in Rust (via PyO3) for performance, with a thin Python wrapper for ease of use.
