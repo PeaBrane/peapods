@@ -54,7 +54,10 @@ pub(crate) fn validate_batch<S: Spin>(
     }
     if let Some(overlap) = &config.overlap_cluster {
         if n_replicas < overlap.max_group_size() {
-            return Err("overlap cluster requires more replicas".into());
+            return Err(format!(
+                "overlap cluster moves need n_replicas >= {} (the largest mode's group size), got {n_replicas}",
+                overlap.max_group_size()
+            ));
         }
     }
     for real in realizations {

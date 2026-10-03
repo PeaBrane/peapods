@@ -7,7 +7,7 @@ use rayon::prelude::*;
 /// `couplings`: flat (n_spins * n_neighbors), forward couplings only
 ///
 /// Returns:
-///   energies: Vec<f32> of length n_systems (average energy per spin)
+///   energies: Vec<f32> of length n_systems (interaction sum per spin, -H/N)
 ///   interactions: Option<Vec<f32>> of length (n_systems * n_spins * n_neighbors)
 ///     interactions[r * n_spins * n_neighbors + i * n_neighbors + d] =
 ///       spin[r,i] * spin[r,neighbor_fwd(i,d)] * coupling[i,d]

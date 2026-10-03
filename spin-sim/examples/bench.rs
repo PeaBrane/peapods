@@ -1,3 +1,13 @@
+//! Ising sweep timing; prints ms/sweep and a state checksum that behavior-neutral
+//! changes must leave unchanged. Configure with environment variables (defaults):
+//! `PEAPODS_L` (128), `PEAPODS_DIM` (2), `PEAPODS_TEMPS` (16), `PEAPODS_REPLICAS` (2),
+//! `PEAPODS_SWEEPS` (50), `PEAPODS_NREAL` (100), `PEAPODS_TMIN` (0.1), `PEAPODS_TMAX`
+//! (5.0, geometric ladder), `PEAPODS_MODE` (cmr | metropolis | pt | sw | wolff | sw_pt |
+//! houdayer | jorg | any overlap build mode string, which runs with PT),
+//! `PEAPODS_SWEEP` (metropolis | gibbs), `PEAPODS_COUPLINGS` (bimodal | ferro | gaussian),
+//! and the flags `PEAPODS_SEQUENTIAL`, `PEAPODS_OVERLAP_WOLFF` (Wolff overlap clusters
+//! instead of SW) and `PEAPODS_GENERIC_LATTICE` (generic neighbor table).
+
 use std::env;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::AtomicBool;

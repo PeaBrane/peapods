@@ -152,7 +152,7 @@ impl ClusterObservationAccums {
 /// 1. A full single-spin pass (`sweep_mode`: Metropolis or Gibbs)
 /// 2. An optional cluster update (every `cluster_update.interval` sweeps)
 /// 3. Measurement (after `warmup_sweeps`)
-/// 4. Optional overlap cluster move (every `overlap_cluster.interval` sweeps, requires `n_replicas ≥ 2`)
+/// 4. Optional overlap cluster move (every `overlap_cluster.interval` sweeps; `n_replicas` must reach the largest mode's group size)
 /// 5. Optional parallel tempering (every `pt_interval` sweeps)
 ///
 /// `on_sweep` is called once per sweep (useful for progress bars).

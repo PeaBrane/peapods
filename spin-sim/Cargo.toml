@@ -2,7 +2,7 @@
 name = "spin-sim"
 version = "0.2.1"
 edition = "2021"
-description = "Ising model Monte Carlo: Metropolis, Gibbs, Wolff, Swendsen-Wang, parallel tempering, Houdayer ICM"
+description = "Ising and XY Monte Carlo: Metropolis, Gibbs, Swendsen-Wang, Wolff, parallel tempering, Houdayer/Jörg/CMR and replica Monte Carlo overlap moves"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/PeaBrane/peapods"
