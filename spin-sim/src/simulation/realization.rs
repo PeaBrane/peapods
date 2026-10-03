@@ -24,7 +24,6 @@ pub(super) struct PtState {
     edge_acceptances: Vec<u64>,
     round_trips: Vec<u64>,
     trip_state: Vec<u8>,
-    next_parity: usize,
     cold_slot: usize,
     hot_slot: usize,
 }
@@ -41,7 +40,6 @@ impl PtState {
             edge_acceptances: Vec::new(),
             round_trips: Vec::new(),
             trip_state: Vec::new(),
-            next_parity: 0,
             cold_slot: 0,
             hot_slot: 0,
         };
@@ -65,7 +63,6 @@ impl PtState {
         self.round_trips.fill(0);
         self.trip_state.resize(n_replicas * n_temps, 0);
         self.trip_state.fill(0);
-        self.next_parity = 0;
         (self.cold_slot, self.hot_slot) = Self::extreme_temperature_slots(temperatures, n_temps);
 
         if n_temps == 0 {
@@ -85,14 +82,6 @@ impl PtState {
 
         self.record_arrival(attempt.left_system, attempt.edge + 1);
         self.record_arrival(attempt.right_system, attempt.edge);
-    }
-
-    pub(super) fn first_parity(&self) -> usize {
-        self.next_parity
-    }
-
-    pub(super) fn advance_parity(&mut self) {
-        self.next_parity = 1 - self.next_parity;
     }
 
     fn extreme_temperature_slots<T: PartialOrd>(
@@ -141,7 +130,7 @@ impl PtState {
 pub struct ModelRealization<S: Spin> {
     /// Forward couplings, length `n_spins * n_neighbors`.
     pub couplings: Vec<S::Value>,
-    /// All spin configurations, length `n_systems * n_spins` (+1/−1).
+    /// All spin configurations, length `n_systems * n_spins` (±1 for Ising, unit vectors for XY).
     pub spins: Vec<S>,
     /// Temperature assigned to each system slot, length `n_systems`.
     pub temperatures: Vec<S::Value>,
@@ -161,7 +150,7 @@ pub type Realization = ModelRealization<i8>;
 pub type XyRealization = ModelRealization<[f64; 2]>;
 
 impl<S: Spin> ModelRealization<S> {
-    /// Initialize a realization with random ±1 spins.
+    /// Initialize a realization with random spins (±1, or uniform unit vectors for XY).
     ///
     /// Seeds independent system and pair streams from domain-separated child seeds.
     pub fn new(
@@ -307,7 +296,6 @@ impl<S: Spin> ModelRealization<S> {
         n_temps: usize,
         schedule: PtSchedule,
     ) {
-        let first_parity = self.pt.first_parity();
         for replica in 0..n_replicas {
             let offset = replica * n_temps;
             let ids = &mut self.system_ids[offset..offset + n_temps];
@@ -328,13 +316,13 @@ impl<S: Spin> ModelRealization<S> {
                     ids,
                     n_spins,
                     &mut self.rngs[offset],
-                    first_parity,
+                    // Always even edges, then odd: the passes alternate E, O, E, O, so
+                    // accepted swaps carry walkers along the ladder. Flipping the order
+                    // each event (E, O, O, E) lets a pass undo the previous one.
+                    0,
                     &mut record,
                 ),
             }
-        }
-        if schedule == PtSchedule::FullLadder {
-            self.pt.advance_parity();
         }
     }
 
@@ -369,14 +357,28 @@ mod tests {
         let initial_spins = realization.spins.clone();
         realization.system_ids.swap(0, 1);
         realization.pt.edge_attempts.fill(9);
-        realization.pt.advance_parity();
 
         realization.reset(&lattice, 2, 2, 17);
 
         assert_eq!(realization.spins, initial_spins);
         assert_eq!(realization.system_ids, vec![0, 1, 2, 3]);
         assert_eq!(realization.pt_edge_attempts(), &[0]);
-        assert_eq!(realization.pt.first_parity(), 0);
+    }
+
+    /// With every swap accepted, the full ladder must move walkers across it; a
+    /// schedule whose consecutive passes undo each other completes no round trips.
+    #[test]
+    fn full_ladder_moves_walkers_across_the_ladder() {
+        let lattice = Lattice::new(vec![2, 2]);
+        let couplings = vec![1.0; lattice.n_spins * lattice.n_neighbors];
+        let temps = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let mut realization = Realization::new(&lattice, couplings, &temps, 1, 3);
+        realization.energies.fill(0.0);
+        for _ in 0..40 {
+            realization.temper(lattice.n_spins, 1, temps.len(), PtSchedule::FullLadder);
+        }
+        assert!(realization.pt_edge_acceptances().iter().all(|&a| a == 40));
+        assert!(realization.pt_round_trips().iter().sum::<u64>() > 0);
     }
 
     #[test]
