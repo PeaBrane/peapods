@@ -6,7 +6,7 @@ chi(k_min) averaged over the three axes, and U4 = [<q^4>] / [<q^2>]^2. Errors ar
 delete-one-block jackknife over disorder realizations. Results come from the last
 log window, the second half of each chain.
 
-    python analyze.py data --out results/summary.json
+    python analyze.py data --out summary.json
 """
 
 import argparse
@@ -17,7 +17,7 @@ import numpy as np
 
 N_BLOCKS = 64
 # (L, 2L) pairs for crossing temperatures.
-PAIRS = ((4, 8), (6, 12), (8, 16))
+PAIRS = ((4, 8), (5, 10), (6, 12), (8, 16))
 
 
 def load(directory):
@@ -47,7 +47,7 @@ def estimators(size, q2, q4, sk):
 
 def block_means(values, n_blocks):
     """Means over all realizations and with each contiguous block deleted."""
-    blocks = np.array_split(values, n_blocks, axis=0)
+    blocks = np.array_split(values, min(n_blocks, len(values)), axis=0)
     sums = np.stack([b.sum(axis=0) for b in blocks])
     counts = np.array([len(b) for b in blocks]).reshape(-1, *[1] * (values.ndim - 1))
     total, count = sums.sum(axis=0), counts.sum()
@@ -120,7 +120,7 @@ def main():
             equilibration.append(
                 {
                     "window": [
-                        int(data["window_end"][w] // 2),
+                        int(data["window_end"][w - 1]) if w else 0,
                         int(data["window_end"][w]),
                     ],
                     "xi_over_L_at_T_min": jackknife(xw[0], xwd[:, 0]),
@@ -154,9 +154,9 @@ def main():
         a, b = runs[small][1], runs[large][1]
         (xa, ua), _ = window_observables(small, a, -1)
         (xb, ub), _ = window_observables(large, b, -1)
-        n_blocks = N_BLOCKS
         xad, uad = deleted[small]
         xbd, ubd = deleted[large]
+        n_blocks = min(len(xad), len(xbd))
         # Independent samples: delete block j from both sizes at once.
         t_xi = jackknife(
             crossing(temps, xa, xb),

@@ -31,6 +31,6 @@ python analyze.py data --out summary.json
 python plot.py summary.json --out ../../docs/assets/spin_glass_3d_tc
 ```
 
-The committed run used `--n-disorder 3840` for every size, with `--log2-sweeps` 14
+The reference run used `--n-disorder 3840` for every size, with `--log2-sweeps` 14
 (L = 4, 5), 15 (L = 6), 16 (L = 8), 17 (L = 10) and 18 (L = 12): at least eight times
 the equilibration time measured in a pilot.

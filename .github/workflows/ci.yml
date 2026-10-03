@@ -34,6 +34,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-targets
+      - run: cargo test --workspace --doc
 
   test-readme:
     runs-on: ubuntu-latest
