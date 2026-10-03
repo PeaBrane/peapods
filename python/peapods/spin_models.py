@@ -2,11 +2,14 @@ import numpy as np
 
 from peapods._core import IsingSimulation, XYSimulation
 
+# Forward nearest-neighbor offsets in primitive-cell coordinates, so an L^d lattice
+# is one connected Bravais lattice. (Conventional-cell offsets on a cubic grid would
+# split it into 2 (FCC) or 4 (BCC) disconnected copies for even L.)
 GEOMETRIES = {
     "triangular": [[1, 0], [0, 1], [1, -1]],
     "tri": [[1, 0], [0, 1], [1, -1]],
-    "fcc": [[1, 1, 0], [1, 0, 1], [0, 1, 1], [1, -1, 0], [1, 0, -1], [0, 1, -1]],
-    "bcc": [[1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1]],
+    "fcc": [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, -1, 0], [1, 0, -1], [0, 1, -1]],
+    "bcc": [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]],
 }
 
 
@@ -74,6 +77,35 @@ def _prepare_couplings(shape, neighbors, n_disorder, couplings, coupling_seed, d
     return result
 
 
+# Set by Ising.sample only when the matching option is on; cleared on every call.
+_OPTIONAL_SAMPLE_ATTRIBUTES = (
+    "physics",
+    "overlap",
+    "overlap2",
+    "overlap4",
+    "sg_binder",
+    "link_overlap",
+    "link_overlap2",
+    "link_overlap4",
+    "link_overlap_binder",
+    "overlap_histogram",
+    "ql_at_q_sum",
+    "ql2_at_q_sum",
+    "per_sample_overlap_histogram",
+    "per_sample_ql_at_q_sum",
+    "per_sample_ql2_at_q_sum",
+    "fk_csd",
+    "mean_cluster_size",
+    "top_cluster_sizes",
+    "mags2_tau",
+    "overlap2_tau",
+    "_equil_sweeps",
+    "_equil_energy_avg",
+    "_equil_link_overlap_avg",
+    "cluster_snapshots",
+)
+
+
 class Ising:
     """Ising model on a periodic Bravais lattice with Monte Carlo sampling.
 
@@ -89,7 +121,8 @@ class Ising:
         n_temps: Number of temperature points.
         n_replicas: Number of replicas per temperature.
         n_disorder: Number of disorder realizations.
-        couplings: Coupling array with shape `(*lattice_shape, n_neighbors)`.
+        couplings: Coupling array with shape `(*lattice_shape, n_neighbors)`, or
+            `(n_disorder, *lattice_shape, n_neighbors)` with several realizations.
         binder_cumulant: Binder cumulant `1 - <m^4> / (3 <m^2>^2)`, set after
             [`sample`][peapods.Ising.sample].
         heat_capacity: Heat capacity per spin `N [<e^2> - <e>^2] / T^2`, with the
@@ -117,7 +150,9 @@ class Ising:
                 2D 32x32 grid.
             couplings: Coupling configuration. One of `"ferro"` (all +1),
                 `"bimodal"` (random +/-1), `"gaussian"` (standard normal), or a
-                NumPy array of shape `(*lattice_shape, n_neighbors)`.
+                NumPy array of shape `(*lattice_shape, n_neighbors)` or
+                `(n_disorder, *lattice_shape, n_neighbors)`. Entry `[..., x, d]`
+                couples site `x` to its forward neighbor along offset `d`.
             temperatures: Array of temperatures for the simulation. Defaults to
                 32 points log-spaced from 0.1 to 10.
             n_replicas: Number of independent replicas per temperature. Must be
@@ -145,11 +180,12 @@ class Ising:
         self.lattice_shape = tuple(lattice_shape)
         self.n_spins = int(np.prod(lattice_shape))
         self.n_dims = len(lattice_shape)
-        self.n_neighbors = len(neighbor_offsets) if neighbor_offsets else self.n_dims
+        self.n_neighbors = (
+            len(neighbor_offsets) if neighbor_offsets is not None else self.n_dims
+        )
         self.temperatures = _prepare_temperatures(temperatures, np.float32)
-        self.n_temps = len(temperatures)
+        self.n_temps = len(self.temperatures)
         self.n_replicas = n_replicas
-        self.n_disorder = n_disorder
         self.seed = seed
         coupling_seed, self._constructor_dynamics_seed = _seed_material(seed)
 
@@ -163,6 +199,7 @@ class Ising:
         )
 
         self.couplings = coup
+        self.n_disorder = 1 if coup.ndim == self.n_dims + 1 else coup.shape[0]
         self._sim = IsingSimulation(
             list(lattice_shape),
             coup,
@@ -214,15 +251,19 @@ class Ising:
           disorder-averaged thermal energy variance `energy_variance`.
         - `sg_binder` — Spin glass Binder parameter (only with `n_replicas >= 2`).
         - `fk_csd` — FK cluster size distribution (only with
-          `collect_cluster_stats=True`).
+          `collect_cluster_stats=True` or `cluster_action="observe"`).
         - `top_cluster_sizes` — List of arrays (one per overlap mode), each
           shape `(n_temps, 4)`, giving average relative sizes of the 4 largest
           overlap clusters per temperature (only with
-          `collect_cluster_stats=True`).
+          `collect_cluster_stats=True` or `overlap_cluster_action="observe"`).
+
+        Optional attributes from an earlier call that this call does not
+        produce are removed.
 
         Args:
             n_sweeps: Total number of Monte Carlo sweeps (including warmup).
-            sweep_mode: Single-spin update algorithm. `"metropolis"` or `"gibbs"`.
+            sweep_mode: Single-spin update algorithm. `"metropolis"`, `"gibbs"`,
+                or `"none"` to rely on cluster or overlap moves alone.
             cluster_update_interval: If set, perform a cluster update every this
                 many sweeps.
             cluster_mode: Cluster algorithm. `"sw"` (Swendsen-Wang) or `"wolff"`.
@@ -281,6 +322,10 @@ class Ising:
             equilibration_diagnostic: If `True`, record replica-averaged energy
                 and link overlap over log-binned windows for
                 [`equilibration_delta`][peapods.Ising.equilibration_delta].
+            snapshot_interval: Every this many sweeps, record overlap-cluster
+                snapshots of disorder realization 0 in
+                `result["cluster_snapshots"]` (not for `"rmc"`). Requires
+                `overlap_cluster_update_interval` and must be a multiple of it.
             collect_physics: If `True`, also return `result["physics"]`: physical
                 moments with per-disorder values under `"per_disorder"`. With
                 `n_replicas >= 2` it includes the replica pairs' `overlap2`,
@@ -327,6 +372,15 @@ class Ising:
                 "overlap_cluster_action='observe' requires "
                 "overlap_cluster_update_interval"
             )
+        if overlap_cluster_update_interval is None and (
+            snapshot_interval is not None or overlap_cluster_max_temperature is not None
+        ):
+            raise ValueError(
+                "snapshot_interval and overlap_cluster_max_temperature require "
+                "overlap_cluster_update_interval"
+            )
+        for name in _OPTIONAL_SAMPLE_ATTRIBUTES:
+            self.__dict__.pop(name, None)
 
         oci = overlap_cluster_update_interval
         result = self._sim.sample(
@@ -450,6 +504,10 @@ class Ising:
             Tuple of (sweeps, delta) where sweeps has shape ``(n_checkpoints,)``
             and delta has shape ``(n_checkpoints, n_temps)``.
         """
+        if not hasattr(self, "_equil_energy_avg"):
+            raise ValueError(
+                "equilibration_delta needs sample(equilibration_diagnostic=True)"
+            )
         beta = 1.0 / self.temperatures
         delta = self._equil_energy_avg - j_squared * beta * self.n_neighbors * (
             1 - self._equil_link_overlap_avg

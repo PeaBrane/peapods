@@ -70,12 +70,20 @@ def _add_common_args(parser):
         "--overlap-cluster-update-interval",
         type=int,
         default=None,
-        help="Overlap cluster move every N sweeps (requires n_replicas >= 2)",
+        help=(
+            "Overlap cluster move every N sweeps (requires n_replicas >= 2; "
+            "rmc needs >= 2 temperatures instead)"
+        ),
     )
     parser.add_argument(
         "--collect-cluster-stats",
         action="store_true",
         help="Collect FK cluster size distribution and top-4 overlap cluster sizes",
+    )
+    parser.add_argument(
+        "--sequential",
+        action="store_true",
+        help="Disable inner-loop parallelism over replicas and temperatures",
     )
     parser.add_argument(
         "--autocorrelation-max-lag",
@@ -182,7 +190,10 @@ def _add_sweep_common_args(parser):
         "--overlap-cluster-update-interval",
         type=int,
         default=None,
-        help="Overlap cluster move every N sweeps (requires n_replicas >= 2)",
+        help=(
+            "Overlap cluster move every N sweeps (requires n_replicas >= 2; "
+            "rmc needs >= 2 temperatures instead)"
+        ),
     )
     parser.add_argument(
         "--collect-cluster-stats",
@@ -248,6 +259,16 @@ def _add_sweep_args(parser):
         "--overlap-cluster-build-mode",
         nargs="+",
         default=None,
+        help=(
+            "Overlap moves to sweep, e.g. houdayer, pairN, jorg, jorgN, cmr or rmc; "
+            "join modes with + to alternate them (default: houdayer)"
+        ),
+    )
+    parser.add_argument(
+        "--overlap-cluster-max-temperature",
+        type=float,
+        default=None,
+        help="Apply overlap moves only at temperatures up to this value",
     )
     parser.add_argument(
         "--overlap-cluster-mode",
@@ -315,6 +336,7 @@ def sample_kwargs(args):
         autocorrelation_max_lag=args.autocorrelation_max_lag,
         autocorrelation_backend=args.autocorrelation_backend,
         equilibration_diagnostic=args.equilibration_diagnostic,
+        sequential=args.sequential,
     )
 
 
@@ -347,6 +369,7 @@ _SWEEP_DEFAULTS = dict(
     overlap_cluster_build_mode=("houdayer",),
     overlap_cluster_mode=("wolff",),
     overlap_cluster_action="update",
+    overlap_cluster_max_temperature=None,
     warmup_ratio=0.25,
     collect_cluster_stats=False,
     autocorrelation_max_lag=None,
@@ -359,6 +382,11 @@ _SWEEP_DEFAULTS = dict(
     sequential=False,
     snapshot_interval=None,
 )
+
+
+def _as_tuple(value):
+    """A TOML list as a tuple; a bare string as a one-element tuple."""
+    return tuple(value) if isinstance(value, list) else (value,)
 
 
 def _load_sweep_config(path):
@@ -377,7 +405,7 @@ def _load_sweep_config(path):
             kw["neighbor_offsets"] = [list(o) for o in lat["neighbor_offsets"]]
 
     if "couplings" in cfg.get("lattice", {}):
-        kw["couplings"] = tuple(cfg["lattice"]["couplings"])
+        kw["couplings"] = _as_tuple(cfg["lattice"]["couplings"])
 
     if "temperatures" in cfg:
         t = cfg["temperatures"]
@@ -431,13 +459,11 @@ def _load_sweep_config(path):
         if "interval" in oc:
             kw["overlap_cluster_update_interval"] = oc["interval"]
         if "build_modes" in oc:
-            kw["overlap_cluster_build_mode"] = tuple(oc["build_modes"])
+            kw["overlap_cluster_build_mode"] = _as_tuple(oc["build_modes"])
         if "cluster_mode" in oc:
-            kw["overlap_cluster_mode"] = tuple(
-                oc["cluster_mode"]
-                if isinstance(oc["cluster_mode"], list)
-                else [oc["cluster_mode"]]
-            )
+            kw["overlap_cluster_mode"] = _as_tuple(oc["cluster_mode"])
+        if "max_temperature" in oc:
+            kw["overlap_cluster_max_temperature"] = oc["max_temperature"]
         if "snapshot_interval" in oc:
             kw["snapshot_interval"] = oc["snapshot_interval"]
         if "action" in oc:
@@ -497,6 +523,7 @@ def run_sweep_cli(args):
         "overlap_cluster_build_mode": args.overlap_cluster_build_mode,
         "overlap_cluster_mode": args.overlap_cluster_mode,
         "overlap_cluster_action": args.overlap_cluster_action,
+        "overlap_cluster_max_temperature": args.overlap_cluster_max_temperature,
         "warmup_ratio": args.warmup_ratio,
         "collect_cluster_stats": args.collect_cluster_stats,
         "autocorrelation_max_lag": args.autocorrelation_max_lag,
@@ -561,6 +588,7 @@ def run_sweep_cli(args):
         overlap_cluster_build_modes=tuple(kw["overlap_cluster_build_mode"]),
         overlap_cluster_modes=tuple(kw["overlap_cluster_mode"]),
         overlap_cluster_action=kw["overlap_cluster_action"],
+        overlap_cluster_max_temperature=kw["overlap_cluster_max_temperature"],
         warmup_ratio=kw["warmup_ratio"],
         collect_cluster_stats=kw["collect_cluster_stats"],
         autocorrelation_max_lag=kw["autocorrelation_max_lag"],
@@ -630,6 +658,11 @@ def run_simulate(args):
             "overlap",
             "overlap2",
             "overlap4",
+            "mags2_tau",
+            "overlap2_tau",
+            "equil_sweeps",
+            "equil_energy_avg",
+            "equil_link_overlap_avg",
         ):
             if key in result:
                 save_dict[key] = result[key]

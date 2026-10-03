@@ -88,7 +88,7 @@ def _size_label(shape):
     return "x".join(str(s) for s in shape)
 
 
-def _validate_combo(coupling, build_mode, oc_update_interval):
+def _validate_combo(build_mode, oc_update_interval):
     if build_mode != "houdayer" and oc_update_interval is None:
         return (
             False,
@@ -151,10 +151,14 @@ def _save_data(models, config_label, temperatures, output_dir):
             save_dict[f"{prefix}_snapshot_system_ids"] = np.stack(
                 [s["system_ids"] for s in snaps]
             )
-            if "blue_ids" in snaps[0]:
+            # Only CMR snapshots carry blue IDs; alternated modes mix both kinds.
+            has_blue = np.array(["blue_ids" in s for s in snaps])
+            if has_blue.any():
+                blank = np.zeros_like(snaps[0]["cluster_ids"])
                 save_dict[f"{prefix}_snapshot_blue_ids"] = np.stack(
-                    [s["blue_ids"] for s in snaps]
+                    [s.get("blue_ids", blank) for s in snaps]
                 )
+                save_dict[f"{prefix}_snapshot_has_blue_ids"] = has_blue
         save_dict.update(
             _flatten_per_disorder_arrays(model.per_disorder, prefix=prefix)
         )
@@ -369,6 +373,7 @@ def run_sweep(
     overlap_cluster_build_modes=("houdayer",),
     overlap_cluster_modes=("wolff",),
     overlap_cluster_action="update",
+    overlap_cluster_max_temperature=None,
     warmup_ratio=0.25,
     collect_cluster_stats=False,
     autocorrelation_max_lag=None,
@@ -390,6 +395,15 @@ def run_sweep(
     Returns:
         ``{config_label: {size_label: Ising}}`` mapping.
     """
+    unknown = set(couplings) - _COUPLING_SEED_TAGS.keys()
+    if unknown:
+        raise ValueError(
+            f"unknown couplings {sorted(unknown)}, expected {list(_COUPLING_SEED_TAGS)}"
+        )
+    temperatures = np.asarray(temperatures, dtype=float)
+    # Without overlap moves the cluster mode is unused; one run per coupling suffices.
+    if overlap_cluster_update_interval is None:
+        overlap_cluster_modes = tuple(overlap_cluster_modes)[:1]
     if save_plots:
         try:
             import matplotlib  # noqa: F401
@@ -416,9 +430,7 @@ def run_sweep(
     total_runs = 0
     valid_combos = []
     for coupling, build_mode, oc_mode in combos:
-        ok, reason = _validate_combo(
-            coupling, build_mode, overlap_cluster_update_interval
-        )
+        ok, reason = _validate_combo(build_mode, overlap_cluster_update_interval)
         if not ok:
             print(
                 f"  skip: {_config_label(coupling, build_mode, oc_mode)} — {reason}",
@@ -466,6 +478,7 @@ def run_sweep(
                 overlap_cluster_build_mode=build_mode,
                 overlap_cluster_mode=oc_mode,
                 overlap_cluster_action=overlap_cluster_action,
+                overlap_cluster_max_temperature=overlap_cluster_max_temperature,
                 warmup_ratio=warmup_ratio,
                 collect_cluster_stats=collect_cluster_stats,
                 autocorrelation_max_lag=autocorrelation_max_lag,

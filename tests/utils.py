@@ -6,9 +6,9 @@ from peapods import Ising
 
 TC_SQUARE = 2.0 / np.log(1 + np.sqrt(2))  # exact: 2.26918...
 TC_TRIANGULAR = 4.0 / np.log(3)  # exact: 3.64096...
-TC_CUBIC = 4.511
-TC_BCC = 6.235
-TC_FCC = 9.792
+TC_CUBIC = 1 / 0.2216546  # 4.5115
+TC_BCC = 1 / 0.1573725  # 6.3544 (Butera & Comi, hep-lat/0006009)
+TC_FCC = 1 / 0.1020707  # 9.7971
 TC_EA_3D = 1.102
 
 
@@ -65,20 +65,6 @@ def plot_crossing(temps, results, tc, ylabel, title, out_path):
     ax.set_ylabel(ylabel)
     ax.legend()
     ax.set_title(title)
-
-    out = Path(out_path)
-    fig.savefig(out, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"saved plot to {out}")
-
-
-def plot_bars(names, values, xlabel, title, out_path):
-    fig, ax = plt.subplots(figsize=(7, 0.5 * len(names) + 1.5))
-    ax.barh(names, values)
-    ax.set_xlabel(xlabel)
-    ax.set_title(title)
-    for i, v in enumerate(values):
-        ax.text(v, i, f" {v:.3f}", va="center")
 
     out = Path(out_path)
     fig.savefig(out, dpi=150, bbox_inches="tight")
