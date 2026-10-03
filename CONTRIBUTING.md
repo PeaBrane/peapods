@@ -35,10 +35,12 @@ This compiles the Rust core and installs the package into the local venv.
     --temp-min 0.1 --temp-max 10 --temp-scale log --n-sweeps 1000
 ```
 
-Or the full benchmark suite:
+For the Rust kernels, the bench example prints a state checksum that
+behavior-neutral changes must leave unchanged (configure it with `PEAPODS_*`
+environment variables, see the example):
 
 ```bash
-.venv/bin/python benchmarks/sweep_modes.py
+cargo run --release --example bench -p spin-sim
 ```
 
 ## Code style
