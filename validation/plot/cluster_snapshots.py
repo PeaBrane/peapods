@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 """Visualize cluster snapshots from peapods sweep .npz files.
 
+Snapshots come from `peapods sweep --save-data` with an overlap move and
+`--snapshot-interval` (or `[overlap_cluster] snapshot_interval` in the config).
+
 Usage:
     python validation/plot/cluster_snapshots.py results.npz
     python validation/plot/cluster_snapshots.py results.npz -s 3 -t 5
@@ -41,6 +44,12 @@ def load_snapshots(path):
     blue_key = f"{prefix}_snapshot_blue_ids"
     if blue_key in data.files:
         result["blue_ids"] = data[blue_key]
+        mask_key = f"{prefix}_snapshot_has_blue_ids"
+        result["has_blue_ids"] = (
+            data[mask_key]
+            if mask_key in data.files
+            else np.ones(len(result["sweep_ids"]), dtype=bool)
+        )
     if "temperatures" in data.files:
         result["temperatures"] = data["temperatures"]
 
@@ -60,7 +69,7 @@ def cluster_image(snaps, snap_idx, temp_idx):
 
     n_spins = int(np.prod(shape))
     grey_ids = snaps["cluster_ids"][snap_idx, temp_idx]
-    has_blue = "blue_ids" in snaps
+    has_blue = "blue_ids" in snaps and bool(snaps["has_blue_ids"][snap_idx])
 
     _, inverse, counts = np.unique(grey_ids, return_inverse=True, return_counts=True)
     in_grey = counts[inverse] >= int(n_spins * MIN_CLUSTER_FRAC)
@@ -81,14 +90,12 @@ def cluster_image(snaps, snap_idx, temp_idx):
 
     img = img.reshape(*shape, 3)
 
-    # Black boundary overlay for large blue clusters (> 25% of lattice)
+    # Black boundary overlay for blue clusters of at least MIN_CLUSTER_FRAC of the lattice
     if has_blue:
         bid = blue_ids.reshape(shape)
-        b_roots, b_inv, b_counts = np.unique(
-            bid, return_inverse=True, return_counts=True
-        )
+        _, b_inv, b_counts = np.unique(bid, return_inverse=True, return_counts=True)
         b_sizes = b_counts[b_inv].reshape(shape)
-        in_large_blue = b_sizes >= n_spins * 0.02
+        in_large_blue = b_sizes >= n_spins * MIN_CLUSTER_FRAC
 
         boundary = in_large_blue & (
             (bid != np.roll(bid, 1, axis=0))
@@ -128,7 +135,7 @@ def main():
     snaps = load_snapshots(args.npz)
     n_snaps = len(snaps["sweep_ids"])
     n_temps = snaps["cluster_ids"].shape[1]
-    mode = "CMR" if "blue_ids" in snaps else "overlap"
+    mode = "CMR" if "blue_ids" in snaps and snaps["has_blue_ids"].any() else "overlap"
     args.snap = args.snap % n_snaps
     args.temp = args.temp % n_temps
 

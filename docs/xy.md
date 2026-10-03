@@ -73,10 +73,10 @@ warmup, rounded from `warmup_ratio`.
 - Local updates only: `cluster_update_interval=None`.
 - Cluster only: `sweep_mode="none"`, with `cluster_mode="sw"` or `"wolff"`.
 - `cluster_updates=k` performs a **fixed** number of updates per scheduled cluster
-  event. `cluster_update_interval` controls events per sweep; it does not adapt
-  the measurement clock to the random cluster size.
+  event. `cluster_update_interval` sets the number of sweeps between events; it
+  does not adapt the measurement clock to the random cluster size.
 - `overrelaxation_sweeps=k` adds deterministic passes. It defaults to zero and
-  must accompany Metropolis or cluster updates.
+  must accompany Metropolis, Gibbs or cluster updates.
 - `pt_interval` defaults to `None`. Existing `single_random_edge` and
   `full_ladder` schedules and edge/round-trip diagnostics are shared with Ising.
 
@@ -148,10 +148,6 @@ plaquettes; density is `NaN` when none are intact. This is geometric angle
 winding, not frustration-adjusted vorticity or chirality, and omits circulation
 around dilution holes. Both measurements have the same per-disorder retention.
 
-The ordinary signed correlations and magnetic response can inform `xy-note`.
-The note's comparison theorems retain their stated nonnegative-coupling
-assumptions; the simulation's broader support does not extend those theorems.
-
 ## Blocks, errors and autocorrelation
 
 `collect_blocks=True` enables `per_disorder["blocks"]`. `sums` maps raw moment
@@ -208,7 +204,7 @@ disorder variance of the thermal mean energy.
 
 ## Bounded verification
 
-Build using the selected worktree's environment, then run:
+Build the extension into the local `.venv`, then run:
 
 ```sh
 VIRTUAL_ENV=.venv .venv/bin/maturin develop --release
@@ -229,20 +225,17 @@ Generated NPZ files, logs and JSON are inspected within an owned temporary
 directory and removed on success, numerical failure, interruption or timeout;
 the script verifies removal. Exit codes are 0 (pass), 1 (failure), 2 (inconclusive).
 
-Development validation on 2026-09-12 (standard errors in parentheses):
+Run on 2026-10-03 (standard errors in parentheses; Hasenbusch's values are
+0.72536, 0.79953, 133.011 at L = 16 and 0.70883, 0.79231, 452.114 at L = 32):
 
 | L | \(\beta Y_0\) | \(\xi_0/L\) | \(S(0)\) |
 |---|---|---|---|
-| 16 | 0.72602(131) | 0.80245(411) | 133.169(186) |
-| 32 | 0.70753(137) | 0.79313(397) | 453.026(672) |
+| 16 | 0.72282(144) | 0.79928(401) | 132.743(196) |
+| 32 | 0.70803(121) | 0.78382(459) | 450.857(674) |
 
-All six comparisons passed (maximum 1.36 combined standard errors); reblocking
-changed standard errors by at most 3.6%. No extension was needed. At `T=0.2`,
-`e=-1.89743` and `Y≈0.94777`; at `T=2`, `e=-0.54742`, geometric vortex density
-was `0.19703`, and `S(0)` fell from `230.777` to `4.172`. Cubic and diluted
-smokes passed. Six captured Ising baselines (Metropolis, Gibbs, SW, Wolff, full
-PT and Jörg overlap) matched exactly in Rust and Python after refactoring.
-Short three-repeat local/SW/PT timing medians showed no slowdown.
+All six comparisons passed (maximum 1.86 combined standard errors) without an
+extension, as did the low/high-temperature checks and the cubic and diluted
+smoke runs.
 
 CLI and sweep-framework integration, external fields, custom XY offsets,
 spin-glass/chirality observables and frustration-adjusted vortices are deferred.

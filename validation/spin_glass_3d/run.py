@@ -7,7 +7,7 @@ of one continuous chain; each window's per-disorder overlap moments are saved,
 so equilibration can be checked by comparing the last windows. Finished batches
 are skipped on restart.
 
-    python run.py --size 8 --n-disorder 3840 --log2-sweeps 18 --out data
+    python run.py --size 8 --n-disorder 3840 --log2-sweeps 16 --out data
 """
 
 import argparse
