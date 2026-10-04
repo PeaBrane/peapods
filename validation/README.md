@@ -9,6 +9,7 @@ longer reproductions run offline, with their summaries and figures committed.
 | 2D XY at β = 1.1199: stiffness, ξ/L and χ at L = 16, 32 | Hasenbusch, J. Phys. A 38, 5869 (2005), Table 1 | [`xy_finite_size.py`](xy_finite_size.py) (CI) |
 | Ising Binder crossings at known T_c: square (exact), triangular (exact), simple cubic, BCC, FCC | Onsager; standard series and Monte Carlo values | [`tests/binder_crossings.py`](../tests/binder_crossings.py) (CI) |
 | 3D ±J spin glass Binder crossings with each overlap move (Houdayer, Jörg, CMR, replica Monte Carlo) | — | [`tests/spin_glass_crossings.py`](../tests/spin_glass_crossings.py) (CI) |
+| Overlap-move efficiency against parallel tempering: τ of Q2 and equilibration from a random start | Houdayer, EPJB 22, 479 (2001); Zhu et al., PRL 115, 077201 (2015) | [`overlap_moves.py`](overlap_moves.py), tables in [`docs/overlap_moves.md`](../docs/overlap_moves.md#which-move-to-use) |
 
 [`plot/`](plot/) holds visualization scripts: the README banner
 ([`xy_quench_banner.py`](plot/xy_quench_banner.py)), overlap-cluster snapshots
