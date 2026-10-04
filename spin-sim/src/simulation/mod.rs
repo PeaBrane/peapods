@@ -685,6 +685,17 @@ fn run_sweep_loop_impl(
                     );
                 }
             }
+            if n_pairs > 0 {
+                for t in 0..n_temps {
+                    let replicas: Vec<&[i8]> = (0..n_replicas)
+                        .map(|r| {
+                            let system = real.system_ids[r * n_temps + t];
+                            &real.spins[system * n_spins..(system + 1) * n_spins]
+                        })
+                        .collect();
+                    collector.measure_overlap_all_pairs(&replicas, t, n_replicas as f64);
+                }
+            }
             collector.end_sweep(n_replicas);
         }
 

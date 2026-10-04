@@ -63,7 +63,9 @@ or the dynamics changed. New observables measured only on request (for example
   Q2 (q² averaged over replica pairs), not by ms/sweep. Use one `Ising(..., n_disorder=1,
   seed=s)` per sample with the same seeds for every configuration, warm up, then
   `sample(n, warmup_ratio=0.0, collect_physics=True, block_size=1)`; Q2 per sweep is
-  `physics["per_disorder"]["blocks"]["sums"]["overlap2"] / counts`. Estimate τ by batch
+  `physics["per_disorder"]["blocks"]["sums"]["overlap2_all_pairs"] / counts`. Use the
+  all-pairs Q2: same-temperature moves leave each fixed pair's overlap unchanged, so
+  `overlap2` would hide their effect. `validation/overlap_moves.py` implements this. Estimate τ by batch
   means (τ = B·Var(batch means)/(2·Var) at two batch lengths B ≫ τ), report the median
   over seeds, and take the cost from `peapods bench` with the same flags.
   `docs/overlap_moves.md` explains the observable; its table is partly stale (see there).

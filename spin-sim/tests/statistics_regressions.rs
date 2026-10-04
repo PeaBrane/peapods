@@ -92,6 +92,20 @@ fn physics_overlap_moments_match_legacy_overlap_statistics() {
             1,
         );
         let legacy = &result.overlap_stats;
+        if n_replicas == 2 {
+            // One pair: the all-pairs mean is that pair's q^2.
+            for (all, pair) in physics["overlap2_all_pairs"]
+                .iter()
+                .zip(&physics["overlap2"])
+            {
+                assert!(
+                    (all[0] - pair[0]).abs() < 1e-12,
+                    "{} vs {}",
+                    all[0],
+                    pair[0]
+                );
+            }
+        }
         for (name, expected) in [
             ("overlap2", &legacy.overlap2),
             ("overlap4", &legacy.overlap4),

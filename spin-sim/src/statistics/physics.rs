@@ -351,7 +351,8 @@ impl PhysicsCollector {
     }
 
     /// Adds replica-overlap moments `overlap2`, `overlap4` and
-    /// `overlap_structure_factor_min`, filled by [`Self::measure_overlap`]. Call
+    /// `overlap_structure_factor_min`, filled by [`Self::measure_overlap`], and
+    /// `overlap2_all_pairs`, filled by [`Self::measure_overlap_all_pairs`]. Call
     /// before the first measurement.
     pub fn with_overlap(mut self, lattice: &Lattice) -> Self {
         let offset = self.scratch.len();
@@ -360,6 +361,7 @@ impl PhysicsCollector {
             ("overlap2", 1),
             ("overlap4", 1),
             ("overlap_structure_factor_min", lattice.n_dims),
+            ("overlap2_all_pairs", 1),
         ] {
             self.fields.push(MomentField {
                 name,
@@ -406,13 +408,52 @@ impl PhysicsCollector {
         for d in 0..lattice.n_dims {
             self.scratch[offset + 2 + d] = self.plane_structure_factor(d, n);
         }
-        let values = &self.scratch[offset..];
+        let end = offset + 2 + lattice.n_dims;
+        let values = &self.scratch[offset..end];
         let rows = std::iter::once(&mut self.sums[temperature]);
         let block_rows = self.block_sums.get_mut(temperature);
         for row in rows.chain(block_rows) {
-            for (dst, &value) in row[offset..].iter_mut().zip(values) {
+            for (dst, &value) in row[offset..end].iter_mut().zip(values) {
                 *dst += weight * value;
             }
+        }
+    }
+
+    /// Accumulates Q2, `q²` averaged over every pair of `replicas`, at
+    /// `temperature`. Unlike the fixed pairs of [`Self::measure_overlap`], Q2 does
+    /// not change when replicas are relabeled. `weight` is the replica count that
+    /// [`Self::end_sweep`] adds per sweep.
+    pub fn measure_overlap_all_pairs(
+        &mut self,
+        replicas: &[&[i8]],
+        temperature: usize,
+        weight: f64,
+    ) {
+        let Some(offset) = self.overlap_offset else {
+            return;
+        };
+        let n = replicas.first().map_or(1, |r| r.len()) as f64;
+        let mut sum = 0.0;
+        let mut pairs = 0;
+        for (i, a) in replicas.iter().enumerate() {
+            for b in &replicas[i + 1..] {
+                let dot: i64 = a
+                    .iter()
+                    .zip(b.iter())
+                    .map(|(&x, &y)| i64::from(x * y))
+                    .sum();
+                sum += (dot as f64 / n).powi(2);
+                pairs += 1;
+            }
+        }
+        if pairs == 0 {
+            return;
+        }
+        let column = offset + 2 + self.planes.len();
+        let value = weight * sum / pairs as f64;
+        self.sums[temperature][column] += value;
+        if let Some(row) = self.block_sums.get_mut(temperature) {
+            row[column] += value;
         }
     }
 
@@ -962,6 +1003,37 @@ mod tests {
         {
             assert!((got - want).abs() < 1e-12, "{got} vs {want}");
         }
+    }
+
+    #[test]
+    fn overlap2_all_pairs_averages_every_replica_pair() {
+        let lattice = Lattice::new(vec![4, 5]);
+        let mut rng = Xoshiro256StarStar::seed_from_u64(8);
+        let replicas: Vec<Vec<i8>> = (0..3)
+            .map(|_| {
+                (0..lattice.n_spins)
+                    .map(|_| if rng.gen::<bool>() { 1 } else { -1 })
+                    .collect()
+            })
+            .collect();
+        let q2 = |a: &[i8], b: &[i8]| {
+            let dot: i64 = a.iter().zip(b).map(|(&x, &y)| i64::from(x * y)).sum();
+            (dot as f64 / lattice.n_spins as f64).powi(2)
+        };
+        let expected = (q2(&replicas[0], &replicas[1])
+            + q2(&replicas[0], &replicas[2])
+            + q2(&replicas[1], &replicas[2]))
+            / 3.0;
+        let views: Vec<&[i8]> = replicas.iter().map(Vec::as_slice).collect();
+        let mut c = PhysicsCollector::new(&lattice, 1, &PhysicsOptions::default(), 1)
+            .unwrap()
+            .with_overlap(&lattice);
+        c.measure_overlap_all_pairs(&views, 0, 3.0);
+        c.end_sweep(3);
+        let values = c.finish().values(&lattice.shape, &[1.0], 1);
+        assert!((values["overlap2_all_pairs"][0][0] - expected).abs() < 1e-12);
+        // The fixed-pair moments are untouched by the all-pairs measurement.
+        assert_eq!(values["overlap2"][0][0], 0.0);
     }
 
     #[test]

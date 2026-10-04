@@ -192,7 +192,9 @@ block_size=128, displacements=[[1, 0]])`, or Rust
 include physical energy, thermodynamics, magnetic moments, structure factors,
 uniform lengths and requested correlations; they omit XY helicity and winding.
 With `n_replicas >= 2`, Ising also records replica-overlap moments of the pairs
-`(2p, 2p + 1)` and the overlap structure factor at the smallest wavevector, giving
+`(2p, 2p + 1)`, `overlap2_all_pairs` (q² averaged over every replica pair, which
+replica relabeling cannot change) and the overlap structure factor at the smallest
+wavevector, giving
 the spin-glass Binder ratio and second-moment correlation length `sg_correlation_length`
 (and `/L`) per disorder realization.
 Ising Binder and susceptibility use one-component normalizations. Legacy output
