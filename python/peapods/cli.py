@@ -121,7 +121,7 @@ def add_simulation_args(parser):
     parser.add_argument(
         "--overlap-cluster-build-mode",
         default="houdayer",
-        help="Overlap move, e.g. houdayer, pairN, jorg, jorgN, cmr or rmc; "
+        help="Overlap move, e.g. houdayer, pairN, jorg, jorgN, cmr, rmc, permN or gpermN; "
         "join modes with + to alternate them (default: houdayer)",
     )
     parser.add_argument(
@@ -260,7 +260,7 @@ def _add_sweep_args(parser):
         nargs="+",
         default=None,
         help=(
-            "Overlap moves to sweep, e.g. houdayer, pairN, jorg, jorgN, cmr or rmc; "
+            "Overlap moves to sweep, e.g. houdayer, pairN, jorg, jorgN, cmr, rmc, permN or gpermN; "
             "join modes with + to alternate them (default: houdayer)"
         ),
     )

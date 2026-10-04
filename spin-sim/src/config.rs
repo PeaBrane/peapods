@@ -112,13 +112,27 @@ pub enum OverlapClusterBuildMode {
     Cmr,
     /// Swendsen-Wang replica Monte Carlo between adjacent temperature slots.
     Rmc,
+    /// Replica-permutation clusters for a group of `N` replicas at one temperature:
+    /// active sites are those where the group does not agree, and each connected
+    /// active component gets a uniformly random permutation of the group. `Perm(2)`
+    /// is Houdayer's move.
+    Perm(usize),
+    /// [`Self::Perm`] in the gauge of a uniformly random reference site: sites whose
+    /// replica pattern equals the reference's up to a global sign stay fixed, and the
+    /// other sites' gauged spins are permuted. `GaugedPerm(2)` is Houdayer's move on
+    /// the minority overlap sign of the reference.
+    GaugedPerm(usize),
 }
 
 impl OverlapClusterBuildMode {
     /// Replicas per temperature consumed by one move.
     pub fn group_size(&self) -> usize {
         match self {
-            Self::Houdayer(n) | Self::Pair(n) | Self::Jorg(n) => *n,
+            Self::Houdayer(n)
+            | Self::Pair(n)
+            | Self::Jorg(n)
+            | Self::Perm(n)
+            | Self::GaugedPerm(n) => *n,
             Self::Cmr => 2,
             Self::Rmc => 1,
         }
@@ -137,6 +151,19 @@ fn parse_group_size(s: &str, prefix: &str, label: &str) -> Result<usize, String>
     Ok(n)
 }
 
+/// Largest replica group for `permN` and `gpermN`.
+pub const MAX_PERM_GROUP: usize = 8;
+
+fn parse_perm_size(s: &str, prefix: &str, max: usize) -> Result<usize, String> {
+    let n: usize = s[prefix.len()..].parse().map_err(|_| {
+        format!("invalid group size in '{s}', expected '{prefix}N' with integer N >= 2")
+    })?;
+    if !(2..=max).contains(&n) {
+        return Err(format!("{prefix}N needs 2 <= N <= {max}, got {n}"));
+    }
+    Ok(n)
+}
+
 impl TryFrom<&str> for OverlapClusterBuildMode {
     type Error = String;
     fn try_from(s: &str) -> Result<Self, Self::Error> {
@@ -145,6 +172,10 @@ impl TryFrom<&str> for OverlapClusterBuildMode {
             "jorg" => Ok(Self::Jorg(2)),
             "cmr" | "cmr2" => Ok(Self::Cmr),
             "rmc" => Ok(Self::Rmc),
+            _ if s.starts_with("gperm") => {
+                parse_perm_size(s, "gperm", MAX_PERM_GROUP).map(Self::GaugedPerm)
+            }
+            _ if s.starts_with("perm") => parse_perm_size(s, "perm", MAX_PERM_GROUP).map(Self::Perm),
             _ if s.starts_with("pair") => parse_group_size(s, "pair", "pair").map(Self::Pair),
             _ if s.starts_with("jorg") => parse_group_size(s, "jorg", "Jörg").map(Self::Jorg),
             _ if s.starts_with("houd") => {
@@ -158,7 +189,7 @@ impl TryFrom<&str> for OverlapClusterBuildMode {
                 Ok(Self::Houdayer(n))
             }
             _ => Err(format!(
-                "unknown overlap_cluster_build_mode '{s}', expected 'houdayer', 'houdN', 'pairN', 'jorg', 'jorgN', 'cmr', or 'rmc'"
+                "unknown overlap_cluster_build_mode '{s}', expected 'houdayer', 'houdN', 'pairN', 'jorg', 'jorgN', 'cmr', 'rmc', 'permN' or 'gpermN'"
             )),
         }
     }
@@ -289,7 +320,10 @@ fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
             if h.modes.iter().any(|mode| {
                 matches!(
                     mode,
-                    OverlapClusterBuildMode::Pair(_) | OverlapClusterBuildMode::Rmc
+                    OverlapClusterBuildMode::Pair(_)
+                        | OverlapClusterBuildMode::Rmc
+                        | OverlapClusterBuildMode::Perm(_)
+                        | OverlapClusterBuildMode::GaugedPerm(_)
                 ) || matches!(mode, OverlapClusterBuildMode::Jorg(n) if *n > 2)
             }) {
                 return Err(ValidationError::new(
@@ -404,7 +438,7 @@ mod tests {
     fn parses_multi_pair_and_replica_monte_carlo_modes() {
         use OverlapClusterBuildMode::*;
         assert_eq!(
-            parse_overlap_modes("jorg+jorg2+jorg4+pair2+pair6+rmc+houd2").unwrap(),
+            parse_overlap_modes("jorg+jorg2+jorg4+pair2+pair6+rmc+houd2+perm3+gperm4").unwrap(),
             vec![
                 Jorg(2),
                 Jorg(2),
@@ -412,10 +446,14 @@ mod tests {
                 Pair(2),
                 Pair(6),
                 Rmc,
-                Houdayer(2)
+                Houdayer(2),
+                Perm(3),
+                GaugedPerm(4)
             ]
         );
-        for bad in ["pair", "pair3", "pair0", "jorg5", "jorgx"] {
+        for bad in [
+            "pair", "pair3", "pair0", "jorg5", "jorgx", "perm1", "perm9", "gperm1", "permx",
+        ] {
             assert!(
                 OverlapClusterBuildMode::try_from(bad).is_err(),
                 "{bad} accepted"

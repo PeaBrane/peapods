@@ -113,9 +113,10 @@ impl ClusterObservationAccums {
 
     fn enable_overlap(&mut self, mode: &OverlapClusterBuildMode, n_temps: usize, n_spins: usize) {
         let target = match mode {
-            OverlapClusterBuildMode::Houdayer(_) | OverlapClusterBuildMode::Pair(_) => {
-                &mut self.houdayer
-            }
+            OverlapClusterBuildMode::Houdayer(_)
+            | OverlapClusterBuildMode::Pair(_)
+            | OverlapClusterBuildMode::Perm(_)
+            | OverlapClusterBuildMode::GaugedPerm(_) => &mut self.houdayer,
             OverlapClusterBuildMode::Jorg(_) => &mut self.jorg,
             OverlapClusterBuildMode::Cmr => &mut self.cmr_blue,
             OverlapClusterBuildMode::Rmc => return,
@@ -125,9 +126,10 @@ impl ClusterObservationAccums {
 
     fn overlap_mut(&mut self, mode: &OverlapClusterBuildMode) -> &mut GraphObservationAccum {
         match mode {
-            OverlapClusterBuildMode::Houdayer(_) | OverlapClusterBuildMode::Pair(_) => {
-                self.houdayer.as_mut()
-            }
+            OverlapClusterBuildMode::Houdayer(_)
+            | OverlapClusterBuildMode::Pair(_)
+            | OverlapClusterBuildMode::Perm(_)
+            | OverlapClusterBuildMode::GaugedPerm(_) => self.houdayer.as_mut(),
             OverlapClusterBuildMode::Jorg(_) => self.jorg.as_mut(),
             OverlapClusterBuildMode::Cmr => self.cmr_blue.as_mut(),
             OverlapClusterBuildMode::Rmc => None,
