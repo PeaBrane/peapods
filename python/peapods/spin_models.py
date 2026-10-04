@@ -329,7 +329,9 @@ class Ising:
             collect_physics: If `True`, also return `result["physics"]`: physical
                 moments with per-disorder values under `"per_disorder"`. With
                 `n_replicas >= 2` it includes the replica pairs' `overlap2`,
-                `overlap4` and `overlap_structure_factor_min`, and from them
+                `overlap4` and `overlap_structure_factor_min`, Q2 averaged over
+                every replica pair as `overlap2_all_pairs` (unchanged by replica
+                relabeling; with `block_size=1`, a per-sweep series), and from them
                 `sg_binder`, `sg_structure_factor_0`, `sg_correlation_length` and
                 `sg_correlation_length_ratio` (second-moment ξ_SG and ξ_SG/L per
                 axis). Off by default to keep the default measurement cost.
