@@ -12,6 +12,8 @@ to alternate them from one overlap call to the next, e.g. `"houd2+rmc"`.
 | `jorg`, `jorg2` | 2 per group | Jörg stochastic bonds | yes |
 | `jorgN` | N per group | Jörg bonds for N/2 replica pairs swapped jointly | yes |
 | `cmr` | 2 per group | Chayes–Machta–Redner blue and grey clusters | yes |
+| `permN`, 2 ≤ N ≤ 8 | N per group | random replica permutation on clusters where the group disagrees | yes |
+| `gpermN`, 2 ≤ N ≤ 8 | N per group | `permN` in the gauge of a random reference site | yes |
 | `rmc` | pairs adjacent temperatures within each replica row, ≥ 2 temperatures | Swendsen–Wang replica Monte Carlo | yes |
 
 Same-temperature modes shuffle the replicas of every temperature into groups and update
@@ -69,8 +71,34 @@ accepted unconditionally.
 
 An exact one-step test on a 2×2 torus misses the summed energy by more than 50 standard
 errors. In 3D runs, `houd4` shifts the energy and the Binder ratio far outside the errors
-of every valid move. The mode is kept as an experiment; use `pairN` for a valid
-multi-replica Houdayer move.
+of every valid move. The mode is kept as an experiment; use `pairN` or `permN` for a
+valid multi-replica move.
+
+### `permN`: replica permutations
+
+Clusters are the connected components of the sites where the N replicas are not all
+equal. Every neighbor of a component has all replicas equal, so any replica permutation
+fixes it, and permuting the replicas on a component conserves the summed energy.
+`"sw"` draws a uniform permutation for every cluster; `"wolff"` applies a uniform
+non-identity permutation to the seed's cluster. Either way the move is a rejection-free
+heat bath over the permutations of each cluster. `perm2` is the Houdayer move.
+
+A permutation of a component factors into pair swaps on nested disagreement clusters, so
+`permN` reaches no states that pair moves cannot.
+
+### `gpermN`: gauged permutations
+
+Pick a uniformly random reference site with replica pattern P = (s^1, …, s^N) and work
+with the gauged spins t^r = P_r s^r. Sites whose pattern is ±P are fixed; clusters are
+the components of the other sites, and the move permutes the gauged spins. The probability
+of choosing a given gauge, the fraction of sites with pattern ±P, is unchanged by the
+move, so detailed balance holds.
+
+For N = 2, the clusters are the sites whose overlap differs from the reference's. That
+is the minority overlap sign with probability equal to the majority fraction, an exact
+randomized form of the minority-sign rule of Zhu, Ochoa & Katzgraber (2015). In 3D at
+L = 8 and T = 0.5–0.8, the largest `gperm2` cluster covers 11–12 % of the lattice, against
+48 % for `houd2`.
 
 ## Replica Monte Carlo across temperatures (`rmc`)
 
@@ -95,56 +123,47 @@ snapshots and is rejected with `overlap_cluster_action="observe"`.
 
 ## Which move to use
 
-The benchmark below uses ±J couplings, 4 replicas, and Metropolis plus full-ladder
-parallel tempering every sweep, with 16 temperatures.
+The measurements below use ±J couplings, 4 replicas, Metropolis plus full-ladder parallel
+tempering every sweep, and 32 disorder samples. `validation/overlap_moves.py` reproduces
+them. Cost is the CPU time per sweep relative to PT alone.
 
-It predates a fix of 2026-10-03: the full-ladder schedule used to flip the order of its
-even and odd passes every event, so consecutive passes could undo each other, and
-walkers crossed the ladder 10–40× more slowly than they now do (none at all when every
-swap is accepted). The "PT alone" times below are therefore upper bounds.
+**Equilibrium.** τ is the integrated autocorrelation time, in sweeps, of the
+replica-symmetric Q2 (the mean of q_ab² over all replica pairs), from batch means of
+1000 sweeps. The table gives cost × τ relative to PT alone; below 1 the move pays.
 
-A first re-measurement after the fix, for 2D L=16 with 16 temperatures from 0.3 to 1.5
-and 4 replicas (12 disorder samples, τ of Q2 from batch means), gave τ ≈ 8 sweeps for
-PT alone at T=0.30 instead of 236. `rmc` with `"wolff"` shortened τ by about 1.5× at 4.7×
-the cost per sweep (every 4th sweep: 1.9× the cost), so PT alone was the cheaper choice
-there. The 3D rows have not been re-measured.
+| System, temperature | PT alone τ | `houd2` | `gperm2` | `rmc` every 4th sweep | `perm4` |
+|---|---|---|---|---|---|
+| 2D L=16, 16 temperatures, T=0.30 | 14 | 1.5 | 1.5 | 1.4 | 1.6 |
+| 3D L=8, 16 temperatures, T=0.50 | 25 | 2.3 | 1.6 | 2.1 | 1.9 |
+| 3D L=8, 16 temperatures, T=0.80 | 15 | 2.4 | 2.4 | 2.1 | 2.5 |
 
-- **Observable.** τ is the integrated autocorrelation time of the replica-symmetric
-  Q2 = mean over all replica pairs of q_ab², in sweeps (median over 16–32 disorder
-  samples).
-- **Cost.** Cost is τ × ms/sweep relative to PT alone. The T=0.50 row reuses the
-  timings of the 0.8–2.0 ladder.
+**Equilibration from a random start.** The speedup is the CPU-time ratio at which a move
+reaches the energy and Q2 that PT alone reaches after 65 536 sweeps.
 
-| System, temperature | PT alone τ | Houdayer family (`houd2`, `jorg`, `pair4`, `jorg4`, `cmr`) τ / cost | `rmc` (`"wolff"`) τ / cost |
-|---|---|---|---|
-| 2D L=16, T=0.30 | 236 | 83–151 / 0.9–2.3 | 1.0 / 0.015 |
-| 2D L=16, T=0.40 | 30 | 11–16 / 0.8–1.6 | 1.0 / 0.12 |
-| 3D L=8, T=0.50 | 9.6 | 5.3–8.7 / 1.5–3.7 | 2.2 / 1.2 |
-| 3D L=8, T=0.80 | 7.1 | 5.5–7.2 / 2.0–4.1 | 3.2 / 2.3 (every 4th sweep: 3.8 / 1.1) |
-| 3D L=8, T=0.90 | 2.1 | 1.7–2.2 / 1.9–3.9 | 1.6 / 3.7 (every 4th sweep: 1.4 / 1.3) |
+| System, temperature | `houd2` or `gperm2`, every 4th sweep | `rmc`, every 4th sweep |
+|---|---|---|
+| 2D L=32, 24 temperatures, T=0.20 | ≥ 6× for Q2, about 25× for the energy | similar |
+| 3D L=12, 24 temperatures, T=0.40 | about 1× | about 1× |
+| 3D L=16, 32 temperatures, T=0.40 | about 1.5× | about 1.1× |
+| 3D L=16, 32 temperatures, T=0.60 | about 1× | about 1× |
 
-- **`rmc` with the `"wolff"` cluster mode** is the only move that clearly pays for itself.
-  In 2D at low temperature it decorrelates Q2 in about one sweep, where PT alone needs
-  hundreds. Applying it every few sweeps (`overlap_cluster_update_interval=4`) keeps most
-  of the gain at a fraction of the cost. In 3D at L ≤ 8 it breaks roughly even with PT
-  alone.
-- **The same-temperature moves** (`houd2`, `jorg`, `cmr`) cost 2–5× a PT sweep. They
-  shorten τ by at most about 3× in 2D and by less in 3D, so per unit of CPU they are at
-  best on par with PT alone at these sizes. Houdayer (2001) reports much larger gains
-  in 2D for L = 100 at T = 0.1 with 32 replicas per temperature, a regime this
-  benchmark does not cover.
-- **Restrict same-temperature moves to low temperatures** with
-  `overlap_cluster_max_temperature` (Zhu, Ochoa & Katzgraber, PRL 115, 077201 (2015)):
-  their clusters percolate, and the moves stop helping, well below T_c in 3D, so
-  applying them only there removes most of their cost. For `rmc` the cutoff selects
-  edges whose two temperatures both qualify.
-- **`pairN` and `jorgN`** are valid but no better than `houd2` and `jorg`: their clusters
-  are unions over several pairs and percolate even more readily.
-- **Measure τ on replica-symmetric observables.** An autocorrelation time measured on
-  fixed replica pairs overstates the gain of same-temperature moves, because relabeling
-  replicas decorrelates a fixed pair without moving the ensemble. In the 2D run above at
-  T=0.30, a fixed-pair estimate averaged 39 sweeps for `houd2` against 240 for Q2, while
-  PT alone gave 293 against 555. The built-in `overlap2_tau` therefore uses Q2.
+- **At small sizes, PT alone is hard to beat.** No overlap move pays in equilibrium at
+  2D L=16 or 3D L=8.
+- **Pair moves pay at low temperature on larger lattices.** Apply `gperm2` or `houd2`
+  every few sweeps (`overlap_cluster_update_interval=4`) and only below T_c
+  (`overlap_cluster_max_temperature`; Zhu, Ochoa & Katzgraber, PRL 115, 077201 (2015)).
+  The gain is large in 2D and grows with L in 3D. For `rmc` the cutoff selects edges whose
+  two temperatures both qualify.
+- **Prefer `gperm2` to `houd2`.** It is never worse, and at 3D L=8, T=0.50 it halves τ.
+- **Moves on more than two replicas do not pay.** `pairN`, `jorgN`, `permN` and `gpermN`
+  with N > 2 are valid, but their clusters percolate more readily: at 3D L=8 the largest
+  `perm4` cluster covers 88 % of the lattice at every temperature.
+- **Measure τ on replica-symmetric observables.** A fixed replica pair overstates the gain
+  of same-temperature moves, because relabeling replicas decorrelates the pair without
+  moving the ensemble. The built-in `overlap2_tau` therefore uses Q2. Its automatic
+  window can still undercount under full-ladder PT, where the autocorrelation has a small
+  first lag and a long tail. For benchmarks, record `overlap2_all_pairs` every sweep
+  (`block_size=1`) and use batch means.
 
 ## Statistics
 
@@ -163,7 +182,8 @@ are compared with the product law. The test catches:
 - the naive single-pair `jorgN` rule;
 - wrong RMC couplings;
 - deciding all RMC domains simultaneously;
-- the balanced-site `houd4` move.
+- the balanced-site `houd4` move;
+- dropping the gauge when `gpermN` writes spins back.
 
 ## References
 
@@ -172,4 +192,5 @@ are compared with the product law. The test catches:
 - F. Niedermayer, Phys. Rev. Lett. 61, 2026 (1988).
 - D. Kandel and E. Domany, Phys. Rev. B 43, 8539 (1991).
 - R. H. Swendsen and J.-S. Wang, Phys. Rev. Lett. 57, 2607 (1986).
+- Z. Zhu, A. J. Ochoa and H. G. Katzgraber, Phys. Rev. Lett. 115, 077201 (2015).
 - J.-S. Wang and R. H. Swendsen, Prog. Theor. Phys. Suppl. 157, 317 (2005).
