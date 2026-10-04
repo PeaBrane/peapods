@@ -1,7 +1,7 @@
 # Validation
 
 Checks of peapods against published results: bounded scripts that run in CI and
-longer reproductions run offline.
+longer reproductions run offline, with their summaries and figures committed.
 
 | Result | Reference | Where |
 |---|---|---|
