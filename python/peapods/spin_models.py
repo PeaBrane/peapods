@@ -286,9 +286,16 @@ class Ising:
                 `"pair2"` equals `"houdayer"`), `"jorg"` (stochastic
                 FK bonds, group_size=2), `"jorgN"` (Jörg bonds for N/2 pairs
                 swapped jointly; `"jorg2"` equals `"jorg"`), `"cmr"`
-                (two-phase grey+blue, group_size=2), or `"rmc"`
+                (two-phase grey+blue, group_size=2), `"rmc"`
                 (Swendsen-Wang replica Monte Carlo between adjacent
-                temperatures; records no cluster statistics). Multiple modes
+                temperatures; records no cluster statistics), `"permN"`
+                (2 <= N <= 8: a uniformly random permutation of a group of N
+                replicas on each cluster of sites where they do not all agree;
+                `"perm2"` is Houdayer's move), or its gauged form `"gpermN"`,
+                which keeps fixed the sites whose replica pattern matches a random
+                reference site's up to sign (`"gperm2"` is Houdayer's move on the
+                overlap sign opposite the reference's, usually the minority sign;
+                the recommended low-temperature move). Multiple modes
                 can be alternated with `+`, e.g. `"cmr+houdayer"` round-robins
                 each overlap update call. See the
                 [overlap moves guide](overlap_moves.md) for derivations and

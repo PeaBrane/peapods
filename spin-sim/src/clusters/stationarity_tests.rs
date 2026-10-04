@@ -368,6 +368,29 @@ fn replica_monte_carlo_preserves_boltzmann() {
     }
 }
 
+#[test]
+fn replica_permutation_moves_preserve_boltzmann() {
+    use OverlapClusterBuildMode::{GaugedPerm, Perm};
+    // perm2 is Houdayer's move; perm3 and perm5 leave a replica out of the group.
+    same_temperature_moves(&[Perm(2), GaugedPerm(2)], &[2, 2], 2);
+    same_temperature_moves(
+        &[Perm(3), Perm(4), GaugedPerm(3), GaugedPerm(4)],
+        &[2, 2],
+        4,
+    );
+    for mode in [Perm(5), GaugedPerm(5)] {
+        for cluster_mode in [ClusterMode::Wolff, ClusterMode::Sw] {
+            assert_stationary(
+                &[3, 2],
+                &[TEMP],
+                5,
+                &identity(5),
+                Move::Overlap(mode, cluster_mode, false),
+            );
+        }
+    }
+}
+
 /// Positive control for the harness: the experimental balanced-site houd4 move negates
 /// all four replicas at a site with two up and two down spins, which does not conserve
 /// the summed energy, so it cannot preserve the product law.

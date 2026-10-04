@@ -2,12 +2,25 @@ use super::utils::{
     dfs_cluster, find_seed, top4_sizes, uf_bonds, uf_bonds_extend, uf_bonds_with,
     uf_flatten_counts, uf_histogram, BondMetrics, BondSampler, GraphObservationSlot, PooledUf,
 };
-use crate::config::{ClusterAction, ClusterMode, OverlapClusterBuildMode};
+use crate::config::{ClusterAction, ClusterMode, OverlapClusterBuildMode, MAX_PERM_GROUP};
 use crate::geometry::Lattice;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 use rayon::prelude::*;
+
+/// Which sites of a replica group the deterministic overlap moves act on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActiveRule {
+    /// `houdN`: sites where the group's spins sum to zero (not detailed-balanced for N > 2).
+    Balanced,
+    /// `pairN`: sites where any pair `(g0 g1)(g2 g3)...` disagrees.
+    Pairwise,
+    /// `permN`: sites where the group does not agree.
+    Permutation,
+    /// `gpermN`: sites whose pattern differs from a random reference site's up to sign.
+    GaugedPermutation,
+}
 
 struct GroupTasks {
     systems: Vec<usize>,
@@ -90,7 +103,9 @@ pub fn overlap_update(
 ) {
     match mode {
         OverlapClusterBuildMode::Houdayer(group_size)
-        | OverlapClusterBuildMode::Pair(group_size) => houdayer_step(
+        | OverlapClusterBuildMode::Pair(group_size)
+        | OverlapClusterBuildMode::Perm(group_size)
+        | OverlapClusterBuildMode::GaugedPerm(group_size) => houdayer_step(
             lattice,
             spins,
             system_ids,
@@ -99,7 +114,12 @@ pub fn overlap_update(
             active_temps,
             rngs,
             *group_size,
-            matches!(mode, OverlapClusterBuildMode::Pair(_)),
+            match mode {
+                OverlapClusterBuildMode::Pair(_) => ActiveRule::Pairwise,
+                OverlapClusterBuildMode::Perm(_) => ActiveRule::Permutation,
+                OverlapClusterBuildMode::GaugedPerm(_) => ActiveRule::GaugedPermutation,
+                _ => ActiveRule::Balanced,
+            },
             cluster_mode,
             action,
             csd_out,
@@ -190,6 +210,44 @@ unsafe fn flip_group_site(
     }
 }
 
+/// Fills `out` with a uniformly random permutation of `0..out.len()`.
+fn random_permutation(rng: &mut Xoshiro256StarStar, out: &mut [u8]) {
+    for (k, v) in out.iter_mut().enumerate() {
+        *v = k as u8;
+    }
+    out.shuffle(rng);
+}
+
+/// Fills `out` with a uniformly random permutation other than the identity.
+fn random_non_identity(rng: &mut Xoshiro256StarStar, out: &mut [u8]) {
+    loop {
+        random_permutation(rng, out);
+        if out.iter().enumerate().any(|(k, &v)| usize::from(v) != k) {
+            return;
+        }
+    }
+}
+
+/// Permutes the gauged spins `gauge[k] s^k` of the group at site `i`: replica `k`
+/// receives `gauge[k] gauge[perm[k]] s^perm[k]`. An all-ones gauge moves raw spins.
+#[inline]
+unsafe fn permute_group_site(
+    sp_ptr: *mut i8,
+    systems: &[usize],
+    n_spins: usize,
+    i: usize,
+    perm: &[u8],
+    gauge: &[i8],
+) {
+    let mut values = [0i8; MAX_PERM_GROUP];
+    for ((value, &system), &g) in values.iter_mut().zip(systems).zip(gauge) {
+        *value = g * *sp_ptr.add(system * n_spins + i);
+    }
+    for ((&system, &source), &g) in systems.iter().zip(perm).zip(gauge) {
+        *sp_ptr.add(system * n_spins + i) = g * values[usize::from(source)];
+    }
+}
+
 /// Houdayer-N isoenergetic overlap cluster update.
 ///
 /// For each group of N replicas at a given temperature:
@@ -202,6 +260,19 @@ unsafe fn flip_group_site(
 /// active sites are those where any pair disagrees, and a cluster flip swaps every
 /// pair on it. Every neighbor of a connected active component is fixed by `g`, so the
 /// swap conserves the summed energy exactly. For N = 2 both rules coincide.
+///
+/// With [`ActiveRule::Permutation`] (the `permN` mode) active sites are those where the
+/// group does not agree. Every neighbor of an active component agrees, so every
+/// replica permutation fixes it, and permuting the group's spins on the component
+/// conserves the summed energy. The components are the same afterwards, so drawing
+/// the permutation uniformly (SW: one per component, Wolff: one non-identity
+/// permutation for the seed's component) is a heat bath over each component's orbit.
+///
+/// [`ActiveRule::GaugedPermutation`] (`gpermN`) first reads the pattern `P` of a
+/// uniformly random reference site and permutes the gauged spins `P_k s^k` instead.
+/// Sites with pattern `±P` are fixed by every gauged permutation and no other site
+/// acquires that pattern, so their count, which is the probability of choosing this
+/// gauge, is the same before and after the move.
 #[allow(clippy::too_many_arguments)]
 fn houdayer_step(
     lattice: &Lattice,
@@ -212,7 +283,7 @@ fn houdayer_step(
     active_temps: &[bool],
     rngs: &mut [Xoshiro256StarStar],
     group_size: usize,
-    pairwise: bool,
+    rule: ActiveRule,
     cluster_mode: ClusterMode,
     action: ClusterAction,
     mut csd_out: Option<&mut [Vec<u64>]>,
@@ -225,6 +296,11 @@ fn houdayer_step(
 ) {
     let n_spins = lattice.n_spins;
     let n_pairs = n_replicas / 2;
+    let pairwise = rule == ActiveRule::Pairwise;
+    let permutation = matches!(
+        rule,
+        ActiveRule::Permutation | ActiveRule::GaugedPermutation
+    );
     let wolff = cluster_mode == ClusterMode::Wolff;
 
     let tasks = build_tasks(
@@ -293,9 +369,24 @@ fn houdayer_step(
             sid_slot.push([systems[0], systems[1]]);
         }
 
+        let mut gauge_store = [1i8; MAX_PERM_GROUP];
+        if rule == ActiveRule::GaugedPermutation {
+            let reference = rng.gen_range(0..n_spins);
+            for (g, &system) in gauge_store.iter_mut().zip(systems) {
+                *g = *sp_ptr.add(system * n_spins + reference);
+            }
+        }
+        let gauge = &gauge_store[..systems.len()];
         let is_active = |i: usize| -> bool {
             if pairwise {
                 return any_pair_differs(sp_ptr, systems, n_spins, i);
+            }
+            if permutation {
+                let first = gauge[0] * *sp_ptr.add(systems[0] * n_spins + i);
+                return systems[1..]
+                    .iter()
+                    .zip(&gauge[1..])
+                    .any(|(&system, &g)| g * *sp_ptr.add(system * n_spins + i) != first);
             }
             let mut sum: i32 = 0;
             for &system in systems {
@@ -350,11 +441,31 @@ fn houdayer_step(
                 let Some(seed) = find_seed(n_spins, rng, &is_active) else {
                     return;
                 };
+                let mut perm = [0u8; MAX_PERM_GROUP];
+                if permutation {
+                    random_non_identity(rng, &mut perm[..group_size]);
+                }
                 let seed_root = uf.parent[seed];
                 for (i, &p) in uf.parent.iter().enumerate().take(n_spins) {
-                    if p == seed_root {
+                    if p != seed_root {
+                        continue;
+                    }
+                    if permutation {
+                        permute_group_site(sp_ptr, systems, n_spins, i, &perm[..group_size], gauge);
+                    } else {
                         flip_group_site(sp_ptr, systems, n_spins, i, pairwise);
                     }
+                }
+            } else if permutation {
+                // One uniform permutation per component, singletons included.
+                let mut perms = vec![u8::MAX; n_spins * group_size];
+                for i in (0..n_spins).filter(|&i| active[i]) {
+                    let root = uf.parent[i] as usize;
+                    let perm = &mut perms[root * group_size..(root + 1) * group_size];
+                    if perm[0] == u8::MAX {
+                        random_permutation(rng, perm);
+                    }
+                    permute_group_site(sp_ptr, systems, n_spins, i, perm, gauge);
                 }
             } else {
                 let storage = &mut *uf;
@@ -384,8 +495,17 @@ fn houdayer_step(
                 &mut stack,
                 |site, nb, _d, _fwd| is_active(site) && is_active(nb),
             );
+            let mut perm = [0u8; MAX_PERM_GROUP];
+            if permutation {
+                random_non_identity(rng, &mut perm[..group_size]);
+            }
             for (i, &in_c) in in_cluster.iter().enumerate() {
-                if in_c {
+                if !in_c {
+                    continue;
+                }
+                if permutation {
+                    permute_group_site(sp_ptr, systems, n_spins, i, &perm[..group_size], gauge);
+                } else {
                     flip_group_site(sp_ptr, systems, n_spins, i, pairwise);
                 }
             }
