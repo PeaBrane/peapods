@@ -5,6 +5,15 @@
 A Python library for simulating Ising and XY spin systems with modern Monte Carlo methods.
 The core simulation loop is written in Rust (via PyO3) for performance, with a thin Python wrapper for ease of use.
 
+## Reproduces published results
+
+![Spin-glass correlation length xi/L against temperature for 3D ±J lattices L = 4 to 12, and the crossing temperatures of L and 2L extrapolated to T_c](assets/spin_glass_3d_tc_dark.png)
+
+The ξ/L crossings of the 3D ±J spin glass (L = 4 to 12) extrapolate to
+T_c = 1.085(42), against the Janus collaboration's 1.1019(29). The 2D XY model at
+β = 1.1199 matches Hasenbusch (2005) within 1.9 standard errors ([XY guide](xy.md)).
+Scripts are in the repository's `validation/` directory.
+
 ## Features
 
 - Ising ferromagnets and spin glasses on periodic Bravais lattices (hypercubic, triangular, or any custom neighbor offsets)

@@ -19,15 +19,23 @@ Currently focused on spin glass simulation, where the combination of parallel te
 
 ## Reproduces published results
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/PeaBrane/peapods/main/docs/assets/spin_glass_3d_tc_dark.png">
+  <img src="https://raw.githubusercontent.com/PeaBrane/peapods/main/docs/assets/spin_glass_3d_tc.png" alt="Spin-glass correlation length xi/L against temperature for 3D ±J lattices L = 4 to 12, and the crossing temperatures of L and 2L extrapolated to T_c = 1.085(42), next to the Janus value 1.1019(29)">
+</picture>
+
+- **3D ±J spin glass.** The spin-glass correlation lengths ξ/L of L = 4 to 12
+  (3840 disorder samples each) cross at T = 1.204(17), 1.178(19) and 1.146(18) for
+  (L, 2L) = (4, 8), (5, 10), (6, 12). With the Janus correction exponent the crossings
+  extrapolate to T_c = 1.085(42), against Janus's 1.1019(29) (Baity-Jesi et al. 2013);
+  ξ/L at the crossings rises from 0.56 toward their 0.652 as L grows
+  ([`validation/spin_glass_3d/`](validation/spin_glass_3d/), about 5 hours on 96 CPU cores).
 - **2D XY at the BKT point.** At β = 1.1199 the helicity modulus, ξ/L and χ for
   L = 16 and 32 agree with Hasenbusch (2005), Table 1, within 1.9 combined standard
   errors ([`validation/xy_finite_size.py`](validation/xy_finite_size.py)).
 - **Ising ferromagnets.** Binder cumulants of square and triangular lattices (exact
   T_c) and simple-cubic, BCC and FCC lattices cross at the known T_c on every CI run
   ([`tests/binder_crossings.py`](tests/binder_crossings.py)).
-- **3D ±J spin glass.** [`validation/spin_glass_3d/`](validation/spin_glass_3d/)
-  measures spin-glass correlation-length crossings for comparison with the Janus
-  collaboration's T_c = 1.1019(29).
 
 Scripts and references for each result are listed in [`validation/`](validation/).
 
