@@ -1,0 +1,38 @@
+# Overlap cluster mode comparison on 3D EA spin glass
+# Run: peapods sweep --config sweep.toml
+
+[lattice]
+sizes = [[10, 10, 10]]
+couplings = ["gaussian"]
+
+[temperatures]
+min = 0.42
+max = 1.8
+count = 26
+scale = "log"
+
+[replicas]
+n_replicas = 6
+n_disorder = 112
+
+[sampling]
+n_sweeps = 400000
+sweep_mode = "metropolis"
+warmup_ratio = 0.25
+sequential = true
+
+[parallel_tempering]
+interval = 1
+
+[overlap_cluster]
+interval = 1
+build_modes = ["houdayer", "cmr", "cmr+houdayer", "cmr+houd4", "cmr+houd6"]
+cluster_mode = "wolff"
+
+[diagnostics]
+collect_cluster_stats = true
+equilibration_diagnostic = true
+
+[output]
+save_data = true
+dir = "."
