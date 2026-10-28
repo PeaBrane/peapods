@@ -152,8 +152,9 @@ Pre-built wheels are available for Linux (x86_64, aarch64), macOS (Intel, Apple 
 [`skills/`](skills/) holds [Agent Skills](https://agentskills.io) that index peapods for
 coding agents: [`simulate`](skills/simulate/SKILL.md) (models, lattices, moves, outputs),
 [`analyze`](skills/analyze/SKILL.md) (equilibration, errors, critical points),
-[`benchmark`](skills/benchmark/SKILL.md) and [`develop`](skills/develop/SKILL.md). In
-Claude Code, install them as a plugin:
+[`benchmark`](skills/benchmark/SKILL.md), [`develop`](skills/develop/SKILL.md), and
+[`restore-private-files`](skills/restore-private-files/SKILL.md) (optional private files).
+In Claude Code, install them as a plugin:
 
 <!--pytest-codeblocks:skip-->
 ```text
@@ -163,37 +164,22 @@ Claude Code, install them as a plugin:
 
 Other agents can load the `SKILL.md` files directly.
 
-## Private research notes
+## Private project files
 
 PeaBrane and collaborators with access to `PeaBrane/peapods-research` can restore
-the private notes, result ledger, manuscripts, reference papers, and figures into
-this checkout. Access is checked through GitHub; the public package works without
-these files. Requires Git and an authenticated GitHub CLI (`gh`), plus the local
-Python environment from the installation steps above.
+the private notes, ledger, manuscripts, references, and figures into this checkout.
+The [restore-private-files skill](skills/restore-private-files/SKILL.md) owns the
+instructions and transfer helper. With Git, an authenticated GitHub CLI (`gh`),
+and the local Python environment available, run from the checkout root:
 
 <!--pytest-codeblocks:skip-->
 ```bash
-.venv/bin/python tools/research.py restore --dry-run
-.venv/bin/python tools/research.py restore
-.venv/bin/python notes/ledger/check.py
+.venv/bin/python skills/restore-private-files/scripts/private_files.py restore
 ```
 
-The helper clones the private repository into temporary storage, copies its
-`notes/`, `refs/`, and untracked `paper/` files into the same relative paths here,
-then removes the temporary clone. It checks all paths first and refuses to
-overwrite differing local files or public tracked files. Identical files are left
-alone; existing local datasets and witnesses are retained.
-
-The snapshot includes research source, PDFs, figures, and small text evidence.
-Bulk data, witnesses, dumps, archives, environments, and compiled binaries are
-omitted. Missing computational artifacts are informational `UNAVAILABLE` entries
-in the ledger checker, including with `--strict`; recorded result status remains
-unchanged. A new verification that requires an omitted artifact is unavailable
-locally until that artifact is supplied.
-
-Agents: restore only when requested or needed for an authorized research task, and
-only with existing GitHub access. Read `notes/AGENTS.md` after restoration. Do not
-fetch or regenerate omitted computational artifacts unless requested.
+The helper preserves existing local work and removes its temporary clone. Read
+the skill for conflict handling, optional previews, and snapshot exports. After
+restoring, `notes/AGENTS.md` describes the notes and ledger workflow.
 
 ## Building from source
 
