@@ -1,4 +1,4 @@
-"""Snapshot private research or restore it without overwriting local work."""
+"""Snapshot or restore private project files without overwriting local work."""
 
 import argparse
 import filecmp
@@ -183,16 +183,12 @@ def snapshot(
     (destination / "snapshot.json").write_text(json.dumps(metadata, indent=2) + "\n")
     (destination / ".gitignore").write_text(".DS_Store\n.venv/\n__pycache__/\n")
     (destination / "README.md").write_text(
-        "# Peapods private research\n\n"
+        "# Peapods private files\n\n"
         "Lightweight notes, papers, references, ledger, source, figures, and small evidence files.\n"
         "Bulk datasets, witnesses, dumps, archives, environments, and binaries are omitted.\n"
         "Omitted artifacts remain on the source Mac; no retrieval manifest is required.\n\n"
-        "From a peapods checkout, restore with `.venv/bin/python tools/research.py restore`.\n"
-        "Existing files must match or restoration stops before copying. The temporary clone is removed.\n"
-        "The ledger reports absent computational artifacts as informational `UNAVAILABLE`; recorded\n"
-        "mathematical status and earlier verification history are preserved.\n\n"
-        "To prepare a new snapshot, run `.venv/bin/python tools/research.py snapshot <empty-directory>`\n"
-        "from the source checkout. Review it before updating this private repository.\n"
+        "Restore and snapshot instructions live in the public "
+        "[restore-private-files skill](https://github.com/PeaBrane/peapods/tree/main/skills/restore-private-files).\n"
     )
     return len(selected), total
 
@@ -257,11 +253,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     export = commands.add_parser(
-        "snapshot", help="copy lightweight research to an empty directory"
+        "snapshot",
+        help="copy a lightweight private-file snapshot to an empty directory",
     )
     export.add_argument("destination", type=Path)
     import_command = commands.add_parser(
-        "restore", help="restore research from the private GitHub repo"
+        "restore", help="restore private files from the companion GitHub repo"
     )
     import_command.add_argument(
         "--dry-run",
@@ -270,14 +267,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
-        root = Path(
-            run(
-                "git",
-                "rev-parse",
-                "--show-toplevel",
-                cwd=Path(__file__).resolve().parent.parent,
-            )
-        )
+        root = Path(run("git", "rev-parse", "--show-toplevel"))
         tracked = tracked_paths(root)
         if args.command == "snapshot":
             commit = run("git", "rev-parse", "HEAD", cwd=root)

@@ -1,13 +1,21 @@
-"""Protect local work while transferring lightweight research snapshots."""
+"""Protect local work while transferring private project files."""
 
 import json
 import shutil
+import subprocess
 import sys
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import pytest
 
-from tools import research
+SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "skills/restore-private-files/scripts/private_files.py"
+)
+SPEC = spec_from_file_location("private_files", SCRIPT)
+private_files = module_from_spec(SPEC)
+SPEC.loader.exec_module(private_files)
 
 
 def write(root, name, content="source\n"):
@@ -51,11 +59,11 @@ def test_snapshot_preserves_core_and_small_evidence_but_omits_bulk(tmp_path):
         "paper/public.md",
     ]:
         write(root, name)
-    write(root, "notes/large.json", "x" * (research.SMALL_FILE_LIMIT + 1))
+    write(root, "notes/large.json", "x" * (private_files.SMALL_FILE_LIMIT + 1))
     binary = root / "notes/verify"
     binary.write_bytes(b"ELF\0binary")
     destination = tmp_path / "snapshot"
-    count, _ = research.snapshot(
+    count, _ = private_files.snapshot(
         root, destination, {Path("paper/public.md")}, "test-commit"
     )
     assert count == len(keep)
@@ -73,8 +81,31 @@ def test_snapshot_refuses_nonempty_destination(tmp_path):
     destination = tmp_path / "snapshot"
     write(destination, "precious.txt", "keep")
     with pytest.raises(ValueError, match="must be empty"):
-        research.snapshot(root, destination, set(), "test")
+        private_files.snapshot(root, destination, set(), "test")
     assert (destination / "precious.txt").read_text() == "keep"
+
+
+def test_cli_snapshot_uses_callers_checkout_when_skill_is_installed_elsewhere(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "project"
+    write(root, "notes/proof.md", "Selected checkout's proof\n")
+    subprocess.run(
+        ["git", "init", "--quiet", str(root)], check=True, capture_output=True
+    )
+    destination = tmp_path / "snapshot"
+    git_run = private_files.run
+
+    def run(*command, cwd=None):
+        if command == ("git", "rev-parse", "HEAD"):
+            return "test-commit"
+        return git_run(*command, cwd=cwd)
+
+    monkeypatch.chdir(root / "notes")
+    monkeypatch.setattr(private_files, "run", run)
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "snapshot", str(destination)])
+    assert private_files.main() == 0
+    assert (destination / "notes/proof.md").read_text() == "Selected checkout's proof\n"
 
 
 def test_restore_is_idempotent_and_leaves_existing_artifacts(tmp_path):
@@ -83,8 +114,8 @@ def test_restore_is_idempotent_and_leaves_existing_artifacts(tmp_path):
     write(source, "refs/paper.pdf")
     root = tmp_path / "project"
     write(root, "notes/data/run.npz", "local data")
-    assert research.restore(root, source, set()) == (2, 0)
-    assert research.restore(root, source, set()) == (0, 2)
+    assert private_files.restore(root, source, set()) == (2, 0)
+    assert private_files.restore(root, source, set()) == (0, 2)
     assert (root / "notes/data/run.npz").read_text() == "local data"
 
 
@@ -95,7 +126,7 @@ def test_restore_preflights_all_conflicts_before_copying(tmp_path):
     root = tmp_path / "project"
     write(root, "notes/z-conflict.md", "local")
     with pytest.raises(ValueError, match="nothing copied"):
-        research.restore(root, source, set())
+        private_files.restore(root, source, set())
     assert not (root / "notes/a-new.md").exists()
     assert (root / "notes/z-conflict.md").read_text() == "local"
 
@@ -105,7 +136,7 @@ def test_restore_dry_run_does_not_create_research_files(tmp_path):
     write(source, "notes/proof.md")
     root = tmp_path / "project"
     root.mkdir()
-    assert research.restore(root, source, set(), dry_run=True) == (1, 0)
+    assert private_files.restore(root, source, set(), dry_run=True) == (1, 0)
     assert not (root / "notes").exists()
 
 
@@ -114,7 +145,7 @@ def test_restore_does_not_require_a_manifest(tmp_path):
     write(source, "notes/proof.md")
     root = tmp_path / "project"
     root.mkdir()
-    assert research.restore(root, source, set()) == (1, 0)
+    assert private_files.restore(root, source, set()) == (1, 0)
 
 
 def test_restore_refuses_public_tracked_files(tmp_path):
@@ -123,7 +154,7 @@ def test_restore_refuses_public_tracked_files(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
     with pytest.raises(ValueError, match="public tracked file"):
-        research.restore(root, source, {Path("paper/public.md")})
+        private_files.restore(root, source, {Path("paper/public.md")})
     assert not (root / "paper").exists()
 
 
@@ -144,7 +175,7 @@ def test_restore_refuses_symlinks(tmp_path, location):
     else:
         (root / "notes").symlink_to(outside, target_is_directory=True)
     with pytest.raises(ValueError, match="symlink|unsafe destination"):
-        research.restore(root, source, set())
+        private_files.restore(root, source, set())
     assert (outside / "proof.md").read_text() == "keep"
 
 
@@ -161,7 +192,7 @@ def test_cli_clones_checks_copies_and_removes_temporary_clone(tmp_path, monkeypa
         if command[:2] == ("git", "ls-files"):
             return ""
         if command[:2] == ("gh", "api"):
-            return json.dumps({"full_name": research.REPOSITORY, "private": True})
+            return json.dumps({"full_name": private_files.REPOSITORY, "private": True})
         if command[:3] == ("gh", "repo", "clone"):
             destination = Path(command[4])
             clones.append(destination)
@@ -169,16 +200,16 @@ def test_cli_clones_checks_copies_and_removes_temporary_clone(tmp_path, monkeypa
             return ""
         raise AssertionError(command)
 
-    monkeypatch.setattr(research, "run", run)
-    monkeypatch.setattr(sys, "argv", ["research.py", "restore"])
-    assert research.main() == 0
+    monkeypatch.setattr(private_files, "run", run)
+    monkeypatch.setattr(sys, "argv", ["private_files.py", "restore"])
+    assert private_files.main() == 0
     assert (root / "notes/proof.md").read_text() == "source\n"
     assert len(clones) == 1
     assert not clones[0].parent.exists()
 
 
 @pytest.mark.parametrize(
-    "metadata", [{"full_name": research.REPOSITORY, "private": False}, None]
+    "metadata", [{"full_name": private_files.REPOSITORY, "private": False}, None]
 )
 def test_cli_requires_existing_access_to_private_repository(
     tmp_path, monkeypatch, metadata
@@ -197,7 +228,7 @@ def test_cli_requires_existing_access_to_private_repository(
             return json.dumps(metadata)
         raise AssertionError("Must not clone without access to the private repository")
 
-    monkeypatch.setattr(research, "run", run)
-    monkeypatch.setattr(sys, "argv", ["research.py", "restore"])
-    assert research.main() == 1
+    monkeypatch.setattr(private_files, "run", run)
+    monkeypatch.setattr(sys, "argv", ["private_files.py", "restore"])
+    assert private_files.main() == 1
     assert not (root / "notes").exists()

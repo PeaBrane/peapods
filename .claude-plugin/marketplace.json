@@ -9,7 +9,7 @@
     {
       "name": "peapods",
       "source": "./",
-      "description": "Skills for running, analyzing, benchmarking and developing peapods spin-model Monte Carlo simulations"
+      "description": "Skills for running, analyzing, benchmarking and developing peapods simulations, and restoring optional private project files"
     }
   ]
 }
