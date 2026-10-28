@@ -163,6 +163,38 @@ Claude Code, install them as a plugin:
 
 Other agents can load the `SKILL.md` files directly.
 
+## Private research notes
+
+PeaBrane and collaborators with access to `PeaBrane/peapods-research` can restore
+the private notes, result ledger, manuscripts, reference papers, and figures into
+this checkout. Access is checked through GitHub; the public package works without
+these files. Requires Git and an authenticated GitHub CLI (`gh`), plus the local
+Python environment from the installation steps above.
+
+<!--pytest-codeblocks:skip-->
+```bash
+.venv/bin/python tools/research.py restore --dry-run
+.venv/bin/python tools/research.py restore
+.venv/bin/python notes/ledger/check.py
+```
+
+The helper clones the private repository into temporary storage, copies its
+`notes/`, `refs/`, and untracked `paper/` files into the same relative paths here,
+then removes the temporary clone. It checks all paths first and refuses to
+overwrite differing local files or public tracked files. Identical files are left
+alone; existing local datasets and witnesses are retained.
+
+The snapshot includes research source, PDFs, figures, and small text evidence.
+Bulk data, witnesses, dumps, archives, environments, and compiled binaries are
+omitted. Missing computational artifacts are informational `UNAVAILABLE` entries
+in the ledger checker, including with `--strict`; recorded result status remains
+unchanged. A new verification that requires an omitted artifact is unavailable
+locally until that artifact is supplied.
+
+Agents: restore only when requested or needed for an authorized research task, and
+only with existing GitHub access. Read `notes/AGENTS.md` after restoration. Do not
+fetch or regenerate omitted computational artifacts unless requested.
+
 ## Building from source
 
 Requires a Rust toolchain and [maturin](https://www.maturin.rs/):

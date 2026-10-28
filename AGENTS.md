@@ -3,6 +3,7 @@
 - Build Rust: `VIRTUAL_ENV=.venv .venv/bin/maturin develop --release`
 - Paper PDFs and algorithm notes in `refs/`, own write-ups in `notes/` (both gitignored) — see `refs/README.md`
 - When unsure about an algorithm or physics claim, check `refs/` and `notes/` first; only fall back to web search if they don't cover it
+- Private research can be restored with `.venv/bin/python tools/research.py restore` as described in the public README. Missing computational artifacts are informational (`UNAVAILABLE`), separate from ledger result status; see `notes/AGENTS.md` after restoring.
 
 ## Benchmark baseline (main, 2026-09-29; 64x64, 16 temps, 50 sweeps, 128 realizations; Intel Core Ultra 9 285K, 24 threads, Linux)
 
