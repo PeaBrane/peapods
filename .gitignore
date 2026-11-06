@@ -25,6 +25,7 @@ dist/
 **/playground*
 refs/
 notes/
+/lean/
 /output/
 /tmp/
 *.sh

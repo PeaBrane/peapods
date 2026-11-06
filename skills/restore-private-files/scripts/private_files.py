@@ -22,6 +22,7 @@ SKIP_DIRS = {
     ".lake",
     ".pytest_cache",
     ".ruff_cache",
+    ".text",
     ".venv",
     ".vscode",
     "__pycache__",
