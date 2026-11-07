@@ -75,6 +75,45 @@ def test_snapshot_preserves_core_and_small_evidence_but_omits_bulk(tmp_path):
     assert metadata["source_commit"] == "test-commit"
 
 
+def test_snapshot_omits_paths_listed_in_the_exclude_file(tmp_path):
+    root = tmp_path / "project"
+    for name in [
+        "notes/campaign/round1/check.py",
+        "notes/campaign/release/run.sh",
+        "notes/archived/data.json",
+        "notes/archived/deep/proof.md",
+    ]:
+        write(root, name)
+    keep = [
+        "notes/campaign/README.md",
+        "notes/campaign/round1/result.md",
+        "notes/other/check.py",
+        "notes/snapshot-exclude.txt",
+    ]
+    for name in keep[:-1]:
+        write(root, name)
+    write(
+        root,
+        "notes/snapshot-exclude.txt",
+        "# archived publicly\n\nnotes/campaign/**/*.py\nnotes/campaign/**/*.sh\nnotes/archived/\n",
+    )
+    destination = tmp_path / "snapshot"
+    count, _ = private_files.snapshot(root, destination, set(), "test")
+    assert count == len(keep)
+    assert all((destination / name).exists() for name in keep)
+    assert not (destination / "notes/campaign/round1/check.py").exists()
+    assert not (destination / "notes/archived").exists()
+    assert json.loads((destination / "snapshot.json").read_text())["excluded"] == 4
+
+
+def test_exclude_globs_keep_single_stars_within_one_directory():
+    assert private_files.glob_regex("notes/c/*.py").fullmatch("notes/c/a.py")
+    assert not private_files.glob_regex("notes/c/*.py").fullmatch("notes/c/d/a.py")
+    assert private_files.glob_regex("notes/c/**/*.py").fullmatch("notes/c/a.py")
+    assert private_files.glob_regex("notes/c/**/*.py").fullmatch("notes/c/d/e/a.py")
+    assert not private_files.glob_regex("notes/c/**/*.py").fullmatch("notes/cx/a.py")
+
+
 def test_snapshot_refuses_nonempty_destination(tmp_path):
     root = tmp_path / "project"
     write(root, "notes/proof.md")

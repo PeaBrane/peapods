@@ -47,3 +47,9 @@ and small text evidence, and omits bulk computational formats, environments, cac
 and files already tracked publicly. Other text-like files have a 1 MiB limit. Review exclusions
 when important evidence uses an unusual format; these filters classify files by format and
 size, not scientific importance. Exporting does not commit or publish the snapshot.
+
+The export also omits every path matched by `notes/snapshot-exclude.txt`. That file holds one
+checkout-relative glob per line: `**` crosses directories, `*` stays within one, a trailing `/`
+drops a whole directory, and `#` starts a comment. Use it for material that must not persist in
+the private repository, such as code already archived publicly. The file itself is exported, so
+the list travels with the snapshot. `snapshot.json` records how many files it excluded.

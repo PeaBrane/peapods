@@ -4,6 +4,7 @@ import argparse
 import filecmp
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -80,6 +81,43 @@ BULK_SUFFIXES = {
     ".zst",
 }
 SECRET_SUFFIXES = {".key", ".kdbx", ".p12", ".pem", ".pfx"}
+# Checkout-relative globs that the snapshot omits, one per line; "#" starts a comment. The file is not a dotfile,
+# so it travels in the snapshot itself.
+EXCLUDE_FILE = Path("notes/snapshot-exclude.txt")
+
+
+def glob_regex(pattern: str) -> re.Pattern[str]:
+    """Compile a checkout-relative glob: `**` crosses directories, `*` and `?` stay within one, and a trailing `/`
+    selects everything below that directory."""
+    if pattern.endswith("/"):
+        pattern += "**"
+    parts = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            parts.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            parts.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            parts.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            parts.append("[^/]")
+            i += 1
+        else:
+            parts.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(parts))
+
+
+def exclude_patterns(root: Path) -> list[re.Pattern[str]]:
+    path = root / EXCLUDE_FILE
+    if path.is_symlink() or not path.is_file():
+        return []
+    lines = (line.strip() for line in path.read_text().splitlines())
+    return [glob_regex(line) for line in lines if line and not line.startswith("#")]
 
 
 def run(*command: str, cwd: Path | None = None) -> str:
@@ -164,8 +202,14 @@ def snapshot(
         not destination.is_dir() or any(destination.iterdir())
     ):
         raise ValueError(f"Snapshot destination must be empty: {destination}")
-    selected = [
+    patterns = exclude_patterns(root)
+    candidates = [
         ref for ref in research_files(root, snapshot=True) if ref not in tracked
+    ]
+    selected = [
+        ref
+        for ref in candidates
+        if not any(pattern.fullmatch(ref.as_posix()) for pattern in patterns)
     ]
     destination.mkdir(exist_ok=True)
     total = 0
@@ -180,6 +224,7 @@ def snapshot(
         "source_commit": commit,
         "files": len(selected),
         "bytes": total,
+        "excluded": len(candidates) - len(selected),
     }
     (destination / "snapshot.json").write_text(json.dumps(metadata, indent=2) + "\n")
     (destination / ".gitignore").write_text(".DS_Store\n.venv/\n__pycache__/\n")
