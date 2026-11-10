@@ -4,11 +4,10 @@ use super::utils::{
 };
 use crate::config::ClusterAction;
 use crate::geometry::Lattice;
-use crate::parallel::par_over_replicas;
+use crate::parallel::{par_over_replicas, Slots};
 use crate::spins::model::Spin;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
-use rayon::prelude::*;
 
 /// Fortuin-Kasteleyn cluster update (SW or Wolff).
 ///
@@ -65,17 +64,21 @@ pub(crate) fn embedded_update<E: Embedding>(
     rngs: &mut [Xoshiro256StarStar],
     wolff: bool,
     action: ClusterAction,
-    mut csd_out: Option<&mut [Vec<u64>]>,
-    mut observation_out: Option<&mut [GraphObservationSlot]>,
+    csd_out: Option<&mut [Vec<u64>]>,
+    observation_out: Option<&mut [GraphObservationSlot]>,
     sequential: bool,
-    mut visited_out: Option<&mut [u64]>,
+    visited_out: Option<&mut [u64]>,
 ) {
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
-    let vp = visited_out.as_mut().map_or(0, |v| v.as_mut_ptr() as usize);
+    // Each task writes only the outputs of its own temperature slot.
+    let csd = Slots::new(csd_out);
+    let observations = Slots::new(observation_out);
+    let visits = Slots::new(visited_out);
 
     // DFS fast path: Wolff updates without CSD collection
-    if action == ClusterAction::Update && wolff && csd_out.is_none() {
+    if action == ClusterAction::Update && wolff && !csd.is_some() {
+        debug_assert!(!observations.is_some(), "the DFS path builds no full graph");
         par_over_replicas(
             spins,
             rngs,
@@ -112,10 +115,9 @@ pub(crate) fn embedded_update<E: Embedding>(
                         visited += 1;
                     }
                 }
-                if vp != 0 {
-                    unsafe {
-                        *(vp as *mut u64).add(temp_id) += visited;
-                    }
+                // SAFETY: `temp_id` is unique to this task.
+                if let Some(count) = unsafe { visits.get(temp_id) } {
+                    *count += visited;
                 }
             },
         );
@@ -123,98 +125,85 @@ pub(crate) fn embedded_update<E: Embedding>(
     }
 
     // UF path: SW, or Wolff + CSD
-    let sp = spins.as_mut_ptr() as usize;
-    let rp = rngs.as_mut_ptr() as usize;
-    let cp = csd_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let has_csd = csd_out.is_some();
-    let op = observation_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let has_observation = observation_out.is_some();
+    par_over_replicas(
+        spins,
+        rngs,
+        temperatures,
+        system_ids,
+        n_spins,
+        sequential,
+        |spin_slice, rng, temp, temp_id, _| {
+            let axis = E::axis(rng);
+            let bond = E::bond_at(temp);
 
-    let work = |temp_id: usize| unsafe {
-        let system_id = system_ids[temp_id];
-        let spin_slice =
-            std::slice::from_raw_parts_mut((sp as *mut E::Spin).add(system_id * n_spins), n_spins);
-        let rng = &mut *(rp as *mut Xoshiro256StarStar).add(system_id);
-        let axis = E::axis(rng);
-        let bond = E::bond_at(temperatures[temp_id]);
+            let mut should_bond = |i: usize, d: usize| {
+                let j = lattice.neighbor_fwd(i, d);
+                bond(
+                    spin_slice[i],
+                    spin_slice[j],
+                    couplings[i * n_neighbors + d],
+                    &axis,
+                    rng,
+                )
+            };
 
-        let mut should_bond = |i: usize, d: usize| {
-            let j = lattice.neighbor_fwd(i, d);
-            bond(
-                spin_slice[i],
-                spin_slice[j],
-                couplings[i * n_neighbors + d],
-                &axis,
-                rng,
-            )
-        };
+            // Fresh storage is intentional: pooling regressed FK/SW throughput.
+            let mut metrics = observations.is_some().then(|| BondMetrics::new(lattice));
+            let (mut parent, mut scratch) = if let Some(ref mut metrics) = metrics {
+                uf_bonds_fresh_with(lattice, &mut should_bond, |site, dim| {
+                    metrics.record_bond(lattice, site, dim);
+                })
+            } else {
+                uf_bonds_fresh(lattice, &mut should_bond)
+            };
 
-        // Fresh storage is intentional: pooling regressed FK/SW throughput.
-        let mut metrics = has_observation.then(|| BondMetrics::new(lattice));
-        let (mut parent, mut scratch) = if let Some(ref mut metrics) = metrics {
-            uf_bonds_fresh_with(lattice, &mut should_bond, |site, dim| {
-                metrics.record_bond(lattice, site, dim);
-            })
-        } else {
-            uf_bonds_fresh(lattice, &mut should_bond)
-        };
-
-        if has_csd || has_observation {
-            let counts = uf_flatten_counts_fresh(&mut parent);
-            if has_csd {
-                let csd_slot = &mut *(cp as *mut Vec<u64>).add(temp_id);
-                uf_histogram(&counts, csd_slot.as_mut_slice());
+            if csd.is_some() || observations.is_some() {
+                let counts = uf_flatten_counts_fresh(&mut parent);
+                // SAFETY: `temp_id` is unique to this task.
+                if let Some(histogram) = unsafe { csd.get(temp_id) } {
+                    uf_histogram(&counts, histogram);
+                }
+                if let (Some(metrics), Some(slot)) = (metrics, unsafe { observations.get(temp_id) })
+                {
+                    *slot = metrics.finish(&counts);
+                }
+            } else {
+                uf_flatten(&mut parent);
             }
-            if let Some(metrics) = metrics {
-                let observation_slot = &mut *(op as *mut GraphObservationSlot).add(temp_id);
-                *observation_slot = metrics.finish(&counts);
+
+            if action == ClusterAction::Observe {
+                return;
             }
-        } else {
-            uf_flatten(&mut parent);
-        }
 
-        if action == ClusterAction::Observe {
-            return;
-        }
-
-        let mut visited = 0;
-        if wolff {
-            let seed = rng.gen_range(0..n_spins);
-            let seed_root = parent[seed];
-            for (&site_parent, spin) in parent.iter().zip(spin_slice.iter_mut()) {
-                if site_parent == seed_root {
-                    E::reflect(spin, &axis);
-                    visited += 1;
+            let mut visited = n_spins as u64;
+            if wolff {
+                let seed = rng.gen_range(0..n_spins);
+                let seed_root = parent[seed];
+                visited = 0;
+                for (&site_parent, spin) in parent.iter().zip(spin_slice.iter_mut()) {
+                    if site_parent == seed_root {
+                        E::reflect(spin, &axis);
+                        visited += 1;
+                    }
+                }
+            } else {
+                scratch.fill(UNDECIDED);
+                for (&site_parent, spin) in parent.iter().zip(spin_slice.iter_mut()) {
+                    let root = site_parent as usize;
+                    if scratch[root] == UNDECIDED {
+                        scratch[root] = u8::from(E::coin(rng));
+                    }
+                    if scratch[root] == 1 {
+                        E::reflect(spin, &axis);
+                    }
                 }
             }
-        } else {
-            scratch.fill(UNDECIDED);
-            for (&site_parent, spin) in parent.iter().zip(spin_slice.iter_mut()) {
-                let root = site_parent as usize;
-                if scratch[root] == UNDECIDED {
-                    scratch[root] = u8::from(E::coin(rng));
-                }
-                if scratch[root] == 1 {
-                    E::reflect(spin, &axis);
-                }
+            // SAFETY: `temp_id` is unique to this task.
+            if let Some(count) = unsafe { visits.get(temp_id) } {
+                *count += visited;
             }
-        }
-        if vp != 0 {
-            *(vp as *mut u64).add(temp_id) += if wolff { visited } else { n_spins as u64 };
-        }
-    };
-
-    if sequential {
-        (0..system_ids.len()).for_each(work);
-    } else {
-        (0..system_ids.len()).into_par_iter().for_each(work);
-    }
+        },
+    );
 }
 
 /// Embedded Ising bonds, with model-specific arithmetic and reflection.

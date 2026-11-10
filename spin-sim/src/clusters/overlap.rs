@@ -1,14 +1,13 @@
 use super::utils::{
-    decide_clusters, dfs_cluster, find_seed, top4_sizes, uf_bonds, uf_bonds_extend, uf_bonds_with,
-    uf_flatten_counts, uf_histogram, BondMetrics, BondSampler, GraphObservationSlot, PooledUf,
-    UNDECIDED,
+    build_graph, decide_clusters, dfs_cluster, find_seed, top4_sizes, uf_bonds_extend,
+    uf_flatten_counts, uf_histogram, BondMetrics, BondSampler, GraphObservationSlot, UNDECIDED,
 };
 use crate::config::{ClusterAction, ClusterMode, OverlapClusterBuildMode, MAX_PERM_GROUP};
 use crate::geometry::Lattice;
+use crate::parallel::{for_each_task, Slots};
 use rand::seq::SliceRandom;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
-use rayon::prelude::*;
 
 /// Which sites of a replica group the deterministic overlap moves act on.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -74,6 +73,84 @@ fn build_tasks(
     }
 }
 
+/// Everything an overlap move may publish, indexed by the task's slot
+/// `t * n_pairs + g`.
+struct SlotOutputs<'a> {
+    csd: Slots<'a, Vec<u64>>,
+    top4: Slots<'a, [u32; 4]>,
+    observation: Slots<'a, GraphObservationSlot>,
+    cluster_ids: Slots<'a, Vec<u32>>,
+    blue_ids: Slots<'a, Vec<u32>>,
+    spins: Slots<'a, Vec<[Vec<i8>; 2]>>,
+    system_ids: Slots<'a, Vec<[usize; 2]>>,
+}
+
+impl SlotOutputs<'_> {
+    /// Whether the move must build the full graph: Swendsen-Wang, an observation, or
+    /// any graph statistic. Otherwise Wolff grows only the seed's cluster.
+    fn needs_graph(&self, action: ClusterAction, wolff: bool) -> bool {
+        action == ClusterAction::Observe
+            || !wolff
+            || self.csd.is_some()
+            || self.top4.is_some()
+            || self.cluster_ids.is_some()
+    }
+
+    /// Publishes the first two replicas of the first group at each temperature, as
+    /// they are before the move.
+    ///
+    /// # Safety
+    /// `slot` must belong to the calling task, and `systems` must index `sp_ptr`.
+    unsafe fn snapshot_spins(
+        &self,
+        slot: usize,
+        group: usize,
+        sp_ptr: *const i8,
+        systems: &[usize],
+        n_spins: usize,
+    ) {
+        if group != 0 {
+            return;
+        }
+        let (Some(spins), Some(ids)) = (self.spins.get(slot), self.system_ids.get(slot)) else {
+            return;
+        };
+        let replica = |system: usize| {
+            std::slice::from_raw_parts(sp_ptr.add(system * n_spins), n_spins).to_vec()
+        };
+        spins.push([replica(systems[0]), replica(systems[1])]);
+        ids.push([systems[0], systems[1]]);
+    }
+
+    /// Records a built graph: its cluster-size histogram, four largest clusters,
+    /// cluster ids (into `ids`) and bond metrics.
+    ///
+    /// # Safety
+    /// `slot` must belong to the calling task.
+    unsafe fn publish_graph(
+        &self,
+        slot: usize,
+        ids: &Slots<'_, Vec<u32>>,
+        parent: &[u32],
+        counts: &[u32],
+        metrics: Option<BondMetrics>,
+    ) {
+        if let Some(csd) = self.csd.get(slot) {
+            uf_histogram(counts, csd);
+        }
+        if let Some(top4) = self.top4.get(slot) {
+            *top4 = top4_sizes(counts);
+        }
+        if let Some(ids) = ids.get(slot) {
+            ids.clear();
+            ids.extend_from_slice(parent);
+        }
+        if let (Some(metrics), Some(observation)) = (metrics, self.observation.get(slot)) {
+            *observation = metrics.finish(counts);
+        }
+    }
+}
+
 /// Top-level overlap cluster update dispatcher.
 ///
 /// Selects the appropriate per-mode function based on `mode`, then runs it
@@ -102,81 +179,83 @@ pub fn overlap_update(
     spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
     sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
 ) {
-    match mode {
-        OverlapClusterBuildMode::Houdayer(group_size)
-        | OverlapClusterBuildMode::Pair(group_size)
-        | OverlapClusterBuildMode::Perm(group_size)
-        | OverlapClusterBuildMode::GaugedPerm(group_size) => houdayer_step(
-            lattice,
-            spins,
-            system_ids,
-            n_replicas,
-            n_temps,
-            active_temps,
-            rngs,
-            *group_size,
-            match mode {
-                OverlapClusterBuildMode::Pair(_) => ActiveRule::Pairwise,
-                OverlapClusterBuildMode::Perm(_) => ActiveRule::Permutation,
-                OverlapClusterBuildMode::GaugedPerm(_) => ActiveRule::GaugedPermutation,
-                _ => ActiveRule::Balanced,
-            },
-            cluster_mode,
-            action,
-            csd_out,
-            top4_out,
-            observation_out,
-            sequential,
-            snap_out,
-            spin_snap_out,
-            sid_snap_out,
-        ),
-        OverlapClusterBuildMode::Jorg(group_size) => jorg_step(
-            lattice,
-            spins,
-            couplings,
-            temperatures,
-            system_ids,
-            n_replicas,
-            n_temps,
-            active_temps,
-            rngs,
-            *group_size,
-            cluster_mode,
-            action,
-            csd_out,
-            top4_out,
-            observation_out,
-            sequential,
-            snap_out,
-            spin_snap_out,
-            sid_snap_out,
-        ),
-        OverlapClusterBuildMode::Cmr => cmr_step(
-            lattice,
-            spins,
-            couplings,
-            temperatures,
-            system_ids,
-            n_replicas,
-            n_temps,
-            active_temps,
-            rngs,
-            cluster_mode,
-            action,
-            csd_out,
-            top4_out,
-            observation_out,
-            sequential,
-            snap_out,
-            blue_snap_out,
-            spin_snap_out,
-            sid_snap_out,
-        ),
+    let n_spins = lattice.n_spins;
+    // The tasks reach replicas through raw pointers, so the layout is checked here.
+    assert!(
+        system_ids.len() == n_replicas * n_temps
+            && system_ids
+                .iter()
+                .all(|&id| (id + 1) * n_spins <= spins.len()),
+        "overlap buffers disagree with the replica layout"
+    );
+    let outs = SlotOutputs {
+        csd: Slots::new(csd_out),
+        top4: Slots::new(top4_out),
+        observation: Slots::new(observation_out),
+        cluster_ids: Slots::new(snap_out),
+        blue_ids: Slots::new(blue_snap_out),
+        spins: Slots::new(spin_snap_out),
+        system_ids: Slots::new(sid_snap_out),
+    };
+    let (group_size, rule) = match *mode {
+        OverlapClusterBuildMode::Houdayer(n) => (n, ActiveRule::Balanced),
+        OverlapClusterBuildMode::Pair(n) => (n, ActiveRule::Pairwise),
+        OverlapClusterBuildMode::Perm(n) => (n, ActiveRule::Permutation),
+        OverlapClusterBuildMode::GaugedPerm(n) => (n, ActiveRule::GaugedPermutation),
+        OverlapClusterBuildMode::Jorg(group_size) => {
+            return jorg_step(
+                lattice,
+                spins,
+                couplings,
+                temperatures,
+                system_ids,
+                n_replicas,
+                n_temps,
+                active_temps,
+                rngs,
+                group_size,
+                cluster_mode,
+                action,
+                &outs,
+                sequential,
+            )
+        }
+        OverlapClusterBuildMode::Cmr => {
+            return cmr_step(
+                lattice,
+                spins,
+                couplings,
+                temperatures,
+                system_ids,
+                n_replicas,
+                n_temps,
+                active_temps,
+                rngs,
+                cluster_mode,
+                action,
+                &outs,
+                sequential,
+            )
+        }
         OverlapClusterBuildMode::Rmc => {
             unreachable!("rmc runs through rmc_update, which owns its task layout")
         }
-    }
+    };
+    isoenergetic_step(
+        lattice,
+        spins,
+        system_ids,
+        n_replicas,
+        n_temps,
+        active_temps,
+        rngs,
+        group_size,
+        rule,
+        cluster_mode,
+        action,
+        &outs,
+        sequential,
+    );
 }
 
 /// Whether any replica pair `(systems[2k], systems[2k+1])` disagrees at site `i`.
@@ -275,7 +354,7 @@ unsafe fn permute_group_site(
 /// acquires that pattern, so their count, which is the probability of choosing this
 /// gauge, is the same before and after the move.
 #[allow(clippy::too_many_arguments)]
-fn houdayer_step(
+fn isoenergetic_step(
     lattice: &Lattice,
     spins: &mut [i8],
     system_ids: &[usize],
@@ -287,13 +366,8 @@ fn houdayer_step(
     rule: ActiveRule,
     cluster_mode: ClusterMode,
     action: ClusterAction,
-    mut csd_out: Option<&mut [Vec<u64>]>,
-    mut top4_out: Option<&mut [[u32; 4]]>,
-    mut observation_out: Option<&mut [GraphObservationSlot]>,
+    outs: &SlotOutputs<'_>,
     sequential: bool,
-    mut snap_out: Option<&mut [Vec<u32>]>,
-    mut spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
-    mut sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
 ) {
     let n_spins = lattice.n_spins;
     let n_pairs = n_replicas / 2;
@@ -313,68 +387,24 @@ fn houdayer_step(
         n_pairs,
         active_temps,
     );
-
+    let use_uf = outs.needs_graph(action, wolff);
     let sp = spins.as_mut_ptr() as usize;
-    let rp = rngs.as_mut_ptr() as usize;
-    let use_uf = action == ClusterAction::Observe
-        || !wolff
-        || csd_out.is_some()
-        || top4_out.is_some()
-        || snap_out.is_some();
+    let rngs = Slots::new(Some(rngs));
 
-    let cp = csd_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let has_csd = csd_out.is_some();
-    let tp = top4_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let has_top4 = top4_out.is_some();
-    let op = observation_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let has_observation = observation_out.is_some();
-    let snp = snap_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let has_snap = snap_out.is_some();
-    let spp = spin_snap_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let sidp = sid_snap_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-
-    let work = |task_idx: usize| unsafe {
+    // SAFETY: tasks act on disjoint replica groups, and task `(t, g)` alone uses the
+    // generator and the output slot `t * n_pairs + g`.
+    for_each_task(tasks.len(), sequential, |task_idx| unsafe {
         let (t, g, systems) = tasks.group(task_idx);
-        let rng = &mut *(rp as *mut Xoshiro256StarStar).add(t * n_pairs + g);
-        let sp_ptr = sp as *mut i8;
         let slot = t * n_pairs + g;
-
-        // Only the first group per temperature is published as a snapshot.
-        if spp != 0 && sidp != 0 && g == 0 && systems.len() >= 2 {
-            let base_a = systems[0] * n_spins;
-            let base_b = systems[1] * n_spins;
-            let spin_slot = &mut *(spp as *mut Vec<[Vec<i8>; 2]>).add(slot);
-            spin_slot.push([
-                std::slice::from_raw_parts(sp_ptr.add(base_a), n_spins).to_vec(),
-                std::slice::from_raw_parts(sp_ptr.add(base_b), n_spins).to_vec(),
-            ]);
-            let sid_slot = &mut *(sidp as *mut Vec<[usize; 2]>).add(slot);
-            sid_slot.push([systems[0], systems[1]]);
-        }
+        let rng = rngs.at(slot);
+        let sp_ptr = sp as *mut i8;
+        outs.snapshot_spins(slot, g, sp_ptr, systems, n_spins);
 
         let mut gauge_store = [1i8; MAX_PERM_GROUP];
         if rule == ActiveRule::GaugedPermutation {
             let reference = rng.gen_range(0..n_spins);
-            for (g, &system) in gauge_store.iter_mut().zip(systems) {
-                *g = *sp_ptr.add(system * n_spins + reference);
+            for (sign, &system) in gauge_store.iter_mut().zip(systems) {
+                *sign = *sp_ptr.add(system * n_spins + reference);
             }
         }
         // Only the permutation rules read the gauge; pair and balanced groups may
@@ -393,7 +423,7 @@ fn houdayer_step(
                 return systems[1..]
                     .iter()
                     .zip(&gauge[1..])
-                    .any(|(&system, &g)| g * *sp_ptr.add(system * n_spins + i) != first);
+                    .any(|(&system, &sign)| sign * *sp_ptr.add(system * n_spins + i) != first);
             }
             let mut sum: i32 = 0;
             for &system in systems {
@@ -401,94 +431,18 @@ fn houdayer_step(
             }
             sum == 0
         };
-
-        if use_uf {
-            // The O(N) graph pass would otherwise re-sum the group for both endpoints
-            // of every bond.
-            let active: Vec<bool> = (0..n_spins).map(is_active).collect();
-            let is_active = |i: usize| active[i];
-            let mut should_bond = |i: usize, d: usize| {
-                let j = lattice.neighbor_fwd(i, d);
-                is_active(i) && is_active(j)
-            };
-            let mut metrics = has_observation.then(|| BondMetrics::new(lattice));
-            let mut uf = if let Some(ref mut metrics) = metrics {
-                uf_bonds_with(lattice, &mut should_bond, |site, dim| {
-                    metrics.record_bond(lattice, site, dim);
-                })
-            } else {
-                uf_bonds(lattice, &mut should_bond)
-            };
-
-            // Statistics and snapshots describe the graph, so record them before the
-            // Wolff seed search, which may find no active site.
-            let counts = uf_flatten_counts(&mut uf.parent);
-            if has_csd {
-                let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
-                uf_histogram(&counts, csd_slot.as_mut_slice());
-            }
-            if has_top4 {
-                let out = &mut *(tp as *mut [u32; 4]).add(slot);
-                *out = top4_sizes(&counts);
-            }
-            if has_snap {
-                let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
-                snap_slot.clear();
-                snap_slot.extend_from_slice(&uf.parent[..n_spins]);
-            }
-            if let Some(metrics) = metrics {
-                let observation_slot = &mut *(op as *mut GraphObservationSlot).add(slot);
-                *observation_slot = metrics.finish(&counts);
-            }
-            if action == ClusterAction::Observe {
+        // Acts on one site of the chosen cluster; `perm` matters only to the
+        // permutation rules.
+        let apply = |i: usize, perm: &[u8; MAX_PERM_GROUP]| {
+            if permutation {
+                permute_group_site(sp_ptr, systems, n_spins, i, &perm[..systems.len()], gauge);
                 return;
             }
+            flip_group_site(sp_ptr, systems, n_spins, i, pairwise);
+        };
+        let mut perm = [0u8; MAX_PERM_GROUP];
 
-            if wolff {
-                let Some(seed) = find_seed(n_spins, rng, &is_active) else {
-                    return;
-                };
-                let mut perm = [0u8; MAX_PERM_GROUP];
-                if permutation {
-                    random_non_identity(rng, &mut perm[..group_size]);
-                }
-                let seed_root = uf.parent[seed];
-                for (i, &p) in uf.parent.iter().enumerate().take(n_spins) {
-                    if p != seed_root {
-                        continue;
-                    }
-                    if permutation {
-                        permute_group_site(sp_ptr, systems, n_spins, i, &perm[..group_size], gauge);
-                    } else {
-                        flip_group_site(sp_ptr, systems, n_spins, i, pairwise);
-                    }
-                }
-            } else if permutation {
-                // One uniform permutation per component, singletons included.
-                let mut perms = vec![u8::MAX; n_spins * group_size];
-                for i in (0..n_spins).filter(|&i| active[i]) {
-                    let root = uf.parent[i] as usize;
-                    let perm = &mut perms[root * group_size..(root + 1) * group_size];
-                    if perm[0] == u8::MAX {
-                        random_permutation(rng, perm);
-                    }
-                    permute_group_site(sp_ptr, systems, n_spins, i, perm, gauge);
-                }
-            } else {
-                let storage = &mut *uf;
-                decide_clusters(
-                    &storage.parent,
-                    &mut storage.rank,
-                    |_, root| counts[root] > 1,
-                    |_| u8::from(rng.gen::<f32>() < 0.5),
-                    |site, flip| {
-                        if flip == 1 {
-                            flip_group_site(sp_ptr, systems, n_spins, site, pairwise);
-                        }
-                    },
-                );
-            }
-        } else {
+        if !use_uf {
             let Some(seed) = find_seed(n_spins, rng, &is_active) else {
                 return;
             };
@@ -502,28 +456,69 @@ fn houdayer_step(
                 // Every site already in the cluster is active.
                 |_site, nb, _d, _fwd| is_active(nb),
             );
-            let mut perm = [0u8; MAX_PERM_GROUP];
             if permutation {
                 random_non_identity(rng, &mut perm[..group_size]);
             }
-            for (i, &in_c) in in_cluster.iter().enumerate() {
-                if !in_c {
-                    continue;
-                }
-                if permutation {
-                    permute_group_site(sp_ptr, systems, n_spins, i, &perm[..group_size], gauge);
-                } else {
-                    flip_group_site(sp_ptr, systems, n_spins, i, pairwise);
-                }
+            for i in (0..n_spins).filter(|&i| in_cluster[i]) {
+                apply(i, &perm);
             }
+            return;
         }
-    };
 
-    if sequential {
-        (0..tasks.len()).for_each(work);
-    } else {
-        (0..tasks.len()).into_par_iter().for_each(work);
-    }
+        // The O(N) graph pass would otherwise re-sum the group for both endpoints
+        // of every bond.
+        let active: Vec<bool> = (0..n_spins).map(is_active).collect();
+        let (mut uf, metrics) = build_graph(lattice, outs.observation.is_some(), |i, d| {
+            active[i] && active[lattice.neighbor_fwd(i, d)]
+        });
+
+        // Statistics and snapshots describe the graph, so record them before the
+        // Wolff seed search, which may find no active site.
+        let counts = uf_flatten_counts(&mut uf.parent);
+        outs.publish_graph(slot, &outs.cluster_ids, &uf.parent, &counts, metrics);
+        if action == ClusterAction::Observe {
+            return;
+        }
+
+        if wolff {
+            let Some(seed) = find_seed(n_spins, rng, |i| active[i]) else {
+                return;
+            };
+            if permutation {
+                random_non_identity(rng, &mut perm[..group_size]);
+            }
+            let seed_root = uf.parent[seed];
+            for i in (0..n_spins).filter(|&i| uf.parent[i] == seed_root) {
+                apply(i, &perm);
+            }
+            return;
+        }
+        if permutation {
+            // One uniform permutation per component, singletons included.
+            let mut perms = vec![UNDECIDED; n_spins * group_size];
+            for i in (0..n_spins).filter(|&i| active[i]) {
+                let root = uf.parent[i] as usize;
+                let perm = &mut perms[root * group_size..(root + 1) * group_size];
+                if perm[0] == UNDECIDED {
+                    random_permutation(rng, perm);
+                }
+                permute_group_site(sp_ptr, systems, n_spins, i, perm, gauge);
+            }
+            return;
+        }
+        let storage = &mut *uf;
+        decide_clusters(
+            &storage.parent,
+            &mut storage.rank,
+            |_, root| counts[root] > 1,
+            |_| u8::from(rng.gen::<f32>() < 0.5),
+            |site, flip| {
+                if flip == 1 {
+                    flip_group_site(sp_ptr, systems, n_spins, site, pairwise);
+                }
+            },
+        );
+    });
 }
 
 /// Jörg stochastic overlap cluster update.
@@ -552,13 +547,8 @@ fn jorg_step(
     group_size: usize,
     cluster_mode: ClusterMode,
     action: ClusterAction,
-    mut csd_out: Option<&mut [Vec<u64>]>,
-    mut top4_out: Option<&mut [[u32; 4]]>,
-    mut observation_out: Option<&mut [GraphObservationSlot]>,
+    outs: &SlotOutputs<'_>,
     sequential: bool,
-    mut snap_out: Option<&mut [Vec<u32>]>,
-    mut spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
-    mut sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
 ) {
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
@@ -574,50 +564,17 @@ fn jorg_step(
         n_pairs,
         active_temps,
     );
-
+    let use_uf = outs.needs_graph(action, wolff);
     let sp = spins.as_mut_ptr() as usize;
-    let rp = rngs.as_mut_ptr() as usize;
-    let use_uf = action == ClusterAction::Observe
-        || !wolff
-        || csd_out.is_some()
-        || top4_out.is_some()
-        || snap_out.is_some();
+    let rngs = Slots::new(Some(rngs));
 
-    let cp = csd_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let has_csd = csd_out.is_some();
-    let tp = top4_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let has_top4 = top4_out.is_some();
-    let op = observation_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let has_observation = observation_out.is_some();
-    let snp = snap_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let has_snap = snap_out.is_some();
-    let spp = spin_snap_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let sidp = sid_snap_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-
-    let work = |task_idx: usize| unsafe {
+    // SAFETY: as in `isoenergetic_step`.
+    for_each_task(tasks.len(), sequential, |task_idx| unsafe {
         let (t, g, systems) = tasks.group(task_idx);
-        let rng = &mut *(rp as *mut Xoshiro256StarStar).add(t * n_pairs + g);
+        let slot = t * n_pairs + g;
+        let rng = rngs.at(slot);
         let jorg_bond = BondSampler::new(4.0 / temperatures[t]);
         let sp_ptr = sp as *mut i8;
-        let slot = t * n_pairs + g;
         // ΔE / 4J of swapping the pairs at one endpoint of an active-active bond.
         let aligned = |i: usize, j: usize| -> i32 {
             systems
@@ -634,94 +591,10 @@ fn jorg_step(
                 })
                 .sum()
         };
-
-        // Only the first pair per temperature is published as a snapshot.
-        if spp != 0 && sidp != 0 && g == 0 {
-            let base_a = systems[0] * n_spins;
-            let base_b = systems[1] * n_spins;
-            let spin_slot = &mut *(spp as *mut Vec<[Vec<i8>; 2]>).add(slot);
-            spin_slot.push([
-                std::slice::from_raw_parts(sp_ptr.add(base_a), n_spins).to_vec(),
-                std::slice::from_raw_parts(sp_ptr.add(base_b), n_spins).to_vec(),
-            ]);
-            let sid_slot = &mut *(sidp as *mut Vec<[usize; 2]>).add(slot);
-            sid_slot.push([systems[0], systems[1]]);
-        }
-
+        outs.snapshot_spins(slot, g, sp_ptr, systems, n_spins);
         let is_active = |i: usize| -> bool { any_pair_differs(sp_ptr, systems, n_spins, i) };
 
-        if use_uf {
-            let active: Vec<bool> = (0..n_spins).map(is_active).collect();
-            let is_active = |i: usize| active[i];
-            let mut should_bond = |i: usize, d: usize| {
-                let j = lattice.neighbor_fwd(i, d);
-                if !is_active(i) || !is_active(j) {
-                    return false;
-                }
-                let inter = aligned(i, j) as f32 * couplings[i * n_neighbors + d];
-                if inter <= 0.0 {
-                    return false;
-                }
-                jorg_bond.sample(inter, rng)
-            };
-            let mut metrics = has_observation.then(|| BondMetrics::new(lattice));
-            let mut uf = if let Some(ref mut metrics) = metrics {
-                uf_bonds_with(lattice, &mut should_bond, |site, dim| {
-                    metrics.record_bond(lattice, site, dim);
-                })
-            } else {
-                uf_bonds(lattice, &mut should_bond)
-            };
-
-            // Statistics and snapshots describe the graph, so record them before the
-            // Wolff seed search, which may find no active site.
-            let counts = uf_flatten_counts(&mut uf.parent);
-            if has_csd {
-                let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
-                uf_histogram(&counts, csd_slot.as_mut_slice());
-            }
-            if has_top4 {
-                let out = &mut *(tp as *mut [u32; 4]).add(slot);
-                *out = top4_sizes(&counts);
-            }
-            if has_snap {
-                let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
-                snap_slot.clear();
-                snap_slot.extend_from_slice(&uf.parent[..n_spins]);
-            }
-            if let Some(metrics) = metrics {
-                let observation_slot = &mut *(op as *mut GraphObservationSlot).add(slot);
-                *observation_slot = metrics.finish(&counts);
-            }
-            if action == ClusterAction::Observe {
-                return;
-            }
-
-            if wolff {
-                let Some(seed) = find_seed(n_spins, rng, &is_active) else {
-                    return;
-                };
-                let seed_root = uf.parent[seed];
-                for (i, &p) in uf.parent.iter().enumerate().take(n_spins) {
-                    if p == seed_root {
-                        flip_group_site(sp_ptr, systems, n_spins, i, true);
-                    }
-                }
-            } else {
-                let storage = &mut *uf;
-                decide_clusters(
-                    &storage.parent,
-                    &mut storage.rank,
-                    |_, root| counts[root] > 1,
-                    |_| u8::from(rng.gen::<f32>() < 0.5),
-                    |site, flip| {
-                        if flip == 1 {
-                            flip_group_site(sp_ptr, systems, n_spins, site, true);
-                        }
-                    },
-                );
-            }
-        } else {
+        if !use_uf {
             let Some(seed) = find_seed(n_spins, rng, &is_active) else {
                 return;
             };
@@ -748,19 +621,59 @@ fn jorg_step(
                     jorg_bond.sample(inter, rng)
                 },
             );
-            for (i, &in_c) in in_cluster.iter().enumerate() {
-                if in_c {
-                    flip_group_site(sp_ptr, systems, n_spins, i, true);
-                }
+            for i in (0..n_spins).filter(|&i| in_cluster[i]) {
+                flip_group_site(sp_ptr, systems, n_spins, i, true);
             }
+            return;
         }
-    };
 
-    if sequential {
-        (0..tasks.len()).for_each(work);
-    } else {
-        (0..tasks.len()).into_par_iter().for_each(work);
-    }
+        let active: Vec<bool> = (0..n_spins).map(is_active).collect();
+        let (mut uf, metrics) = build_graph(lattice, outs.observation.is_some(), |i, d| {
+            if !active[i] {
+                return false;
+            }
+            let j = lattice.neighbor_fwd(i, d);
+            if !active[j] {
+                return false;
+            }
+            let inter = aligned(i, j) as f32 * couplings[i * n_neighbors + d];
+            if inter <= 0.0 {
+                return false;
+            }
+            jorg_bond.sample(inter, rng)
+        });
+
+        // Statistics and snapshots describe the graph, so record them before the
+        // Wolff seed search, which may find no active site.
+        let counts = uf_flatten_counts(&mut uf.parent);
+        outs.publish_graph(slot, &outs.cluster_ids, &uf.parent, &counts, metrics);
+        if action == ClusterAction::Observe {
+            return;
+        }
+
+        if wolff {
+            let Some(seed) = find_seed(n_spins, rng, |i| active[i]) else {
+                return;
+            };
+            let seed_root = uf.parent[seed];
+            for i in (0..n_spins).filter(|&i| uf.parent[i] == seed_root) {
+                flip_group_site(sp_ptr, systems, n_spins, i, true);
+            }
+            return;
+        }
+        let storage = &mut *uf;
+        decide_clusters(
+            &storage.parent,
+            &mut storage.rank,
+            |_, root| counts[root] > 1,
+            |_| u8::from(rng.gen::<f32>() < 0.5),
+            |site, flip| {
+                if flip == 1 {
+                    flip_group_site(sp_ptr, systems, n_spins, site, true);
+                }
+            },
+        );
+    });
 }
 
 /// CMR two-phase overlap cluster update (Machta-Newman-Stein 2007, eqs 10-11).
@@ -785,35 +698,6 @@ fn jorg_step(
 /// Grey clusters are supersets of blue clusters; sites in blue clusters receive both
 /// the blue flip and the grey flip. This composition is the correct CMR update.
 #[allow(clippy::too_many_arguments)]
-unsafe fn build_cmr_blue_graph(
-    lattice: &Lattice,
-    sp_ptr: *mut i8,
-    base_a: usize,
-    couplings: &[f32],
-    n_neighbors: usize,
-    overlap: &[i8],
-    blue_bond: BondSampler,
-    rng: &mut Xoshiro256StarStar,
-    on_bond: impl FnMut(usize, usize),
-) -> PooledUf {
-    uf_bonds_with(
-        lattice,
-        |i, d| {
-            let j = lattice.neighbor_fwd(i, d);
-            // Equal site overlaps make replica b satisfied exactly when a is.
-            if overlap[i] != overlap[j] {
-                return false;
-            }
-            let coupling = couplings[i * n_neighbors + d];
-            let satisfied =
-                *sp_ptr.add(base_a + i) as f32 * *sp_ptr.add(base_a + j) as f32 * coupling > 0.0;
-            satisfied && blue_bond.sample(coupling.abs(), rng)
-        },
-        on_bond,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
 fn cmr_step(
     lattice: &Lattice,
     spins: &mut [i8],
@@ -826,14 +710,8 @@ fn cmr_step(
     rngs: &mut [Xoshiro256StarStar],
     cluster_mode: ClusterMode,
     action: ClusterAction,
-    mut csd_out: Option<&mut [Vec<u64>]>,
-    mut top4_out: Option<&mut [[u32; 4]]>,
-    mut observation_out: Option<&mut [GraphObservationSlot]>,
+    outs: &SlotOutputs<'_>,
     sequential: bool,
-    mut snap_out: Option<&mut [Vec<u32>]>,
-    mut blue_snap_out: Option<&mut [Vec<u32>]>,
-    mut spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
-    mut sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
 ) {
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
@@ -849,218 +727,37 @@ fn cmr_step(
         n_pairs,
         active_temps,
     );
-
+    let use_uf = outs.needs_graph(action, wolff);
     let sp = spins.as_mut_ptr() as usize;
-    let rp = rngs.as_mut_ptr() as usize;
-    let use_uf = action == ClusterAction::Observe
-        || !wolff
-        || csd_out.is_some()
-        || top4_out.is_some()
-        || snap_out.is_some();
+    let rngs = Slots::new(Some(rngs));
 
-    let cp = csd_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let has_csd = csd_out.is_some();
-    let tp = top4_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let has_top4 = top4_out.is_some();
-    let op = observation_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let has_observation = observation_out.is_some();
-    let snp = snap_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let has_snap = snap_out.is_some();
-    let bsnp = blue_snap_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let has_blue_snap = blue_snap_out.is_some();
-    let spp = spin_snap_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-    let sidp = sid_snap_out
-        .as_mut()
-        .map(|s| s.as_mut_ptr() as usize)
-        .unwrap_or(0);
-
-    let work = |task_idx: usize| unsafe {
+    // SAFETY: as in `isoenergetic_step`.
+    for_each_task(tasks.len(), sequential, |task_idx| unsafe {
         let (t, g, systems) = tasks.group(task_idx);
-        let rng = &mut *(rp as *mut Xoshiro256StarStar).add(t * n_pairs + g);
+        let slot = t * n_pairs + g;
+        let rng = rngs.at(slot);
         // Blue bonds use 1 - r^2 and red bonds 1 - r, with r = exp(-2|J|/T).
         let blue_bond = BondSampler::new(4.0 / temperatures[t]);
         let red_bond = BondSampler::new(2.0 / temperatures[t]);
         let base_a = systems[0] * n_spins;
         let base_b = systems[1] * n_spins;
         let sp_ptr = sp as *mut i8;
-        let slot = t * n_pairs + g;
-
-        // Only the first pair per temperature is published as a snapshot.
-        if spp != 0 && sidp != 0 && g == 0 {
-            let spin_slot = &mut *(spp as *mut Vec<[Vec<i8>; 2]>).add(slot);
-            spin_slot.push([
-                std::slice::from_raw_parts(sp_ptr.add(base_a), n_spins).to_vec(),
-                std::slice::from_raw_parts(sp_ptr.add(base_b), n_spins).to_vec(),
-            ]);
-            let sid_slot = &mut *(sidp as *mut Vec<[usize; 2]>).add(slot);
-            sid_slot.push([systems[0], systems[1]]);
-        }
-
-        if use_uf {
-            let seed = if wolff {
-                rng.gen_range(0..n_spins)
-            } else {
-                0 // unused
-            };
-
-            // Site overlaps q_i = a_i b_i classify bonds: an edge is singly satisfied
-            // iff q_i != q_j (J != 0), and blue flips negate both replicas, leaving q.
-            let overlap: Vec<i8> = (0..n_spins)
-                .map(|i| *sp_ptr.add(base_a + i) * *sp_ptr.add(base_b + i))
-                .collect();
-
-            // === Phase 1: Blue clusters ===
-            let mut metrics = has_observation.then(|| BondMetrics::new(lattice));
-            let mut uf = if let Some(ref mut metrics) = metrics {
-                build_cmr_blue_graph(
-                    lattice,
-                    sp_ptr,
-                    base_a,
-                    couplings,
-                    n_neighbors,
-                    &overlap,
-                    blue_bond,
-                    rng,
-                    |site, dim| metrics.record_bond(lattice, site, dim),
-                )
-            } else {
-                build_cmr_blue_graph(
-                    lattice,
-                    sp_ptr,
-                    base_a,
-                    couplings,
-                    n_neighbors,
-                    &overlap,
-                    blue_bond,
-                    rng,
-                    |_site, _dim| {},
-                )
-            };
-
-            let counts = uf_flatten_counts(&mut uf.parent);
-            if has_csd {
-                let csd_slot = &mut *(cp as *mut Vec<u64>).add(slot);
-                uf_histogram(&counts, csd_slot.as_mut_slice());
+        outs.snapshot_spins(slot, g, sp_ptr, systems, n_spins);
+        // Bit 0 of `k` flips replica a at the site, bit 1 replica b.
+        let flip = |i: usize, k: u8| {
+            if k & 1 != 0 {
+                *sp_ptr.add(base_a + i) *= -1;
             }
-            if has_top4 {
-                let out = &mut *(tp as *mut [u32; 4]).add(slot);
-                *out = top4_sizes(&counts);
+            if k & 2 != 0 {
+                *sp_ptr.add(base_b + i) *= -1;
             }
-            if has_blue_snap {
-                let blue_slot = &mut *(bsnp as *mut Vec<u32>).add(slot);
-                blue_slot.clear();
-                blue_slot.extend_from_slice(&uf.parent[..n_spins]);
-            }
-            if let Some(metrics) = metrics {
-                let observation_slot = &mut *(op as *mut GraphObservationSlot).add(slot);
-                *observation_slot = metrics.finish(&counts);
-            }
-            if action == ClusterAction::Observe {
-                return;
-            }
+        };
 
-            // Flip blue clusters (both replicas jointly)
-            if wolff {
-                let seed_root = uf.parent[seed] as usize;
-                for (i, &p) in uf.parent.iter().enumerate().take(n_spins) {
-                    if p as usize == seed_root {
-                        *sp_ptr.add(base_a + i) *= -1;
-                        *sp_ptr.add(base_b + i) *= -1;
-                    }
-                }
-            } else {
-                // Keep UF ranks intact until red bonds extend the blue clusters.
-                let mut do_flip = vec![UNDECIDED; n_spins];
-                decide_clusters(
-                    &uf.parent,
-                    &mut do_flip,
-                    |_, root| counts[root] > 1,
-                    |_| u8::from(rng.gen::<f32>() < 0.5),
-                    |site, flip| {
-                        if flip == 1 {
-                            *sp_ptr.add(base_a + site) *= -1;
-                            *sp_ptr.add(base_b + site) *= -1;
-                        }
-                    },
-                );
-            }
-
-            // === Phase 2: Grey clusters (extend blue UF with red bonds) ===
-            // Red bond: singly-satisfied edges on post-flip spins, prob 1 - r.
-            // No clone needed: blue flips preserve the singly-satisfied classification.
-            // Return blue counts so grey counts can reuse the pooled allocation.
-            drop(counts);
-            let storage = &mut *uf;
-            uf_bonds_extend(&mut storage.parent, &mut storage.rank, lattice, |i, d| {
-                let j = lattice.neighbor_fwd(i, d);
-                let coupling = couplings[i * n_neighbors + d];
-                overlap[i] != overlap[j] && coupling != 0.0 && red_bond.sample(coupling.abs(), rng)
-            });
-
-            let grey_counts = uf_flatten_counts(&mut uf.parent);
-
-            if has_snap {
-                let snap_slot = &mut *(snp as *mut Vec<u32>).add(slot);
-                snap_slot.clear();
-                snap_slot.extend_from_slice(&uf.parent[..n_spins]);
-            }
-
-            // Flip grey clusters (each replica independently)
-            if wolff {
-                let seed_root = uf.parent[seed] as usize;
-                let k: u8 = rng.gen_range(1..=3);
-                let flip_a = k & 1 != 0;
-                let flip_b = k & 2 != 0;
-                for (i, &p) in uf.parent.iter().enumerate().take(n_spins) {
-                    if p as usize == seed_root {
-                        if flip_a {
-                            *sp_ptr.add(base_a + i) *= -1;
-                        }
-                        if flip_b {
-                            *sp_ptr.add(base_b + i) *= -1;
-                        }
-                    }
-                }
-            } else {
-                let storage = &mut *uf;
-                decide_clusters(
-                    &storage.parent,
-                    &mut storage.rank,
-                    |_, root| grey_counts[root] > 1,
-                    |_| rng.gen_range(0..=3),
-                    |site, k| {
-                        if k & 1 != 0 {
-                            *sp_ptr.add(base_a + site) *= -1;
-                        }
-                        if k & 2 != 0 {
-                            *sp_ptr.add(base_b + site) *= -1;
-                        }
-                    },
-                );
-            }
-        } else {
-            // Pure Wolff BFS two-phase (no stats needed)
+        if !use_uf {
+            // Wolff two-phase update by depth-first search (no statistics needed).
             let seed = rng.gen_range(0..n_spins);
 
-            // === Phase 1: Blue cluster BFS ===
+            // === Phase 1: Blue cluster ===
             let mut in_cluster = vec![false; n_spins];
             let mut stack = Vec::with_capacity(n_spins);
             dfs_cluster(
@@ -1093,11 +790,8 @@ fn cmr_step(
             );
 
             // Flip blue cluster (both replicas always)
-            for (i, &in_c) in in_cluster.iter().enumerate() {
-                if in_c {
-                    *sp_ptr.add(base_a + i) *= -1;
-                    *sp_ptr.add(base_b + i) *= -1;
-                }
+            for i in (0..n_spins).filter(|&i| in_cluster[i]) {
+                flip(i, 3);
             }
 
             // === Phase 2: Grey cluster (extend from the flipped blue cluster) ===
@@ -1143,26 +837,98 @@ fn cmr_step(
 
             // Flip grey cluster with k ∈ {1,2,3}
             let k: u8 = rng.gen_range(1..=3);
-            let flip_a = k & 1 != 0;
-            let flip_b = k & 2 != 0;
-            for (i, &in_c) in in_cluster.iter().enumerate() {
-                if in_c {
-                    if flip_a {
-                        *sp_ptr.add(base_a + i) *= -1;
-                    }
-                    if flip_b {
-                        *sp_ptr.add(base_b + i) *= -1;
-                    }
-                }
+            for i in (0..n_spins).filter(|&i| in_cluster[i]) {
+                flip(i, k);
             }
+            return;
         }
-    };
 
-    if sequential {
-        (0..tasks.len()).for_each(work);
-    } else {
-        (0..tasks.len()).into_par_iter().for_each(work);
-    }
+        // Wolff draws its seed before any bond.
+        let seed = wolff.then(|| rng.gen_range(0..n_spins));
+
+        // Site overlaps q_i = a_i b_i classify bonds: an edge is singly satisfied
+        // iff q_i != q_j (J != 0), and blue flips negate both replicas, leaving q.
+        let overlap: Vec<i8> = (0..n_spins)
+            .map(|i| *sp_ptr.add(base_a + i) * *sp_ptr.add(base_b + i))
+            .collect();
+
+        // === Phase 1: Blue clusters ===
+        let (mut uf, metrics) = build_graph(lattice, outs.observation.is_some(), |i, d| {
+            let j = lattice.neighbor_fwd(i, d);
+            // Equal site overlaps make replica b satisfied exactly when a is.
+            if overlap[i] != overlap[j] {
+                return false;
+            }
+            let coupling = couplings[i * n_neighbors + d];
+            let satisfied =
+                *sp_ptr.add(base_a + i) as f32 * *sp_ptr.add(base_a + j) as f32 * coupling > 0.0;
+            satisfied && blue_bond.sample(coupling.abs(), rng)
+        });
+
+        let counts = uf_flatten_counts(&mut uf.parent);
+        outs.publish_graph(slot, &outs.blue_ids, &uf.parent, &counts, metrics);
+        if action == ClusterAction::Observe {
+            return;
+        }
+
+        // Flip blue clusters (both replicas jointly)
+        if let Some(seed) = seed {
+            let seed_root = uf.parent[seed];
+            for i in (0..n_spins).filter(|&i| uf.parent[i] == seed_root) {
+                flip(i, 3);
+            }
+        } else {
+            // Keep UF ranks intact until red bonds extend the blue clusters.
+            let mut do_flip = vec![UNDECIDED; n_spins];
+            decide_clusters(
+                &uf.parent,
+                &mut do_flip,
+                |_, root| counts[root] > 1,
+                |_| u8::from(rng.gen::<f32>() < 0.5),
+                |site, both| {
+                    if both == 1 {
+                        flip(site, 3);
+                    }
+                },
+            );
+        }
+
+        // === Phase 2: Grey clusters (extend blue UF with red bonds) ===
+        // Red bond: singly-satisfied edges on post-flip spins, prob 1 - r.
+        // No clone needed: blue flips preserve the singly-satisfied classification.
+        // Return blue counts so grey counts can reuse the pooled allocation.
+        drop(counts);
+        let storage = &mut *uf;
+        uf_bonds_extend(&mut storage.parent, &mut storage.rank, lattice, |i, d| {
+            let j = lattice.neighbor_fwd(i, d);
+            let coupling = couplings[i * n_neighbors + d];
+            overlap[i] != overlap[j] && coupling != 0.0 && red_bond.sample(coupling.abs(), rng)
+        });
+
+        let grey_counts = uf_flatten_counts(&mut uf.parent);
+        if let Some(ids) = outs.cluster_ids.get(slot) {
+            ids.clear();
+            ids.extend_from_slice(&uf.parent);
+        }
+
+        // Flip grey clusters (each replica independently)
+        if let Some(seed) = seed {
+            let seed_root = uf.parent[seed];
+            let k: u8 = rng.gen_range(1..=3);
+            for i in (0..n_spins).filter(|&i| uf.parent[i] == seed_root) {
+                flip(i, k);
+            }
+            return;
+        }
+        let storage = &mut *uf;
+        decide_clusters(
+            &storage.parent,
+            &mut storage.rank,
+            |_, root| grey_counts[root] > 1,
+            |_| rng.gen_range(0..=3),
+            flip,
+        );
+    });
 }
 
 #[cfg(test)]

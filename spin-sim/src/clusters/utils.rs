@@ -289,14 +289,25 @@ pub(super) fn uf_bonds_extend(
     lattice: &Lattice,
     mut should_bond: impl FnMut(usize, usize) -> bool,
 ) {
-    for i in 0..lattice.n_spins {
-        for d in 0..lattice.n_neighbors {
-            if should_bond(i, d) {
-                let j = lattice.neighbor_fwd(i, d);
-                union(parent, rank, i as u32, j as u32);
-            }
-        }
+    activate_bonds(parent, rank, lattice, &mut should_bond, &mut |_, _| {});
+}
+
+/// Pooled union-find of `should_bond`, recording [`BondMetrics`] only when `observe`,
+/// so the unobserved build keeps its bond loop free of bookkeeping.
+#[inline]
+pub(super) fn build_graph(
+    lattice: &Lattice,
+    observe: bool,
+    should_bond: impl FnMut(usize, usize) -> bool,
+) -> (PooledUf, Option<BondMetrics>) {
+    if !observe {
+        return (uf_bonds(lattice, should_bond), None);
     }
+    let mut metrics = BondMetrics::new(lattice);
+    let uf = uf_bonds_with(lattice, should_bond, |site, dim| {
+        metrics.record_bond(lattice, site, dim);
+    });
+    (uf, Some(metrics))
 }
 
 /// Flatten UF parent array in-place and return per-root counts.

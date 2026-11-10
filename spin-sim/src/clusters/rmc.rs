@@ -1,9 +1,9 @@
 use super::utils::{decide_clusters, dfs_cluster, uf_bonds, uf_flatten};
 use crate::config::ClusterMode;
 use crate::geometry::Lattice;
+use crate::parallel::{for_each_task, Slots};
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
-use rayon::prelude::*;
 
 #[inline]
 fn metropolis(delta: f64, rng: &mut Xoshiro256StarStar) -> bool {
@@ -41,18 +41,29 @@ pub fn rmc_update(
 ) {
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
+    // The tasks reach replicas through raw pointers, so the layout is checked here.
+    assert!(
+        system_ids.len() == n_replicas * n_temps
+            && system_ids
+                .iter()
+                .all(|&id| (id + 1) * n_spins <= spins.len()),
+        "rmc buffers disagree with the replica layout"
+    );
     let sp = spins.as_mut_ptr() as usize;
-    let rp = rngs.as_mut_ptr() as usize;
+    let rngs = Slots::new(Some(rngs));
 
     for parity in 0..2 {
         let n_edges = n_temps.saturating_sub(parity) / 2;
-        let work = |task: usize| unsafe {
+        // SAFETY: edges of one parity are disjoint within a replica row, so each task
+        // alone touches the systems at slots `slot` and `slot + 1` and the generator
+        // of `slot`.
+        for_each_task(n_replicas * n_edges, sequential, |task| unsafe {
             let t = parity + 2 * (task % n_edges);
             if !(active_temps[t] && active_temps[t + 1]) {
                 return;
             }
             let slot = (task / n_edges) * n_temps + t;
-            let rng = &mut *(rp as *mut Xoshiro256StarStar).add(slot);
+            let rng = rngs.at(slot);
             let sp_ptr = sp as *mut i8;
             let base_a = system_ids[slot] * n_spins;
             let base_b = system_ids[slot + 1] * n_spins;
@@ -134,13 +145,6 @@ pub fn rmc_update(
                     },
                 );
             }
-        };
-
-        let n_tasks = n_replicas * n_edges;
-        if sequential {
-            (0..n_tasks).for_each(work);
-        } else {
-            (0..n_tasks).into_par_iter().for_each(work);
-        }
+        });
     }
 }
