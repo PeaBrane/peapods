@@ -217,6 +217,13 @@ fn run_sweep_loop_impl(
     // The moves add to these histograms in place, one per output slot; they are
     // folded per temperature once the run ends.
     let mut fk_csd_slots = histograms(if collect_fk { n_systems } else { 0 }, n_spins);
+    // Spins visited by recorded FK updates, per temperature slot.
+    let fk_updates_spins = config
+        .cluster_update
+        .as_ref()
+        .is_some_and(|cluster| cluster.action == ClusterAction::Update);
+    let mut fk_visits = vec![0u64; if fk_updates_spins { n_systems } else { 0 }];
+    let mut fk_recorded_updates = 0u64;
     let mut fk_observation_buf = if observe_fk {
         vec![clusters::GraphObservationSlot::default(); n_systems]
     } else {
@@ -431,9 +438,11 @@ fn run_sweep_loop_impl(
                 csd_out,
                 observation_out,
                 config.sequential,
+                (fk_updates_spins && record).then_some(fk_visits.as_mut_slice()),
             );
             if cluster_cfg.action == ClusterAction::Update {
                 cache.invalidate();
+                fk_recorded_updates += u64::from(record);
             }
 
             if let Some(accum) = observation_accums.fk.as_mut().filter(|_| record) {
@@ -472,10 +481,11 @@ fn run_sweep_loop_impl(
         }
 
         if equil_diag {
-            equil_accum
-                .as_mut()
-                .unwrap()
-                .push(&diag_e_buf, &ov_accum.diag_ql_buf);
+            equil_accum.as_mut().unwrap().push(
+                &diag_e_buf,
+                &ov_accum.diag_ql_buf,
+                &ov_accum.diag_q2_buf,
+            );
         }
 
         if record {
@@ -838,6 +848,18 @@ fn run_sweep_loop_impl(
             fk_csd,
             overlap_csd,
             top_cluster_sizes,
+            fk_updates: if fk_updates_spins {
+                vec![fk_recorded_updates * n_replicas as u64; n_temps]
+            } else {
+                vec![]
+            },
+            fk_visited_spins: if fk_updates_spins {
+                (0..n_temps)
+                    .map(|t| fk_visits.iter().skip(t).step_by(n_temps).sum())
+                    .collect()
+            } else {
+                vec![]
+            },
         },
         per_disorder_cluster_observations: vec![cluster_observations],
         per_disorder_physics: physics.map(|p| vec![p.finish()]).unwrap_or_default(),

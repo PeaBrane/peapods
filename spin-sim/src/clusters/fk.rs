@@ -22,6 +22,9 @@ use rand_xoshiro::Xoshiro256StarStar;
 /// `s`). The slice length must equal the number of systems (i.e.
 /// `system_ids.len()`); each inner vec must be pre-sized to `n_spins + 1`.
 ///
+/// When `visited_out` is `Some`, each temperature slot's entry grows by the spins the
+/// update visited: the flipped cluster for Wolff, every spin for Swendsen-Wang.
+///
 /// When `sequential` is true, replicas are processed on the current thread.
 #[cfg_attr(feature = "profile", inline(never))]
 #[allow(clippy::too_many_arguments)]
@@ -37,6 +40,7 @@ pub fn fk_update(
     csd_out: Option<&mut [Vec<u64>]>,
     observation_out: Option<&mut [GraphObservationSlot]>,
     sequential: bool,
+    visited_out: Option<&mut [u64]>,
 ) {
     embedded_update::<IsingEmbedding>(
         lattice,
@@ -50,7 +54,7 @@ pub fn fk_update(
         csd_out,
         observation_out,
         sequential,
-        None,
+        visited_out,
     );
 }
 
@@ -281,6 +285,7 @@ mod tests {
                 csd.then_some(histogram.as_mut_slice()),
                 None,
                 true,
+                None,
             );
             counts[ExactLaw::index(&spins)] += 1;
         }

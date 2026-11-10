@@ -33,9 +33,19 @@ pub(super) struct PtState {
     edge_acceptances: Vec<u64>,
     round_trips: Vec<u64>,
     trip_state: Vec<u8>,
+    /// The end of the ladder each system visited last: `NO_END` until it reaches one.
+    last_end: Vec<u8>,
+    /// Per temperature slot, visits by systems that last visited the cold end.
+    flow_up: Vec<u64>,
+    /// Per temperature slot, visits by systems that have visited either end.
+    flow_labelled: Vec<u64>,
     cold_slot: usize,
     hot_slot: usize,
 }
+
+const NO_END: u8 = 0;
+const COLD_END: u8 = 1;
+const HOT_END: u8 = 2;
 
 impl PtState {
     fn new<T: PartialOrd>(
@@ -49,6 +59,9 @@ impl PtState {
             edge_acceptances: Vec::new(),
             round_trips: Vec::new(),
             trip_state: Vec::new(),
+            last_end: Vec::new(),
+            flow_up: Vec::new(),
+            flow_labelled: Vec::new(),
             cold_slot: 0,
             hot_slot: 0,
         };
@@ -72,13 +85,22 @@ impl PtState {
         self.round_trips.fill(0);
         self.trip_state.resize(n_replicas * n_temps, 0);
         self.trip_state.fill(0);
+        self.last_end.resize(n_replicas * n_temps, NO_END);
+        self.last_end.fill(NO_END);
+        self.flow_up.resize(n_temps, 0);
+        self.flow_up.fill(0);
+        self.flow_labelled.resize(n_temps, 0);
+        self.flow_labelled.fill(0);
         (self.cold_slot, self.hot_slot) = Self::extreme_temperature_slots(temperatures, n_temps);
 
         if n_temps == 0 {
             return;
         }
         for replica in 0..n_replicas {
-            self.trip_state[system_ids[replica * n_temps + self.hot_slot]] = 1;
+            let row = replica * n_temps;
+            self.last_end[system_ids[row + self.cold_slot]] = COLD_END;
+            self.last_end[system_ids[row + self.hot_slot]] = HOT_END;
+            self.trip_state[system_ids[row + self.hot_slot]] = 1;
         }
     }
 
@@ -113,7 +135,25 @@ impl PtState {
         (cold_slot, hot_slot)
     }
 
+    /// Counts the systems of one replica row by the end they last visited. The
+    /// fraction `flow_up / flow_labelled` falls from 1 at the cold end to 0 at the
+    /// hot end, linearly along a well-spaced ladder and steeply across a bottleneck
+    /// (Katzgraber, Trebst, Huse & Troyer, J. Stat. Mech. P03018 (2006)).
+    fn record_visits(&mut self, row: &[usize]) {
+        for (slot, &system) in row.iter().enumerate() {
+            let end = self.last_end[system];
+            self.flow_labelled[slot] += u64::from(end != NO_END);
+            self.flow_up[slot] += u64::from(end == COLD_END);
+        }
+    }
+
     fn record_arrival(&mut self, system: usize, slot: usize) {
+        if slot == self.cold_slot {
+            self.last_end[system] = COLD_END;
+        }
+        if slot == self.hot_slot {
+            self.last_end[system] = HOT_END;
+        }
         if slot == self.hot_slot {
             if self.trip_state[system] == 2 {
                 self.round_trips[system] += 1;
@@ -340,6 +380,8 @@ impl<S: Spin> ModelRealization<S> {
                     &mut record,
                 ),
             }
+            self.pt
+                .record_visits(&self.system_ids[offset..offset + n_temps]);
         }
     }
 
@@ -355,6 +397,18 @@ impl<S: Spin> ModelRealization<S> {
 
     pub fn pt_round_trips(&self) -> &[u64] {
         &self.pt.round_trips
+    }
+
+    /// Per temperature slot, visits after each tempering event by systems that last
+    /// visited the cold end of the ladder.
+    pub fn pt_flow_up(&self) -> &[u64] {
+        &self.pt.flow_up
+    }
+
+    /// Per temperature slot, visits by systems that have visited either end; the
+    /// denominator of the flow fraction `pt_flow_up / pt_flow_labelled`.
+    pub fn pt_flow_labelled(&self) -> &[u64] {
+        &self.pt.flow_labelled
     }
 }
 
@@ -407,6 +461,11 @@ mod tests {
         }
         assert!(realization.pt_edge_acceptances().iter().all(|&a| a == 40));
         assert!(realization.pt_round_trips().iter().sum::<u64>() > 0);
+        // Whoever sits at an end has just visited it.
+        let (up, labelled) = (realization.pt_flow_up(), realization.pt_flow_labelled());
+        assert_eq!((up[0], up[4]), (labelled[0], 0));
+        assert_eq!((labelled[0], labelled[4]), (40, 40));
+        assert!(up.iter().zip(labelled).all(|(up, labelled)| up <= labelled));
     }
 
     #[test]

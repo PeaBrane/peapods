@@ -204,6 +204,105 @@ impl PhysicsResult {
     }
 }
 
+impl PhysicsResult {
+    /// Delete-one-disorder jackknife standard errors of every value of
+    /// [`Self::aggregate`]. Ratios of disorder averages (Binder parameters,
+    /// correlation lengths) have no error bar from the samples' own ratios; the
+    /// jackknife recomputes them with each sample left out. NaN with fewer than two
+    /// samples, and wherever a leave-one-out value is undefined.
+    pub fn jackknife_stderr<'a>(
+        results: impl IntoIterator<Item = &'a Self>,
+        shape: &[usize],
+        temperatures: &[f64],
+        components: usize,
+    ) -> PhysicsValues {
+        let results: Vec<_> = results.into_iter().collect();
+        assert!(!results.is_empty());
+        let n = results.len();
+        let full = Self::aggregate(results.iter().copied(), shape, temperatures, components);
+        let undefined = |values: &PhysicsValues| -> PhysicsValues {
+            values
+                .iter()
+                .map(|(&name, rows)| {
+                    (
+                        name,
+                        rows.iter().map(|row| vec![f64::NAN; row.len()]).collect(),
+                    )
+                })
+                .collect()
+        };
+        if n < 2 {
+            return undefined(&full);
+        }
+
+        let width = results[0].moments[0].len();
+        let mut total = vec![vec![0.0; width]; temperatures.len()];
+        for result in &results {
+            for (sum, moment) in total
+                .iter_mut()
+                .flatten()
+                .zip(result.moments.iter().flatten())
+            {
+                *sum += moment;
+            }
+        }
+        // Heat capacities are centred within each sample, so they are averaged apart.
+        let heats: Vec<Vec<f64>> = results
+            .iter()
+            .map(|result| {
+                result.values(shape, temperatures, components)["heat_capacity"]
+                    .iter()
+                    .map(|row| row[0])
+                    .collect()
+            })
+            .collect();
+        let heat_total: Vec<f64> = (0..temperatures.len())
+            .map(|t| heats.iter().map(|heat| heat[t]).sum())
+            .collect();
+
+        let left_out = (n - 1) as f64;
+        let leave_one_out: Vec<PhysicsValues> = (0..n)
+            .map(|omitted| {
+                let pooled = Self {
+                    fields: results[0].fields.clone(),
+                    moments: total
+                        .iter()
+                        .zip(&results[omitted].moments)
+                        .map(|(sum, moment)| {
+                            sum.iter()
+                                .zip(moment)
+                                .map(|(sum, moment)| (sum - moment) / left_out)
+                                .collect()
+                        })
+                        .collect(),
+                    count: 0,
+                    blocks: vec![],
+                };
+                let mut values = pooled.values(shape, temperatures, components);
+                let heat = (0..temperatures.len())
+                    .map(|t| vec![(heat_total[t] - heats[omitted][t]) / left_out])
+                    .collect();
+                values.insert("heat_capacity", heat);
+                values
+            })
+            .collect();
+
+        // Var = (n - 1) / n · Σ_i (θ_(i) - θ_(·))², with θ_(·) the leave-one-out mean.
+        let mut stderr = undefined(&full);
+        for (&name, rows) in stderr.iter_mut() {
+            for (t, row) in rows.iter_mut().enumerate() {
+                for (k, error) in row.iter_mut().enumerate() {
+                    let estimates = leave_one_out.iter().map(|values| values[name][t][k]);
+                    let mean = estimates.clone().sum::<f64>() / n as f64;
+                    let spread: f64 = estimates.map(|value| (value - mean).powi(2)).sum();
+                    *error = (left_out / n as f64 * spread).sqrt();
+                }
+            }
+        }
+        stderr
+    }
+}
+
 /// Second-moment correlation lengths `ξ_d` and `ξ_d / L_d` along each axis, from
 /// the structure factor at zero and at the smallest nonzero wavevector `2π/L_d`.
 fn second_moment_lengths(s0: f64, sk_min: &[f64], shape: &[usize]) -> (Vec<f64>, Vec<f64>) {
@@ -1020,6 +1119,37 @@ mod tests {
     }
 
     /// An unmeasured moment is undefined; zero would read as a measured value.
+    /// For a plain disorder mean the jackknife error is the standard error of the
+    /// mean; for a ratio it differs from the spread of per-sample ratios.
+    #[test]
+    fn jackknife_of_a_mean_is_the_standard_error() {
+        let lattice = Lattice::new(vec![3, 3]);
+        let sample = |scale: f64| {
+            let collector =
+                PhysicsCollector::new(&lattice, 1, &PhysicsOptions::default(), 1).unwrap();
+            let mut result = collector.finish();
+            result.count = 1;
+            for (k, moment) in result.moments[0].iter_mut().enumerate() {
+                *moment = scale * (1.0 + k as f64);
+            }
+            result
+        };
+        let samples = [sample(1.0), sample(2.0), sample(4.0)];
+        let stderr = PhysicsResult::jackknife_stderr(&samples, &[3, 3], &[1.5], 1);
+        // mags2 values 2, 4, 8 per the field order: sample standard deviation / sqrt(3).
+        let values: Vec<f64> = samples
+            .iter()
+            .map(|s| s.values(&[3, 3], &[1.5], 1)["mags2"][0][0])
+            .collect();
+        let mean = values.iter().sum::<f64>() / 3.0;
+        let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / 2.0;
+        assert!((stderr["mags2"][0][0] - (variance / 3.0).sqrt()).abs() < 1e-12);
+        assert!(stderr["binder_cumulant"][0][0].is_finite());
+
+        let single = PhysicsResult::jackknife_stderr(&samples[..1], &[3, 3], &[1.5], 1);
+        assert!(single["mags2"][0][0].is_nan());
+    }
+
     #[test]
     fn finish_without_measurements_is_nan() {
         let lattice = Lattice::new(vec![3, 3]);

@@ -186,6 +186,8 @@ pub struct OverlapAccum {
     link_overlaps4_buf: Vec<f32>,
 
     pub diag_ql_buf: Vec<f32>,
+    /// Pair-averaged q² of the current sweep, for the equilibration diagnostic.
+    pub diag_q2_buf: Vec<f32>,
     pub q2_ac_buf: Vec<f64>,
     site_overlap: Vec<i8>,
 }
@@ -344,11 +346,8 @@ impl OverlapAccum {
             link_overlaps2_buf: vec![0.0f32; n_temps],
             link_overlaps4_buf: vec![0.0f32; n_temps],
 
-            diag_ql_buf: if equil_diag {
-                vec![0.0f32; n_temps]
-            } else {
-                vec![]
-            },
+            diag_ql_buf: vec![0.0; if equil_diag { n_temps } else { 0 }],
+            diag_q2_buf: vec![0.0; if equil_diag { n_temps } else { 0 }],
             q2_ac_buf: if collect_q2_ac {
                 vec![0.0f64; n_temps]
             } else {
@@ -377,6 +376,7 @@ impl OverlapAccum {
     pub fn collect(&mut self, lattice: &Lattice, spins: &[i8], system_ids: &[usize], record: bool) {
         if self.equil_diag {
             self.diag_ql_buf.fill(0.0);
+            self.diag_q2_buf.fill(0.0);
         }
         for pair_idx in 0..self.n_pairs {
             let r_a = 2 * pair_idx;
@@ -394,15 +394,16 @@ impl OverlapAccum {
 
                 let ql = dot_link as f32 / self.n_bonds as f32;
 
+                let q = dot_spin as f32 / self.n_spins as f32;
+                let q2 = q * q;
                 if self.equil_diag {
                     self.diag_ql_buf[t] += ql;
+                    self.diag_q2_buf[t] += q2;
                 }
                 if !record {
                     continue;
                 }
 
-                let q = dot_spin as f32 / self.n_spins as f32;
-                let q2 = q * q;
                 self.overlaps_buf[t] = q;
                 self.overlaps2_buf[t] = q2;
                 self.overlaps4_buf[t] = q2 * q2;
@@ -434,7 +435,7 @@ impl OverlapAccum {
 
         if self.equil_diag {
             let inv = 1.0 / self.n_pairs as f32;
-            for v in self.diag_ql_buf.iter_mut() {
+            for v in self.diag_ql_buf.iter_mut().chain(&mut self.diag_q2_buf) {
                 *v *= inv;
             }
         }

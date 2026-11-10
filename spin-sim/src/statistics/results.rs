@@ -21,6 +21,14 @@ pub struct ClusterStats {
     /// Zero for a mode that never ran during measurement, and where fewer than `k`
     /// clusters exist.
     pub top_cluster_sizes: Vec<Vec<[f64; 4]>>,
+    /// Recorded FK cluster updates per temperature, summed over replicas. Empty
+    /// unless FK clusters update spins.
+    pub fk_updates: Vec<u64>,
+    /// Spins those updates visited: the flipped cluster for Wolff, every spin for
+    /// Swendsen-Wang. For a ferromagnet the mean Wolff cluster size
+    /// `fk_visited_spins / fk_updates` estimates `N ⟨m²⟩`, and for any model it
+    /// converts autocorrelation times from cluster updates to sweeps.
+    pub fk_visited_spins: Vec<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -174,6 +182,17 @@ fn defined_mean_over<'a, R>(results: &'a [R], field: impl Fn(&'a R) -> &'a [f64]
         .collect()
 }
 
+/// Element-wise sum over `results` of the counters that `field` selects.
+fn sum_over<'a, R>(results: &'a [R], field: impl Fn(&'a R) -> &'a [u64]) -> Vec<u64> {
+    let mut total = vec![0; results.first().map_or(0, |first| field(first).len())];
+    for result in results {
+        for (total, &count) in total.iter_mut().zip(field(result)) {
+            *total += count;
+        }
+    }
+    total
+}
+
 /// Element-wise conjunction over `results`.
 fn all_over<'a, R>(results: &'a [R], field: impl Fn(&'a R) -> &'a [bool]) -> Vec<bool> {
     let len = results.first().map_or(0, |first| field(first).len());
@@ -197,6 +216,8 @@ impl SweepResult {
                 fk_csd: vec![],
                 overlap_csd: vec![],
                 top_cluster_sizes: vec![],
+                fk_updates: vec![],
+                fk_visited_spins: vec![],
             },
             per_disorder_physics: vec![],
             per_disorder_cluster_observations: vec![],
@@ -288,6 +309,9 @@ impl SweepResult {
                 link_overlap_avg: mean_over(results, |r| {
                     &r.diagnostics.equil_checkpoints[i].link_overlap_avg
                 }),
+                overlap2_avg: mean_over(results, |r| {
+                    &r.diagnostics.equil_checkpoints[i].overlap2_avg
+                }),
             })
             .collect();
         debug_assert!(results.iter().all(|r| r.mags.len() == n_temps));
@@ -304,6 +328,8 @@ impl SweepResult {
                 fk_csd,
                 overlap_csd,
                 top_cluster_sizes,
+                fk_updates: sum_over(results, |r| &r.cluster_stats.fk_updates),
+                fk_visited_spins: sum_over(results, |r| &r.cluster_stats.fk_visited_spins),
             },
             per_disorder_cluster_observations: results
                 .iter()

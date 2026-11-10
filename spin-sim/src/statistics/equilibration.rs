@@ -1,4 +1,5 @@
-/// Replica-averaged energy and link overlap over the log-binned window ending at `sweep`.
+/// Replica-averaged energy, link overlap and squared overlap over the log-binned
+/// window ending at `sweep`.
 ///
 /// The window is the last `⌈sweep / 2⌉` sweeps, `(⌊sweep / 2⌋, sweep]` counting from
 /// one, i.e. `[2^(k-1), 2^k)` at the power-of-two checkpoints (Katzgraber, Palassini
@@ -8,7 +9,14 @@ pub struct EquilCheckpoint {
     pub sweep: usize,
     pub energy_avg: Vec<f64>,
     pub link_overlap_avg: Vec<f64>,
+    /// Pair-averaged q². Its plateau over the last windows is the usual
+    /// equilibration criterion where the energy identity does not apply (bimodal
+    /// couplings).
+    pub overlap2_avg: Vec<f64>,
 }
+
+/// The series a checkpoint averages: energy, link overlap, squared overlap.
+const N_SERIES: usize = 3;
 
 pub struct EquilDiagnosticAccum {
     n_temps: usize,
@@ -16,10 +24,9 @@ pub struct EquilDiagnosticAccum {
     next_ckpt_idx: usize,
     next_start_idx: usize,
     count: usize,
-    sum_energy: Vec<f64>,
-    sum_link_overlap: Vec<f64>,
+    sums: [Vec<f64>; N_SERIES],
     /// Cumulative sums at the start of each opened window, indexed like `checkpoints`.
-    window_starts: Vec<[Vec<f64>; 2]>,
+    window_starts: Vec<[Vec<f64>; N_SERIES]>,
     snapshots: Vec<EquilCheckpoint>,
 }
 
@@ -41,8 +48,7 @@ impl EquilDiagnosticAccum {
             next_ckpt_idx: 0,
             next_start_idx: 0,
             count: 0,
-            sum_energy: vec![0.0; n_temps],
-            sum_link_overlap: vec![0.0; n_temps],
+            sums: std::array::from_fn(|_| vec![0.0; n_temps]),
             window_starts: Vec::new(),
             snapshots: Vec::new(),
         };
@@ -60,32 +66,39 @@ impl EquilDiagnosticAccum {
             .get(self.next_start_idx)
             .is_some_and(|&c| Self::window_start(c) == self.count)
         {
-            self.window_starts
-                .push([self.sum_energy.clone(), self.sum_link_overlap.clone()]);
+            self.window_starts.push(self.sums.clone());
             self.next_start_idx += 1;
         }
     }
 
-    pub fn push(&mut self, energies: &[f32], link_overlaps: &[f32]) {
+    /// Adds one sweep's replica-averaged energy, link overlap and squared overlap.
+    pub fn push(&mut self, energies: &[f32], link_overlaps: &[f32], overlaps2: &[f32]) {
         self.count += 1;
-        for t in 0..self.n_temps {
-            self.sum_energy[t] += energies[t] as f64;
-            self.sum_link_overlap[t] += link_overlaps[t] as f64;
+        for (sums, values) in self
+            .sums
+            .iter_mut()
+            .zip([energies, link_overlaps, overlaps2])
+        {
+            for (sum, &value) in sums.iter_mut().zip(&values[..self.n_temps]) {
+                *sum += value as f64;
+            }
         }
 
         while self.checkpoints.get(self.next_ckpt_idx) == Some(&self.count) {
-            let [start_energy, start_link_overlap] = &self.window_starts[self.next_ckpt_idx];
+            let starts = &self.window_starts[self.next_ckpt_idx];
             let width = (self.count - Self::window_start(self.count)) as f64;
-            let window_avg = |sums: &[f64], starts: &[f64]| -> Vec<f64> {
-                sums.iter()
-                    .zip(starts)
+            let window_avg = |series: usize| -> Vec<f64> {
+                self.sums[series]
+                    .iter()
+                    .zip(&starts[series])
                     .map(|(sum, start)| (sum - start) / width)
                     .collect()
             };
             self.snapshots.push(EquilCheckpoint {
                 sweep: self.count,
-                energy_avg: window_avg(&self.sum_energy, start_energy),
-                link_overlap_avg: window_avg(&self.sum_link_overlap, start_link_overlap),
+                energy_avg: window_avg(0),
+                link_overlap_avg: window_avg(1),
+                overlap2_avg: window_avg(2),
             });
             self.next_ckpt_idx += 1;
         }
@@ -106,12 +119,16 @@ mod tests {
         let mut accum = EquilDiagnosticAccum::new(1, n_sweeps);
         for sweep in 1..=n_sweeps {
             let value = sweep as f32;
-            accum.push(&[value], &[value * value]);
+            accum.push(&[value], &[value * value], &[2.0 * value]);
         }
         accum
             .finish()
             .into_iter()
-            .map(|c| (c.sweep, c.energy_avg[0], c.link_overlap_avg[0]))
+            .map(|c| {
+                // The third series is twice the first, and so is its window mean.
+                assert_eq!(c.overlap2_avg[0], 2.0 * c.energy_avg[0]);
+                (c.sweep, c.energy_avg[0], c.link_overlap_avg[0])
+            })
             .collect()
     }
 
