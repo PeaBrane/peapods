@@ -10,7 +10,7 @@ pub use equilibration::{EquilCheckpoint, EquilDiagnosticAccum};
 pub use overlap::{OverlapAccum, OverlapStats};
 pub use results::{
     ClusterObservations, ClusterSnapshot, ClusterStats, Diagnostics, DisorderSample,
-    GraphObservationSummary, SweepResult,
+    GraphObservationSummary, OverlapMoveCounts, RmcEdgeCounts, SweepResult,
 };
 pub use stats::Statistics;
 

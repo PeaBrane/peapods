@@ -2,6 +2,7 @@ use super::utils::{decide_clusters, dfs_cluster, uf_bonds, uf_flatten};
 use crate::config::ClusterMode;
 use crate::geometry::Lattice;
 use crate::parallel::{for_each_task, Slots};
+use crate::statistics::results::RmcEdgeCounts;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 
@@ -24,6 +25,9 @@ fn metropolis(delta: f64, rng: &mut Xoshiro256StarStar) -> bool {
 /// together, then the τ = -1 domains on the updated boundary. `Wolff` proposes the
 /// domain of one uniformly random site. Edges `(0, 1), (2, 3), ...` are updated before
 /// `(1, 2), (3, 4), ...`; each task draws from the generator of its lower slot.
+///
+/// With `edges_out`, the entry of each task's lower slot (`replica * n_temps + t`)
+/// grows by the domains it proposed and accepted and the sites it flipped.
 #[cfg_attr(feature = "profile", inline(never))]
 #[allow(clippy::too_many_arguments)]
 pub fn rmc_update(
@@ -38,6 +42,7 @@ pub fn rmc_update(
     rngs: &mut [Xoshiro256StarStar],
     cluster_mode: ClusterMode,
     sequential: bool,
+    edges_out: Option<&mut [RmcEdgeCounts]>,
 ) {
     let n_spins = lattice.n_spins;
     let n_neighbors = lattice.n_neighbors;
@@ -51,6 +56,7 @@ pub fn rmc_update(
     );
     let sp = spins.as_mut_ptr() as usize;
     let rngs = Slots::new(Some(rngs));
+    let edges = Slots::new(edges_out);
 
     for parity in 0..2 {
         let n_edges = n_temps.saturating_sub(parity) / 2;
@@ -105,8 +111,16 @@ pub fn rmc_update(
                         }
                     }
                 }
-                if metropolis(delta, rng) {
+                let accepted = metropolis(delta, rng);
+                if accepted {
                     (0..n_spins).filter(|&i| in_cluster[i]).for_each(flip);
+                }
+                if let Some(counts) = edges.get(slot) {
+                    counts.proposed += 1;
+                    counts.accepted += u64::from(accepted);
+                    if accepted {
+                        counts.flipped_sites += in_cluster.iter().filter(|&&c| c).count() as u64;
+                    }
                 }
                 return;
             }
@@ -126,6 +140,7 @@ pub fn rmc_update(
             let storage = &mut *uf;
             uf_flatten(&mut storage.parent);
             let mut delta = vec![0.0f64; n_spins];
+            let mut tally = RmcEdgeCounts::default();
             for sign in [1i8, -1] {
                 delta.fill(0.0);
                 for &(i, j, coupling) in &walls {
@@ -137,13 +152,26 @@ pub fn rmc_update(
                     &storage.parent,
                     &mut storage.rank,
                     |site, _| tau[site] == sign,
-                    |root| u8::from(metropolis(delta[root], rng)),
+                    |root| {
+                        let accepted = metropolis(delta[root], rng);
+                        tally.proposed += 1;
+                        tally.accepted += u64::from(accepted);
+                        u8::from(accepted)
+                    },
                     |site, accept| {
                         if accept == 1 {
                             flip(site);
+                            tally.flipped_sites += 1;
                         }
                     },
                 );
+            }
+            if let Some(counts) = edges.get(slot) {
+                *counts = RmcEdgeCounts {
+                    proposed: counts.proposed + tally.proposed,
+                    accepted: counts.accepted + tally.accepted,
+                    flipped_sites: counts.flipped_sites + tally.flipped_sites,
+                };
             }
         });
     }

@@ -195,6 +195,7 @@ fn stationarity_failures(
                 None,
                 None,
                 None,
+                None,
             ),
             Move::Rmc(cluster_mode) => rmc_update(
                 &lattice,
@@ -208,6 +209,7 @@ fn stationarity_failures(
                 &mut rngs,
                 cluster_mode,
                 true,
+                None,
             ),
         }
         for (slot, &system) in system_ids.iter().enumerate() {

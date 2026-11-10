@@ -393,96 +393,128 @@ pub(super) fn top4_sizes(sizes: impl IntoIterator<Item = u32>) -> [u32; 4] {
     top
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Most axes along which wrapping is tracked.
+pub(crate) const MAX_WINDING_DIMS: usize = 3;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct GraphObservationSlot {
     pub top4: [u32; 4],
     pub active_bonds: u32,
-    pub winding_x: bool,
-    pub winding_y: bool,
+    /// Whether some cluster wraps the torus along each lattice dimension.
+    pub wraps: [bool; MAX_WINDING_DIMS],
+    /// Whether one cluster wraps along every dimension.
+    pub wraps_all: bool,
+    pub wrapping_clusters: u32,
+    /// Sites in wrapping clusters.
+    pub wrapping_sites: u32,
     pub large_components: u32,
+    /// `Σ_C |C|² / N²` and `Σ_C |C|⁴ / N⁴` over the clusters.
+    pub s2: f64,
+    pub s4: f64,
     pub observed: bool,
 }
 
 /// A component counts as large from this fraction of the sites.
 const LARGE_COMPONENT_FRACTION: f64 = 0.05;
 
+// Component and winding bookkeeping stay separate because combining their
+// union-find paths regressed this observer workload.
+enum Winding {
+    Untracked,
+    Square(WindingUf<2>),
+    Cubic(WindingUf<3>),
+}
+
 pub(super) struct BondMetrics {
     active_bonds: u32,
-    // Component and winding bookkeeping stay separate because combining their
-    // union-find paths regressed this observer workload.
-    winding: Option<WindingUf>,
+    winding: Winding,
 }
 
 impl BondMetrics {
     pub fn new(lattice: &Lattice) -> Self {
+        let n_sites = lattice.n_spins;
+        let winding = if let Some((l0, l1)) = lattice.square_shape() {
+            Winding::Square(WindingUf::new(n_sites, [l0, l1]))
+        } else if let Some(shape) = lattice.cubic_shape() {
+            Winding::Cubic(WindingUf::new(n_sites, shape))
+        } else {
+            Winding::Untracked
+        };
         Self {
             active_bonds: 0,
-            winding: lattice
-                .square_shape()
-                .map(|shape| WindingUf::new(lattice.n_spins, shape)),
+            winding,
         }
     }
 
     #[inline]
     pub fn record_bond(&mut self, lattice: &Lattice, site: usize, dim: usize) {
         self.active_bonds += 1;
-        if let Some(ref mut winding) = self.winding {
-            winding.union_forward(site, lattice.neighbor_fwd(site, dim), dim);
+        let neighbor = || lattice.neighbor_fwd(site, dim);
+        match &mut self.winding {
+            Winding::Untracked => {}
+            Winding::Square(winding) => winding.union_forward(site, neighbor(), dim),
+            Winding::Cubic(winding) => winding.union_forward(site, neighbor(), dim),
         }
     }
 
-    /// `sizes` are the cluster sizes of a graph on `n_sites` sites (zeros ignored).
+    /// `clusters` are the `(root, size)` pairs of a graph on `n_sites` sites, as left by
+    /// the union-find this recorder followed bond by bond (zero sizes are ignored).
     pub fn finish(
-        mut self,
+        self,
         n_sites: usize,
-        sizes: impl Iterator<Item = u32> + Clone,
+        clusters: impl Iterator<Item = (usize, u32)> + Clone,
     ) -> GraphObservationSlot {
-        let mut winding_x = false;
-        let mut winding_y = false;
-        if let Some(ref mut winding) = self.winding {
-            (winding_x, winding_y) = winding.winding();
-        }
-
         let threshold = ((n_sites as f64) * LARGE_COMPONENT_FRACTION).ceil() as u32;
-        GraphObservationSlot {
+        let sizes = clusters.clone().map(|(_, size)| size);
+        let fraction = |size: u32| f64::from(size) / n_sites as f64;
+        let mut slot = GraphObservationSlot {
             top4: top4_sizes(sizes.clone()),
             active_bonds: self.active_bonds,
-            winding_x,
-            winding_y,
-            large_components: sizes.filter(|&size| size >= threshold).count() as u32,
+            large_components: sizes.clone().filter(|&size| size >= threshold).count() as u32,
+            s2: sizes.clone().map(|size| fraction(size).powi(2)).sum(),
+            s4: sizes.map(|size| fraction(size).powi(4)).sum(),
             observed: true,
+            ..Default::default()
+        };
+        match &self.winding {
+            Winding::Untracked => {}
+            Winding::Square(winding) => winding.summarize(clusters, &mut slot),
+            Winding::Cubic(winding) => winding.summarize(clusters, &mut slot),
         }
+        slot
     }
 }
 
-struct WindingUf {
+/// Union-find that tracks each site's displacement to its root, so that closing a
+/// cycle reveals whether it winds around the torus.
+struct WindingUf<const D: usize> {
     parent: Vec<u32>,
     rank: Vec<u8>,
-    displacement: Vec<[i64; 2]>,
-    wrap: Vec<[bool; 2]>,
-    shape: [i64; 2],
+    displacement: Vec<[i64; D]>,
+    wrap: Vec<[bool; D]>,
+    shape: [i64; D],
 }
 
-impl WindingUf {
-    fn new(n_sites: usize, shape: (usize, usize)) -> Self {
+impl<const D: usize> WindingUf<D> {
+    fn new(n_sites: usize, shape: [usize; D]) -> Self {
         Self {
             parent: (0..n_sites as u32).collect(),
             rank: vec![0; n_sites],
-            displacement: vec![[0, 0]; n_sites],
-            wrap: vec![[false, false]; n_sites],
-            shape: [shape.0 as i64, shape.1 as i64],
+            displacement: vec![[0; D]; n_sites],
+            wrap: vec![[false; D]; n_sites],
+            shape: shape.map(|extent| extent as i64),
         }
     }
 
-    fn find(&mut self, site: usize) -> (usize, [i64; 2]) {
+    fn find(&mut self, site: usize) -> (usize, [i64; D]) {
         let parent = self.parent[site] as usize;
         if parent == site {
-            return (site, [0, 0]);
+            return (site, [0; D]);
         }
 
         let own = self.displacement[site];
         let (root, parent_to_root) = self.find(parent);
-        let to_root = [own[0] + parent_to_root[0], own[1] + parent_to_root[1]];
+        let to_root = std::array::from_fn(|axis| own[axis] + parent_to_root[axis]);
         self.parent[site] = root as u32;
         self.displacement[site] = to_root;
         (root, to_root)
@@ -491,10 +523,8 @@ impl WindingUf {
     fn union_forward(&mut self, site: usize, neighbor: usize, dim: usize) {
         let (root_site, disp_site) = self.find(site);
         let (root_neighbor, disp_neighbor) = self.find(neighbor);
-        let mut neighbor_from_site = [
-            disp_site[0] - disp_neighbor[0],
-            disp_site[1] - disp_neighbor[1],
-        ];
+        let mut neighbor_from_site: [i64; D] =
+            std::array::from_fn(|axis| disp_site[axis] - disp_neighbor[axis]);
         neighbor_from_site[dim] += 1;
 
         if root_site == root_neighbor {
@@ -505,13 +535,13 @@ impl WindingUf {
             return;
         }
 
-        let combined_wrap = [
-            self.wrap[root_site][0] || self.wrap[root_neighbor][0],
-            self.wrap[root_site][1] || self.wrap[root_neighbor][1],
-        ];
+        let combined_wrap: [bool; D] = std::array::from_fn(|axis| {
+            self.wrap[root_site][axis] || self.wrap[root_neighbor][axis]
+        });
+        // The same rank rule as `union`, so both structures keep the same roots.
         if self.rank[root_site] < self.rank[root_neighbor] {
             self.parent[root_site] = root_neighbor as u32;
-            self.displacement[root_site] = [-neighbor_from_site[0], -neighbor_from_site[1]];
+            self.displacement[root_site] = neighbor_from_site.map(|d| -d);
             self.wrap[root_neighbor] = combined_wrap;
             return;
         }
@@ -524,18 +554,42 @@ impl WindingUf {
         }
     }
 
-    fn winding(&mut self) -> (bool, bool) {
-        // Wrap flags live on roots, and path compression never changes a root.
-        let mut x = false;
-        let mut y = false;
-        for site in 0..self.parent.len() {
+    /// Fills the wrapping fields of `slot` from the `(root, size)` pairs of the
+    /// component union-find. Wrap flags live on roots, which path compression never
+    /// changes, and this structure merges by the same rule as the component one, so
+    /// the two agree on every root.
+    fn summarize(
+        &self,
+        clusters: impl Iterator<Item = (usize, u32)>,
+        slot: &mut GraphObservationSlot,
+    ) {
+        for (root, size) in clusters.filter(|&(_, size)| size > 0) {
+            debug_assert_eq!(self.parent[root] as usize, root);
+            let wrap = self.wrap[root];
+            if !wrap.contains(&true) {
+                continue;
+            }
+            slot.wrapping_clusters += 1;
+            slot.wrapping_sites += size;
+            slot.wraps_all |= !wrap.contains(&false);
+            for (seen, &wraps) in slot.wraps.iter_mut().zip(&wrap) {
+                *seen |= wraps;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn winding(&self) -> [bool; D] {
+        let mut seen = [false; D];
+        for (site, wrap) in self.wrap.iter().enumerate() {
             if self.parent[site] as usize != site {
                 continue;
             }
-            x |= self.wrap[site][0];
-            y |= self.wrap[site][1];
+            for (seen, &wraps) in seen.iter_mut().zip(wrap) {
+                *seen |= wraps;
+            }
         }
-        (x, y)
+        seen
     }
 }
 
@@ -827,24 +881,24 @@ mod tests {
     #[test]
     fn winding_distinguishes_seams_and_noncontractible_cycles() {
         let index = |row: usize, col: usize| 4 * row + col;
-        let mut seam = WindingUf::new(16, (4, 4));
+        let mut seam = WindingUf::new(16, [4, 4]);
         seam.union_forward(index(0, 3), index(0, 0), 1);
-        assert_eq!(seam.winding(), (false, false));
+        assert_eq!(seam.winding(), [false, false]);
 
-        let mut row = WindingUf::new(16, (4, 4));
+        let mut row = WindingUf::new(16, [4, 4]);
         for col in 0..4 {
             row.union_forward(index(1, col), index(1, (col + 1) % 4), 1);
         }
-        assert_eq!(row.winding(), (false, true));
+        assert_eq!(row.winding(), [false, true]);
 
-        let mut both = WindingUf::new(16, (4, 4));
+        let mut both = WindingUf::new(16, [4, 4]);
         for col in 0..4 {
             both.union_forward(index(0, col), index(0, (col + 1) % 4), 1);
         }
         for row in 0..4 {
             both.union_forward(index(row, 0), index((row + 1) % 4, 0), 0);
         }
-        assert_eq!(both.winding(), (true, true));
+        assert_eq!(both.winding(), [true, true]);
     }
 
     #[test]
@@ -858,10 +912,55 @@ mod tests {
             |site, dim| metrics.record_bond(&lattice, site, dim),
         );
         let counts = uf_flatten_counts(&mut uf.parent);
-        let summary = metrics.finish(counts.len(), counts.iter().copied());
+        let summary = metrics.finish(counts.len(), counts.iter().copied().enumerate());
 
         assert_eq!(summary.active_bonds, bonds.len() as u32);
         assert_eq!(summary.top4, [4, 3, 1, 1]);
         assert!(summary.observed);
+        let sizes: Vec<f64> = counts
+            .iter()
+            .filter(|&&c| c > 0)
+            .map(|&c| c as f64 / 16.0)
+            .collect();
+        assert!((summary.s2 - sizes.iter().map(|s| s * s).sum::<f64>()).abs() < 1e-15);
+        assert!((summary.s4 - sizes.iter().map(|s| s.powi(4)).sum::<f64>()).abs() < 1e-15);
+    }
+
+    /// A full row wraps along its own direction only; its cluster is the one that is
+    /// counted and weighed. A line through a 3D lattice wraps along one of three axes.
+    #[test]
+    fn wrapping_clusters_are_counted_with_their_mass() {
+        let wrap_of = |lattice: &Lattice, bonds: &[(usize, usize)]| {
+            let mut metrics = BondMetrics::new(lattice);
+            let mut uf = uf_bonds_with(
+                lattice,
+                |site, dim| bonds.contains(&(site, dim)),
+                |site, dim| metrics.record_bond(lattice, site, dim),
+            );
+            let counts = uf_flatten_counts(&mut uf.parent);
+            metrics.finish(counts.len(), counts.iter().copied().enumerate())
+        };
+
+        let square = lattice_4x4();
+        // Row 1 closed along dimension 1, plus one stray bond elsewhere.
+        let row: Vec<(usize, usize)> = (4..8).map(|site| (site, 1)).chain([(12, 1)]).collect();
+        let slot = wrap_of(&square, &row);
+        assert_eq!(slot.wraps, [false, true, false]);
+        assert!(!slot.wraps_all);
+        assert_eq!((slot.wrapping_clusters, slot.wrapping_sites), (1, 4));
+
+        let cubic = Lattice::new(vec![3, 3, 3]);
+        // The line of sites (x, 0, 0), closed along dimension 0.
+        let line: Vec<(usize, usize)> = (0..3).map(|x| (9 * x, 0)).collect();
+        let slot = wrap_of(&cubic, &line);
+        assert_eq!(slot.wraps, [true, false, false]);
+        assert_eq!((slot.wrapping_clusters, slot.wrapping_sites), (1, 3));
+
+        // All bonds: one cluster wrapping along every axis.
+        let all: Vec<(usize, usize)> = (0..27).flat_map(|i| (0..3).map(move |d| (i, d))).collect();
+        let slot = wrap_of(&cubic, &all);
+        assert!(slot.wraps_all);
+        assert_eq!((slot.wrapping_clusters, slot.wrapping_sites), (1, 27));
+        assert!((slot.s2 - 1.0).abs() < 1e-15);
     }
 }

@@ -10,6 +10,72 @@ pub struct ClusterSnapshot {
     pub system_ids: Vec<[usize; 2]>,
 }
 
+/// Running totals of one overlap move's group updates at one temperature.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OverlapMoveCounts {
+    /// Group updates (one per replica group and call).
+    pub groups: u64,
+    /// Sites the updates acted on, summed over groups. A move that touches more than
+    /// half of the active sites mostly relabels replicas.
+    pub moved_sites: u64,
+    /// Groups whose active sites were counted: all but the Wolff depth-first search,
+    /// which never looks at every site.
+    pub counted_groups: u64,
+    /// Active sites summed over the counted groups. For two replicas they give the
+    /// grouped pair's overlap, `q = 1 - 2 active / N`.
+    pub active_sites: u64,
+}
+
+impl OverlapMoveCounts {
+    fn add(&mut self, other: &Self) {
+        self.groups += other.groups;
+        self.moved_sites += other.moved_sites;
+        self.counted_groups += other.counted_groups;
+        self.active_sites += other.active_sites;
+    }
+}
+
+/// Running totals of replica Monte Carlo at one temperature edge `(t, t + 1)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RmcEdgeCounts {
+    /// τ-domains proposed for a joint flip.
+    pub proposed: u64,
+    /// Proposed domains whose flip was accepted.
+    pub accepted: u64,
+    /// Sites in the accepted domains.
+    pub flipped_sites: u64,
+}
+
+impl RmcEdgeCounts {
+    fn add(&mut self, other: &Self) {
+        self.proposed += other.proposed;
+        self.accepted += other.accepted;
+        self.flipped_sites += other.flipped_sites;
+    }
+}
+
+/// Sums per-slot counters into per-group ones; `group_of` maps a slot to its group.
+pub(crate) fn fold_counts<T: Copy + Default>(
+    slots: &[T],
+    n_groups: usize,
+    group_of: impl Fn(usize) -> usize,
+    add: impl Fn(&mut T, &T),
+) -> Vec<T> {
+    let mut folded = vec![T::default(); n_groups];
+    for (slot, counts) in slots.iter().enumerate() {
+        add(&mut folded[group_of(slot)], counts);
+    }
+    folded
+}
+
+pub(crate) fn add_move_counts(total: &mut OverlapMoveCounts, part: &OverlapMoveCounts) {
+    total.add(part);
+}
+
+pub(crate) fn add_rmc_counts(total: &mut RmcEdgeCounts, part: &RmcEdgeCounts) {
+    total.add(part);
+}
+
 pub struct ClusterStats {
     /// FK cluster size histogram per temperature: `hist[s]` = count of size-`s` clusters.
     pub fk_csd: Vec<Vec<u64>>,
@@ -29,6 +95,12 @@ pub struct ClusterStats {
     /// `fk_visited_spins / fk_updates` estimates `N ⟨m²⟩`, and for any model it
     /// converts autocorrelation times from cluster updates to sweeps.
     pub fk_visited_spins: Vec<u64>,
+    /// Per-mode move counters of the recorded overlap updates, `[n_modes][n_temps]`.
+    /// Empty for a mode that publishes none (replica Monte Carlo).
+    pub overlap_moves: Vec<Vec<OverlapMoveCounts>>,
+    /// Replica Monte Carlo counters of the recorded updates per temperature edge,
+    /// `[n_temps - 1]`; empty without an `rmc` mode.
+    pub rmc_edges: Vec<RmcEdgeCounts>,
 }
 
 #[derive(Clone, Debug)]
@@ -38,7 +110,28 @@ pub struct GraphObservationSummary {
     pub top_four_component_fractions: Vec<[f64; 4]>,
     pub active_bond_density: Vec<f64>,
     pub large_component_count: Vec<f64>,
+    /// On a canonical square lattice, the probabilities that some cluster wraps
+    /// along dimension 0, along dimension 1, along either, and that one cluster
+    /// wraps along both.
     pub winding: Option<Vec<[f64; 4]>>,
+    /// Probability that some cluster wraps the torus along each lattice dimension,
+    /// `[n_temps][n_dims]`. Like the other wrapping fields, `None` unless the lattice
+    /// is a canonical square or cubic one.
+    pub wrapping_axes: Option<Vec<Vec<f64>>>,
+    /// Probability that some cluster wraps along at least one dimension.
+    pub wrapping_any: Option<Vec<f64>>,
+    /// Probability that a single cluster wraps along every dimension.
+    pub wrapping_all: Option<Vec<f64>>,
+    /// Mean number of wrapping clusters; values near two mark two giant clusters.
+    pub wrapping_cluster_count: Option<Vec<f64>>,
+    /// Mean fraction of sites in wrapping clusters, the percolation order parameter.
+    pub wrapping_fraction: Option<Vec<f64>>,
+    /// `⟨S₂⟩`, `⟨S₄⟩` and `⟨S₂²⟩` with `S_k = Σ_C |C|^k / N^k` per observed graph. For
+    /// FK clusters of an unfrustrated model, `⟨m²⟩ = ⟨S₂⟩` and
+    /// `⟨m⁴⟩ = 3⟨S₂²⟩ - 2⟨S₄⟩` are the improved estimators.
+    pub cluster_s2: Vec<f64>,
+    pub cluster_s4: Vec<f64>,
+    pub cluster_s2_squared: Vec<f64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -218,6 +311,8 @@ impl SweepResult {
                 top_cluster_sizes: vec![],
                 fk_updates: vec![],
                 fk_visited_spins: vec![],
+                overlap_moves: vec![],
+                rmc_edges: vec![],
             },
             per_disorder_physics: vec![],
             per_disorder_cluster_observations: vec![],
@@ -330,6 +425,26 @@ impl SweepResult {
                 top_cluster_sizes,
                 fk_updates: sum_over(results, |r| &r.cluster_stats.fk_updates),
                 fk_visited_spins: sum_over(results, |r| &r.cluster_stats.fk_visited_spins),
+                overlap_moves: (0..first.overlap_moves.len())
+                    .map(|mode| {
+                        let mut total = first.overlap_moves[mode].clone();
+                        for stats in results[1..].iter().map(|r| &r.cluster_stats) {
+                            for (total, part) in total.iter_mut().zip(&stats.overlap_moves[mode]) {
+                                total.add(part);
+                            }
+                        }
+                        total
+                    })
+                    .collect(),
+                rmc_edges: {
+                    let mut total = first.rmc_edges.clone();
+                    for stats in results[1..].iter().map(|r| &r.cluster_stats) {
+                        for (total, part) in total.iter_mut().zip(&stats.rmc_edges) {
+                            total.add(part);
+                        }
+                    }
+                    total
+                },
             },
             per_disorder_cluster_observations: results
                 .iter()

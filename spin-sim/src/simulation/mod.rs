@@ -10,6 +10,9 @@ use crate::config::{ClusterAction, OverlapClusterBuildMode, SimConfig, SweepMode
 use crate::geometry::Lattice;
 use crate::statistics::graph::{fold_histograms, histograms, ClusterObservationAccums};
 use crate::statistics::physics::{CachedTotals, PhysicsCollector, PhysicsOptions};
+use crate::statistics::results::{
+    add_move_counts, add_rmc_counts, fold_counts, OverlapMoveCounts, RmcEdgeCounts,
+};
 use crate::statistics::{
     AutocorrAccum, ClusterSnapshot, ClusterStats, Diagnostics, DisorderSample,
     EquilDiagnosticAccum, OverlapAccum, Statistics, SweepResult,
@@ -244,6 +247,17 @@ fn run_sweep_loop_impl(
         .collect();
 
     let collect_top = collect_overlap;
+    // Move counters are kept with the other overlap statistics, per output slot.
+    let collect_moves = config
+        .overlap_cluster
+        .as_ref()
+        .is_some_and(|overlap| overlap.collect_stats && overlap.action == ClusterAction::Update);
+    let mut move_slots: Vec<Vec<OverlapMoveCounts>> = (0..n_modes)
+        .map(|_| {
+            vec![OverlapMoveCounts::default(); if collect_moves { n_temps * n_pairs } else { 0 }]
+        })
+        .collect();
+    let mut rmc_slots = vec![RmcEdgeCounts::default(); if collect_moves { n_systems } else { 0 }];
 
     let mut top4_accum: Vec<Vec<[f64; 4]>> = if collect_top {
         (0..n_modes).map(|_| vec![[0.0; 4]; n_temps]).collect()
@@ -661,6 +675,7 @@ fn run_sweep_loop_impl(
                         &mut real.rngs,
                         oc_cfg.cluster_mode,
                         config.sequential,
+                        (collect_moves && record).then_some(rmc_slots.as_mut_slice()),
                     );
                 } else {
                     clusters::overlap_update(
@@ -684,6 +699,8 @@ fn run_sweep_loop_impl(
                         blue_snap,
                         spin_snap,
                         sid_snap,
+                        (collect_moves && record && n_pairs > 0)
+                            .then_some(move_slots[mode_idx].as_mut_slice()),
                     );
                 }
 
@@ -787,7 +804,14 @@ fn run_sweep_loop_impl(
     let (energy_tau, energy_tau_converged) = driver::tau_estimates(energy_accum.as_ref());
 
     let equil_checkpoints = equil_accum.map(|acc| acc.finish()).unwrap_or_default();
-    let has_winding = lattice.square_shape().is_some();
+    // Wrapping is tracked along every axis of canonical square and cubic lattices.
+    let winding_dims = if lattice.square_shape().is_some() {
+        2
+    } else if lattice.cubic_shape().is_some() {
+        3
+    } else {
+        0
+    };
 
     // Disabled histograms keep their shape only where the caller asked for it.
     let keep_shape = |collected: bool| collected || materialize_disabled_stats;
@@ -807,7 +831,7 @@ fn run_sweep_loop_impl(
     let cluster_observations = observation_accums.finish(
         n_spins,
         lattice.n_neighbors,
-        has_winding,
+        winding_dims,
         &fk_csd,
         config.overlap_cluster.as_ref().map_or(&[], |o| &o.modes),
         &overlap_csd,
@@ -850,6 +874,39 @@ fn run_sweep_loop_impl(
             top_cluster_sizes,
             fk_updates: if fk_updates_spins {
                 vec![fk_recorded_updates * n_replicas as u64; n_temps]
+            } else {
+                vec![]
+            },
+            overlap_moves: if collect_moves {
+                config
+                    .overlap_cluster
+                    .as_ref()
+                    .map_or(&[][..], |overlap| &overlap.modes)
+                    .iter()
+                    .zip(&move_slots)
+                    .map(|(mode, slots)| match mode {
+                        OverlapClusterBuildMode::Rmc => vec![],
+                        _ => fold_counts(
+                            slots,
+                            n_temps,
+                            |slot| slot / n_pairs.max(1),
+                            add_move_counts,
+                        ),
+                    })
+                    .collect()
+            } else {
+                vec![]
+            },
+            rmc_edges: if collect_moves
+                && config
+                    .overlap_cluster
+                    .as_ref()
+                    .is_some_and(|overlap| overlap.modes.contains(&OverlapClusterBuildMode::Rmc))
+            {
+                let mut edges =
+                    fold_counts(&rmc_slots, n_temps, |slot| slot % n_temps, add_rmc_counts);
+                edges.pop();
+                edges
             } else {
                 vec![]
             },
@@ -1098,6 +1155,57 @@ mod tests {
             assert_eq!(stats.histogram[0].iter().sum::<u64>(), 4);
             assert_eq!(stats.ql_at_q_sum.is_empty(), !enabled);
             assert_eq!(stats.ql2_at_q_sum.is_empty(), !enabled);
+        }
+    }
+
+    /// Move counters must be consistent: no update moves more sites than are active,
+    /// and replica Monte Carlo accepts at most what it proposes.
+    #[test]
+    fn overlap_move_counters_are_consistent() {
+        let lattice = Lattice::new(vec![6, 6]);
+        let couplings: Vec<f32> = (0..lattice.n_spins * lattice.n_neighbors)
+            .map(|i| if i % 3 == 0 { -1.0 } else { 1.0 })
+            .collect();
+        let temps = [0.8, 1.2, 2.0];
+        let mut config = plain_config(60);
+        config.warmup_sweeps = 10;
+        config.pt_interval = Some(1);
+        config.overlap_cluster = Some(OverlapClusterConfig {
+            interval: 1,
+            modes: vec![
+                OverlapClusterBuildMode::Houdayer(2),
+                OverlapClusterBuildMode::Cmr,
+                OverlapClusterBuildMode::Rmc,
+            ],
+            cluster_mode: ClusterMode::Sw,
+            action: ClusterAction::Update,
+            collect_stats: true,
+            snapshot_interval: None,
+            max_temperature: None,
+        });
+        let mut real = Realization::new(&lattice, couplings, &temps, 2, 11);
+        let stats = run(&lattice, &mut real, 2, &config).cluster_stats;
+        assert_eq!(stats.overlap_moves.len(), 3);
+        assert!(
+            stats.overlap_moves[2].is_empty(),
+            "rmc publishes no group moves"
+        );
+        // Recorded sweeps 10..60 rotate through the modes by sweep: Houdayer runs on
+        // the 16 multiples of 3, CMR on 17 sweeps; one group per temperature.
+        for (counts, calls) in stats.overlap_moves[..2].iter().zip([16, 17]) {
+            for counts in counts {
+                assert_eq!((counts.groups, counts.counted_groups), (calls, calls));
+                assert!(counts.moved_sites <= counts.active_sites);
+            }
+        }
+        let n = lattice.n_spins as u64;
+        assert!(stats.overlap_moves[1]
+            .iter()
+            .all(|c| c.active_sites == 17 * n));
+        assert_eq!(stats.rmc_edges.len(), temps.len() - 1);
+        for edge in &stats.rmc_edges {
+            assert!(edge.proposed > 0 && edge.accepted <= edge.proposed);
+            assert!(edge.flipped_sites <= 2 * 16 * n);
         }
     }
 

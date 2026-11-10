@@ -1,7 +1,7 @@
 //! Accumulators for cluster-size histograms and observed cluster graphs.
 
 use super::results::{ClusterObservations, GraphObservationSummary};
-use crate::clusters::GraphObservationSlot;
+use crate::clusters::{GraphObservationSlot, MAX_WINDING_DIMS};
 use crate::config::OverlapClusterBuildMode;
 
 /// `n` zeroed cluster-size histograms with one bin per size `0..=n_spins`.
@@ -34,8 +34,15 @@ pub(crate) struct GraphObservationAccum {
     observation_count: Vec<u64>,
     top4_sum: Vec<[u64; 4]>,
     active_bonds: Vec<u64>,
-    winding: Vec<[u64; 4]>,
+    wraps: Vec<[u64; MAX_WINDING_DIMS]>,
+    wraps_any: Vec<u64>,
+    wraps_all: Vec<u64>,
+    wrapping_clusters: Vec<u64>,
+    wrapping_sites: Vec<u64>,
     large_components: Vec<u64>,
+    s2: Vec<f64>,
+    s4: Vec<f64>,
+    s2_squared: Vec<f64>,
 }
 
 impl GraphObservationAccum {
@@ -44,8 +51,15 @@ impl GraphObservationAccum {
             observation_count: vec![0; n_temps],
             top4_sum: vec![[0; 4]; n_temps],
             active_bonds: vec![0; n_temps],
-            winding: vec![[0; 4]; n_temps],
+            wraps: vec![[0; MAX_WINDING_DIMS]; n_temps],
+            wraps_any: vec![0; n_temps],
+            wraps_all: vec![0; n_temps],
+            wrapping_clusters: vec![0; n_temps],
+            wrapping_sites: vec![0; n_temps],
             large_components: vec![0; n_temps],
+            s2: vec![0.0; n_temps],
+            s4: vec![0.0; n_temps],
+            s2_squared: vec![0.0; n_temps],
         }
     }
 
@@ -58,55 +72,105 @@ impl GraphObservationAccum {
             *total += u64::from(value);
         }
         self.active_bonds[temp] += u64::from(slot.active_bonds);
-        self.winding[temp][0] += u64::from(slot.winding_x);
-        self.winding[temp][1] += u64::from(slot.winding_y);
-        self.winding[temp][2] += u64::from(slot.winding_x || slot.winding_y);
-        self.winding[temp][3] += u64::from(slot.winding_x && slot.winding_y);
+        for (total, wraps) in self.wraps[temp].iter_mut().zip(slot.wraps) {
+            *total += u64::from(wraps);
+        }
+        self.wraps_any[temp] += u64::from(slot.wraps.contains(&true));
+        self.wraps_all[temp] += u64::from(slot.wraps_all);
+        self.wrapping_clusters[temp] += u64::from(slot.wrapping_clusters);
+        self.wrapping_sites[temp] += u64::from(slot.wrapping_sites);
         self.large_components[temp] += u64::from(slot.large_components);
+        self.s2[temp] += slot.s2;
+        self.s4[temp] += slot.s4;
+        self.s2_squared[temp] += slot.s2 * slot.s2;
     }
 
-    /// `cluster_size_counts` are the histograms of the observed graphs, per temperature.
+    /// `cluster_size_counts` are the histograms of the observed graphs, per
+    /// temperature; `winding_dims` is the number of axes wrapping was tracked along
+    /// (0 on lattices where it is not).
     fn finish(
         self,
         n_spins: usize,
         n_neighbors: usize,
-        has_winding: bool,
+        winding_dims: usize,
         cluster_size_counts: Vec<Vec<u64>>,
     ) -> Option<GraphObservationSummary> {
         if self.observation_count.iter().all(|&count| count == 0) {
             return None;
         }
 
+        // Means over the observations of each temperature; zero where none was made.
+        let mean = |total: f64, temp: usize| match self.observation_count[temp] {
+            0 => 0.0,
+            count => total / count as f64,
+        };
+        let means = |totals: &[u64]| -> Vec<f64> {
+            totals
+                .iter()
+                .enumerate()
+                .map(|(temp, &total)| mean(total as f64, temp))
+                .collect()
+        };
+        let float_means = |totals: &[f64]| -> Vec<f64> {
+            totals
+                .iter()
+                .enumerate()
+                .map(|(temp, &total)| mean(total, temp))
+                .collect()
+        };
         let n_temps = self.observation_count.len();
-        let mut top_four_component_fractions = vec![[0.0; 4]; n_temps];
-        let mut active_bond_density = vec![0.0; n_temps];
-        let mut large_component_count = vec![0.0; n_temps];
-        let mut winding = has_winding.then(|| vec![[0.0; 4]; n_temps]);
-        for temp in 0..n_temps {
-            let count = self.observation_count[temp];
-            if count == 0 {
-                continue;
-            }
-            let count_f64 = count as f64;
-            for k in 0..4 {
-                top_four_component_fractions[temp][k] =
-                    self.top4_sum[temp][k] as f64 / (count_f64 * n_spins as f64);
-                if let Some(ref mut winding) = winding {
-                    winding[temp][k] = self.winding[temp][k] as f64 / count_f64;
-                }
-            }
-            active_bond_density[temp] =
-                self.active_bonds[temp] as f64 / (count_f64 * n_spins as f64 * n_neighbors as f64);
-            large_component_count[temp] = self.large_components[temp] as f64 / count_f64;
-        }
+        let n_sites = n_spins as f64;
+        let tracked = winding_dims > 0;
+
+        let wrapping_any = means(&self.wraps_any);
+        let wrapping_all = means(&self.wraps_all);
+        let wrapping_axes: Vec<Vec<f64>> = (0..n_temps)
+            .map(|temp| {
+                self.wraps[temp][..winding_dims]
+                    .iter()
+                    .map(|&total| mean(total as f64, temp))
+                    .collect()
+            })
+            .collect();
+        // The 2D layout predates wrapping along three axes.
+        let winding = (winding_dims == 2).then(|| {
+            (0..n_temps)
+                .map(|temp| {
+                    [
+                        wrapping_axes[temp][0],
+                        wrapping_axes[temp][1],
+                        wrapping_any[temp],
+                        wrapping_all[temp],
+                    ]
+                })
+                .collect()
+        });
 
         Some(GraphObservationSummary {
+            top_four_component_fractions: (0..n_temps)
+                .map(|temp| self.top4_sum[temp].map(|total| mean(total as f64, temp) / n_sites))
+                .collect(),
+            active_bond_density: means(&self.active_bonds)
+                .iter()
+                .map(|bonds| bonds / (n_sites * n_neighbors as f64))
+                .collect(),
+            large_component_count: means(&self.large_components),
+            winding,
+            wrapping_cluster_count: tracked.then(|| means(&self.wrapping_clusters)),
+            wrapping_fraction: tracked.then(|| {
+                means(&self.wrapping_sites)
+                    .iter()
+                    .map(|sites| sites / n_sites)
+                    .collect()
+            }),
+            wrapping_axes: tracked.then_some(wrapping_axes),
+            wrapping_any: tracked.then_some(wrapping_any),
+            wrapping_all: tracked.then_some(wrapping_all),
+            cluster_s2: float_means(&self.s2),
+            cluster_s4: float_means(&self.s4),
+            cluster_s2_squared: float_means(&self.s2_squared),
             observation_count: self.observation_count,
             cluster_size_counts,
-            top_four_component_fractions,
-            active_bond_density,
-            large_component_count,
-            winding,
         })
     }
 }
@@ -180,7 +244,7 @@ impl ClusterObservationAccums {
         self,
         n_spins: usize,
         n_neighbors: usize,
-        has_winding: bool,
+        winding_dims: usize,
         fk_csd: &[Vec<u64>],
         modes: &[OverlapClusterBuildMode],
         overlap_csd: &[Vec<Vec<u64>>],
@@ -204,7 +268,7 @@ impl ClusterObservationAccums {
             total
         };
         let finish = |accum: Option<GraphObservationAccum>, counts: Vec<Vec<u64>>| {
-            accum.and_then(|accum| accum.finish(n_spins, n_neighbors, has_winding, counts))
+            accum.and_then(|accum| accum.finish(n_spins, n_neighbors, winding_dims, counts))
         };
         ClusterObservations {
             fk: finish(self.fk, fk_csd.to_vec()),

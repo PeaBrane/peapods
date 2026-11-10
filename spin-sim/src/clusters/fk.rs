@@ -169,7 +169,7 @@ pub(crate) fn embedded_update<E: Embedding>(
                 }
                 if let (Some(metrics), Some(slot)) = (metrics, unsafe { observations.get(temp_id) })
                 {
-                    *slot = metrics.finish(n_spins, counts.iter().copied());
+                    *slot = metrics.finish(n_spins, counts.iter().copied().enumerate());
                 }
             } else {
                 uf_flatten(&mut parent);

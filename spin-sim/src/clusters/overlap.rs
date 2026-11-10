@@ -5,6 +5,7 @@ use super::utils::{
 use crate::config::{ClusterAction, ClusterMode, OverlapClusterBuildMode, MAX_PERM_GROUP};
 use crate::geometry::Lattice;
 use crate::parallel::{for_each_task, Slots};
+use crate::statistics::results::OverlapMoveCounts;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
@@ -83,6 +84,15 @@ struct SlotOutputs<'a> {
     blue_ids: Slots<'a, Vec<u32>>,
     spins: Slots<'a, Vec<[Vec<i8>; 2]>>,
     system_ids: Slots<'a, Vec<[usize; 2]>>,
+    moves: Slots<'a, OverlapMoveCounts>,
+}
+
+/// What one group update did. `active_sites` is known only where the move looked at
+/// every site, which the Wolff depth-first search avoids.
+#[derive(Default)]
+struct MoveTally {
+    moved_sites: usize,
+    active_sites: Option<usize>,
 }
 
 impl SlotOutputs<'_> {
@@ -122,6 +132,23 @@ impl SlotOutputs<'_> {
         ids.push([systems[0], systems[1]]);
     }
 
+    /// Adds one group update to the slot's running totals; `None` for an observation,
+    /// which is not a move.
+    ///
+    /// # Safety
+    /// `slot` must belong to the calling task.
+    unsafe fn record_move(&self, slot: usize, tally: Option<MoveTally>) {
+        let (Some(tally), Some(counts)) = (tally, self.moves.get(slot)) else {
+            return;
+        };
+        counts.groups += 1;
+        counts.moved_sites += tally.moved_sites as u64;
+        if let Some(active_sites) = tally.active_sites {
+            counts.counted_groups += 1;
+            counts.active_sites += active_sites as u64;
+        }
+    }
+
     /// Records a built graph: its cluster-size histogram, four largest clusters,
     /// cluster ids (into `ids`) and bond metrics. With `active`, only clusters of
     /// active sites count: the sites a move leaves alone are not clusters of it.
@@ -137,23 +164,24 @@ impl SlotOutputs<'_> {
         active: Option<&[bool]>,
         metrics: Option<BondMetrics>,
     ) {
-        let sizes = counts
+        let clusters = counts
             .iter()
+            .copied()
             .enumerate()
-            .filter(|&(root, _)| active.is_none_or(|active| active[root]))
-            .map(|(_, &size)| size);
+            .filter(|&(root, _)| active.is_none_or(|active| active[root]));
+        let sizes = clusters.clone().map(|(_, size)| size);
         if let Some(csd) = self.csd.get(slot) {
             uf_histogram(sizes.clone(), csd);
         }
         if let Some(top4) = self.top4.get(slot) {
-            *top4 = top4_sizes(sizes.clone());
+            *top4 = top4_sizes(sizes);
         }
         if let Some(ids) = ids.get(slot) {
             ids.clear();
             ids.extend_from_slice(parent);
         }
         if let (Some(metrics), Some(observation)) = (metrics, self.observation.get(slot)) {
-            *observation = metrics.finish(parent.len(), sizes);
+            *observation = metrics.finish(parent.len(), clusters);
         }
     }
 }
@@ -185,6 +213,7 @@ pub fn overlap_update(
     blue_snap_out: Option<&mut [Vec<u32>]>,
     spin_snap_out: Option<&mut [Vec<[Vec<i8>; 2]>]>,
     sid_snap_out: Option<&mut [Vec<[usize; 2]>]>,
+    moves_out: Option<&mut [OverlapMoveCounts]>,
 ) {
     let n_spins = lattice.n_spins;
     // The tasks reach replicas through raw pointers, so the layout is checked here.
@@ -203,6 +232,7 @@ pub fn overlap_update(
         blue_ids: Slots::new(blue_snap_out),
         spins: Slots::new(spin_snap_out),
         system_ids: Slots::new(sid_snap_out),
+        moves: Slots::new(moves_out),
     };
     let (group_size, rule) = match *mode {
         OverlapClusterBuildMode::Houdayer(n) => (n, ActiveRule::Balanced),
@@ -449,90 +479,103 @@ fn isoenergetic_step(
         };
         let mut perm = [0u8; MAX_PERM_GROUP];
 
-        if !use_uf {
-            let Some(seed) = find_seed(n_spins, rng, &is_active) else {
-                return;
-            };
-            let mut in_cluster = vec![false; n_spins];
-            let mut stack = Vec::with_capacity(n_spins);
-            dfs_cluster(
-                lattice,
-                seed,
-                &mut in_cluster,
-                &mut stack,
-                // Every site already in the cluster is active.
-                |_site, nb, _d, _fwd| is_active(nb),
+        let tally = 'update: {
+            let mut tally = MoveTally::default();
+            if !use_uf {
+                let Some(seed) = find_seed(n_spins, rng, &is_active) else {
+                    break 'update Some(tally);
+                };
+                let mut in_cluster = vec![false; n_spins];
+                let mut stack = Vec::with_capacity(n_spins);
+                dfs_cluster(
+                    lattice,
+                    seed,
+                    &mut in_cluster,
+                    &mut stack,
+                    // Every site already in the cluster is active.
+                    |_site, nb, _d, _fwd| is_active(nb),
+                );
+                if permutation {
+                    random_non_identity(rng, &mut perm[..group_size]);
+                }
+                for i in (0..n_spins).filter(|&i| in_cluster[i]) {
+                    apply(i, &perm);
+                    tally.moved_sites += 1;
+                }
+                break 'update Some(tally);
+            }
+
+            // The O(N) graph pass would otherwise re-sum the group for both endpoints
+            // of every bond.
+            let active: Vec<bool> = (0..n_spins).map(is_active).collect();
+            let (mut uf, metrics) = build_graph(lattice, outs.observation.is_some(), |i, d| {
+                active[i] && active[lattice.neighbor_fwd(i, d)]
+            });
+
+            // Statistics and snapshots describe the graph, so record them before the
+            // Wolff seed search, which may find no active site.
+            let counts = uf_flatten_counts(&mut uf.parent);
+            outs.publish_graph(
+                slot,
+                &outs.cluster_ids,
+                &uf.parent,
+                &counts,
+                Some(&active),
+                metrics,
             );
-            if permutation {
-                random_non_identity(rng, &mut perm[..group_size]);
+            if action == ClusterAction::Observe {
+                break 'update None;
             }
-            for i in (0..n_spins).filter(|&i| in_cluster[i]) {
-                apply(i, &perm);
+            if outs.moves.is_some() {
+                tally.active_sites = Some(active.iter().filter(|&&active| active).count());
             }
-            return;
-        }
 
-        // The O(N) graph pass would otherwise re-sum the group for both endpoints
-        // of every bond.
-        let active: Vec<bool> = (0..n_spins).map(is_active).collect();
-        let (mut uf, metrics) = build_graph(lattice, outs.observation.is_some(), |i, d| {
-            active[i] && active[lattice.neighbor_fwd(i, d)]
-        });
-
-        // Statistics and snapshots describe the graph, so record them before the
-        // Wolff seed search, which may find no active site.
-        let counts = uf_flatten_counts(&mut uf.parent);
-        outs.publish_graph(
-            slot,
-            &outs.cluster_ids,
-            &uf.parent,
-            &counts,
-            Some(&active),
-            metrics,
-        );
-        if action == ClusterAction::Observe {
-            return;
-        }
-
-        if wolff {
-            let Some(seed) = find_seed(n_spins, rng, |i| active[i]) else {
-                return;
-            };
-            if permutation {
-                random_non_identity(rng, &mut perm[..group_size]);
-            }
-            let seed_root = uf.parent[seed];
-            for i in (0..n_spins).filter(|&i| uf.parent[i] == seed_root) {
-                apply(i, &perm);
-            }
-            return;
-        }
-        if permutation {
-            // One uniform permutation per component, singletons included.
-            let mut perms = vec![UNDECIDED; n_spins * group_size];
-            for i in (0..n_spins).filter(|&i| active[i]) {
-                let root = uf.parent[i] as usize;
-                let perm = &mut perms[root * group_size..(root + 1) * group_size];
-                if perm[0] == UNDECIDED {
-                    random_permutation(rng, perm);
+            if wolff {
+                let Some(seed) = find_seed(n_spins, rng, |i| active[i]) else {
+                    break 'update Some(tally);
+                };
+                if permutation {
+                    random_non_identity(rng, &mut perm[..group_size]);
                 }
-                permute_group_site(sp_ptr, systems, n_spins, i, perm, gauge);
-            }
-            return;
-        }
-        // Every cluster of active sites is updated, single sites included.
-        let storage = &mut *uf;
-        decide_clusters(
-            &storage.parent,
-            &mut storage.rank,
-            |site, _| active[site],
-            |_| u8::from(rng.gen::<f32>() < 0.5),
-            |site, flip| {
-                if flip == 1 {
-                    flip_group_site(sp_ptr, systems, n_spins, site, pairwise);
+                let seed_root = uf.parent[seed];
+                for i in (0..n_spins).filter(|&i| uf.parent[i] == seed_root) {
+                    apply(i, &perm);
+                    tally.moved_sites += 1;
                 }
-            },
-        );
+                break 'update Some(tally);
+            }
+            if permutation {
+                // One uniform permutation per component, singletons included.
+                let mut perms = vec![UNDECIDED; n_spins * group_size];
+                for i in (0..n_spins).filter(|&i| active[i]) {
+                    let root = uf.parent[i] as usize;
+                    let perm = &mut perms[root * group_size..(root + 1) * group_size];
+                    if perm[0] == UNDECIDED {
+                        random_permutation(rng, perm);
+                    }
+                    permute_group_site(sp_ptr, systems, n_spins, i, perm, gauge);
+                    let identity = perm.iter().enumerate().all(|(k, &v)| usize::from(v) == k);
+                    tally.moved_sites += usize::from(!identity);
+                }
+                break 'update Some(tally);
+            }
+            // Every cluster of active sites is updated, single sites included.
+            let storage = &mut *uf;
+            decide_clusters(
+                &storage.parent,
+                &mut storage.rank,
+                |site, _| active[site],
+                |_| u8::from(rng.gen::<f32>() < 0.5),
+                |site, flip| {
+                    if flip == 1 {
+                        flip_group_site(sp_ptr, systems, n_spins, site, pairwise);
+                        tally.moved_sites += 1;
+                    }
+                },
+            );
+            Some(tally)
+        };
+        outs.record_move(slot, tally);
     });
 }
 
@@ -609,93 +652,104 @@ fn jorg_step(
         outs.snapshot_spins(slot, g, sp_ptr, systems, n_spins);
         let is_active = |i: usize| -> bool { any_pair_differs(sp_ptr, systems, n_spins, i) };
 
-        if !use_uf {
-            let Some(seed) = find_seed(n_spins, rng, &is_active) else {
-                return;
-            };
-            let mut in_cluster = vec![false; n_spins];
-            let mut stack = Vec::with_capacity(n_spins);
-            dfs_cluster(
-                lattice,
-                seed,
-                &mut in_cluster,
-                &mut stack,
-                |site, nb, d, fwd| {
-                    if !is_active(nb) {
-                        return false;
+        let tally = 'update: {
+            let mut tally = MoveTally::default();
+            if !use_uf {
+                let Some(seed) = find_seed(n_spins, rng, &is_active) else {
+                    break 'update Some(tally);
+                };
+                let mut in_cluster = vec![false; n_spins];
+                let mut stack = Vec::with_capacity(n_spins);
+                dfs_cluster(
+                    lattice,
+                    seed,
+                    &mut in_cluster,
+                    &mut stack,
+                    |site, nb, d, fwd| {
+                        if !is_active(nb) {
+                            return false;
+                        }
+                        let coupling = if fwd {
+                            couplings[site * n_neighbors + d]
+                        } else {
+                            couplings[nb * n_neighbors + d]
+                        };
+                        let inter = aligned(site, nb) as f32 * coupling;
+                        if inter <= 0.0 {
+                            return false;
+                        }
+                        jorg_bond.sample(inter, rng)
+                    },
+                );
+                for i in (0..n_spins).filter(|&i| in_cluster[i]) {
+                    flip_group_site(sp_ptr, systems, n_spins, i, true);
+                    tally.moved_sites += 1;
+                }
+                break 'update Some(tally);
+            }
+
+            let active: Vec<bool> = (0..n_spins).map(is_active).collect();
+            let (mut uf, metrics) = build_graph(lattice, outs.observation.is_some(), |i, d| {
+                if !active[i] {
+                    return false;
+                }
+                let j = lattice.neighbor_fwd(i, d);
+                if !active[j] {
+                    return false;
+                }
+                let inter = aligned(i, j) as f32 * couplings[i * n_neighbors + d];
+                if inter <= 0.0 {
+                    return false;
+                }
+                jorg_bond.sample(inter, rng)
+            });
+
+            // Statistics and snapshots describe the graph, so record them before the
+            // Wolff seed search, which may find no active site.
+            let counts = uf_flatten_counts(&mut uf.parent);
+            outs.publish_graph(
+                slot,
+                &outs.cluster_ids,
+                &uf.parent,
+                &counts,
+                Some(&active),
+                metrics,
+            );
+            if action == ClusterAction::Observe {
+                break 'update None;
+            }
+            if outs.moves.is_some() {
+                tally.active_sites = Some(active.iter().filter(|&&active| active).count());
+            }
+
+            if wolff {
+                let Some(seed) = find_seed(n_spins, rng, |i| active[i]) else {
+                    break 'update Some(tally);
+                };
+                let seed_root = uf.parent[seed];
+                for i in (0..n_spins).filter(|&i| uf.parent[i] == seed_root) {
+                    flip_group_site(sp_ptr, systems, n_spins, i, true);
+                    tally.moved_sites += 1;
+                }
+                break 'update Some(tally);
+            }
+            // Every cluster of active sites is updated, single sites included.
+            let storage = &mut *uf;
+            decide_clusters(
+                &storage.parent,
+                &mut storage.rank,
+                |site, _| active[site],
+                |_| u8::from(rng.gen::<f32>() < 0.5),
+                |site, flip| {
+                    if flip == 1 {
+                        flip_group_site(sp_ptr, systems, n_spins, site, true);
+                        tally.moved_sites += 1;
                     }
-                    let coupling = if fwd {
-                        couplings[site * n_neighbors + d]
-                    } else {
-                        couplings[nb * n_neighbors + d]
-                    };
-                    let inter = aligned(site, nb) as f32 * coupling;
-                    if inter <= 0.0 {
-                        return false;
-                    }
-                    jorg_bond.sample(inter, rng)
                 },
             );
-            for i in (0..n_spins).filter(|&i| in_cluster[i]) {
-                flip_group_site(sp_ptr, systems, n_spins, i, true);
-            }
-            return;
-        }
-
-        let active: Vec<bool> = (0..n_spins).map(is_active).collect();
-        let (mut uf, metrics) = build_graph(lattice, outs.observation.is_some(), |i, d| {
-            if !active[i] {
-                return false;
-            }
-            let j = lattice.neighbor_fwd(i, d);
-            if !active[j] {
-                return false;
-            }
-            let inter = aligned(i, j) as f32 * couplings[i * n_neighbors + d];
-            if inter <= 0.0 {
-                return false;
-            }
-            jorg_bond.sample(inter, rng)
-        });
-
-        // Statistics and snapshots describe the graph, so record them before the
-        // Wolff seed search, which may find no active site.
-        let counts = uf_flatten_counts(&mut uf.parent);
-        outs.publish_graph(
-            slot,
-            &outs.cluster_ids,
-            &uf.parent,
-            &counts,
-            Some(&active),
-            metrics,
-        );
-        if action == ClusterAction::Observe {
-            return;
-        }
-
-        if wolff {
-            let Some(seed) = find_seed(n_spins, rng, |i| active[i]) else {
-                return;
-            };
-            let seed_root = uf.parent[seed];
-            for i in (0..n_spins).filter(|&i| uf.parent[i] == seed_root) {
-                flip_group_site(sp_ptr, systems, n_spins, i, true);
-            }
-            return;
-        }
-        // Every cluster of active sites is updated, single sites included.
-        let storage = &mut *uf;
-        decide_clusters(
-            &storage.parent,
-            &mut storage.rank,
-            |site, _| active[site],
-            |_| u8::from(rng.gen::<f32>() < 0.5),
-            |site, flip| {
-                if flip == 1 {
-                    flip_group_site(sp_ptr, systems, n_spins, site, true);
-                }
-            },
-        );
+            Some(tally)
+        };
+        outs.record_move(slot, tally);
     });
 }
 
@@ -775,27 +829,68 @@ fn cmr_step(
                 *sp_ptr.add(base_b + i) *= -1;
             }
         };
+        // Every site takes part in a CMR move. A site counts as moved when the blue
+        // flip (both replicas) and the grey flip `k` do not cancel; the bookkeeping
+        // runs only when the counts are wanted.
+        let counting = outs.moves.is_some();
+        let mut tally = MoveTally {
+            moved_sites: 0,
+            active_sites: Some(n_spins),
+        };
+        let net_moved = |blue: bool, k: u8| usize::from((u8::from(blue) * 3) ^ k != 0);
 
-        if !use_uf {
-            // Wolff two-phase update by depth-first search (no statistics needed).
-            let seed = rng.gen_range(0..n_spins);
+        let tally = 'update: {
+            if !use_uf {
+                // Wolff two-phase update by depth-first search (no statistics needed).
+                let seed = rng.gen_range(0..n_spins);
 
-            // === Phase 1: Blue cluster ===
-            let mut in_cluster = vec![false; n_spins];
-            let mut stack = Vec::with_capacity(n_spins);
-            dfs_cluster(
-                lattice,
-                seed,
-                &mut in_cluster,
-                &mut stack,
-                |site, nb, d, fwd| {
-                    let coupling_idx = if fwd {
-                        site * n_neighbors + d
-                    } else {
-                        nb * n_neighbors + d
-                    };
-                    let coupling = couplings[coupling_idx];
+                // === Phase 1: Blue cluster ===
+                let mut in_cluster = vec![false; n_spins];
+                let mut stack = Vec::with_capacity(n_spins);
+                dfs_cluster(
+                    lattice,
+                    seed,
+                    &mut in_cluster,
+                    &mut stack,
+                    |site, nb, d, fwd| {
+                        let coupling_idx = if fwd {
+                            site * n_neighbors + d
+                        } else {
+                            nb * n_neighbors + d
+                        };
+                        let coupling = couplings[coupling_idx];
 
+                        let a_sat = *sp_ptr.add(base_a + site) as f32
+                            * *sp_ptr.add(base_a + nb) as f32
+                            * coupling
+                            > 0.0;
+                        let b_sat = *sp_ptr.add(base_b + site) as f32
+                            * *sp_ptr.add(base_b + nb) as f32
+                            * coupling
+                            > 0.0;
+
+                        if !a_sat || !b_sat {
+                            return false;
+                        }
+                        blue_bond.sample(coupling.abs(), rng)
+                    },
+                );
+
+                // Flip blue cluster (both replicas always)
+                for i in (0..n_spins).filter(|&i| in_cluster[i]) {
+                    flip(i, 3);
+                }
+
+                // === Phase 2: Grey cluster (extend from the flipped blue cluster) ===
+                // Edges at the blue cluster had their blue bond decided in phase 1, so
+                // only red bonds can still attach there. Sites reached through red
+                // bonds sample both bond types afresh: blue on doubly satisfied edges
+                // (prob 1-r²) and red on singly satisfied ones (prob 1-r). The grey
+                // cluster must absorb both, or the grey flip breaks detailed balance.
+                let in_blue = in_cluster.clone();
+                stack.extend((0..n_spins).filter(|&i| in_blue[i]));
+
+                let mut grey_bond = |site: usize, nb: usize, coupling: f32| -> bool {
                     let a_sat = *sp_ptr.add(base_a + site) as f32
                         * *sp_ptr.add(base_a + nb) as f32
                         * coupling
@@ -804,153 +899,150 @@ fn cmr_step(
                         * *sp_ptr.add(base_b + nb) as f32
                         * coupling
                         > 0.0;
-
-                    if !a_sat || !b_sat {
+                    if a_sat != b_sat {
+                        return red_bond.sample(coupling.abs(), rng);
+                    }
+                    if !a_sat || in_blue[site] {
                         return false;
                     }
                     blue_bond.sample(coupling.abs(), rng)
-                },
-            );
+                };
 
-            // Flip blue cluster (both replicas always)
-            for i in (0..n_spins).filter(|&i| in_cluster[i]) {
-                flip(i, 3);
+                while let Some(site) = stack.pop() {
+                    for d in 0..lattice.n_neighbors {
+                        let fwd = lattice.neighbor_fwd(site, d);
+                        if !in_cluster[fwd]
+                            && grey_bond(site, fwd, couplings[site * n_neighbors + d])
+                        {
+                            in_cluster[fwd] = true;
+                            stack.push(fwd);
+                        }
+
+                        let bwd = lattice.neighbor_bwd(site, d);
+                        if !in_cluster[bwd]
+                            && grey_bond(site, bwd, couplings[bwd * n_neighbors + d])
+                        {
+                            in_cluster[bwd] = true;
+                            stack.push(bwd);
+                        }
+                    }
+                }
+
+                // Flip grey cluster with k ∈ {1,2,3}
+                let k: u8 = rng.gen_range(1..=3);
+                for i in (0..n_spins).filter(|&i| in_cluster[i]) {
+                    flip(i, k);
+                    if counting {
+                        tally.moved_sites += net_moved(in_blue[i], k);
+                    }
+                }
+                break 'update Some(tally);
             }
 
-            // === Phase 2: Grey cluster (extend from the flipped blue cluster) ===
-            // Edges at the blue cluster had their blue bond decided in phase 1, so only
-            // red bonds can still attach there. Sites reached through red bonds sample
-            // both bond types afresh: blue on doubly satisfied edges (prob 1-r²) and
-            // red on singly satisfied ones (prob 1-r). The grey cluster must absorb
-            // both, or the grey flip breaks detailed balance.
-            let in_blue = in_cluster.clone();
-            stack.extend((0..n_spins).filter(|&i| in_blue[i]));
+            // Wolff draws its seed before any bond.
+            let seed = wolff.then(|| rng.gen_range(0..n_spins));
 
-            let mut grey_bond = |site: usize, nb: usize, coupling: f32| -> bool {
-                let a_sat =
-                    *sp_ptr.add(base_a + site) as f32 * *sp_ptr.add(base_a + nb) as f32 * coupling
-                        > 0.0;
-                let b_sat =
-                    *sp_ptr.add(base_b + site) as f32 * *sp_ptr.add(base_b + nb) as f32 * coupling
-                        > 0.0;
-                if a_sat != b_sat {
-                    return red_bond.sample(coupling.abs(), rng);
-                }
-                if !a_sat || in_blue[site] {
+            // Site overlaps q_i = a_i b_i classify bonds: an edge is singly satisfied
+            // iff q_i != q_j (J != 0), and blue flips negate both replicas, leaving q.
+            let overlap: Vec<i8> = (0..n_spins)
+                .map(|i| *sp_ptr.add(base_a + i) * *sp_ptr.add(base_b + i))
+                .collect();
+
+            // === Phase 1: Blue clusters ===
+            let (mut uf, metrics) = build_graph(lattice, outs.observation.is_some(), |i, d| {
+                let j = lattice.neighbor_fwd(i, d);
+                // Equal site overlaps make replica b satisfied exactly when a is.
+                if overlap[i] != overlap[j] {
                     return false;
                 }
-                blue_bond.sample(coupling.abs(), rng)
-            };
+                let coupling = couplings[i * n_neighbors + d];
+                let satisfied =
+                    *sp_ptr.add(base_a + i) as f32 * *sp_ptr.add(base_a + j) as f32 * coupling
+                        > 0.0;
+                satisfied && blue_bond.sample(coupling.abs(), rng)
+            });
 
-            while let Some(site) = stack.pop() {
-                for d in 0..lattice.n_neighbors {
-                    let fwd = lattice.neighbor_fwd(site, d);
-                    if !in_cluster[fwd] && grey_bond(site, fwd, couplings[site * n_neighbors + d]) {
-                        in_cluster[fwd] = true;
-                        stack.push(fwd);
-                    }
+            let counts = uf_flatten_counts(&mut uf.parent);
+            outs.publish_graph(slot, &outs.blue_ids, &uf.parent, &counts, None, metrics);
+            if action == ClusterAction::Observe {
+                break 'update None;
+            }
 
-                    let bwd = lattice.neighbor_bwd(site, d);
-                    if !in_cluster[bwd] && grey_bond(site, bwd, couplings[bwd * n_neighbors + d]) {
-                        in_cluster[bwd] = true;
-                        stack.push(bwd);
-                    }
+            // Flip blue clusters (both replicas jointly), remembering which sites did.
+            let mut blue_flipped = vec![false; if counting { n_spins } else { 0 }];
+            let mut flip_blue = |site: usize| {
+                flip(site, 3);
+                if counting {
+                    blue_flipped[site] = true;
                 }
+            };
+            if let Some(seed) = seed {
+                let seed_root = uf.parent[seed];
+                (0..n_spins)
+                    .filter(|&i| uf.parent[i] == seed_root)
+                    .for_each(&mut flip_blue);
+            } else {
+                // Keep UF ranks intact until red bonds extend the blue clusters.
+                let mut do_flip = vec![UNDECIDED; n_spins];
+                decide_clusters(
+                    &uf.parent,
+                    &mut do_flip,
+                    |_, root| counts[root] > 1,
+                    |_| u8::from(rng.gen::<f32>() < 0.5),
+                    |site, both| {
+                        if both == 1 {
+                            flip_blue(site);
+                        }
+                    },
+                );
             }
 
-            // Flip grey cluster with k ∈ {1,2,3}
-            let k: u8 = rng.gen_range(1..=3);
-            for i in (0..n_spins).filter(|&i| in_cluster[i]) {
-                flip(i, k);
+            // === Phase 2: Grey clusters (extend blue UF with red bonds) ===
+            // Red bond: singly-satisfied edges on post-flip spins, prob 1 - r.
+            // No clone needed: blue flips preserve the singly-satisfied classification.
+            // Return blue counts so grey counts can reuse the pooled allocation.
+            drop(counts);
+            let storage = &mut *uf;
+            uf_bonds_extend(&mut storage.parent, &mut storage.rank, lattice, |i, d| {
+                let j = lattice.neighbor_fwd(i, d);
+                let coupling = couplings[i * n_neighbors + d];
+                overlap[i] != overlap[j] && coupling != 0.0 && red_bond.sample(coupling.abs(), rng)
+            });
+
+            let grey_counts = uf_flatten_counts(&mut uf.parent);
+            if let Some(ids) = outs.cluster_ids.get(slot) {
+                ids.clear();
+                ids.extend_from_slice(&uf.parent);
             }
-            return;
-        }
 
-        // Wolff draws its seed before any bond.
-        let seed = wolff.then(|| rng.gen_range(0..n_spins));
-
-        // Site overlaps q_i = a_i b_i classify bonds: an edge is singly satisfied
-        // iff q_i != q_j (J != 0), and blue flips negate both replicas, leaving q.
-        let overlap: Vec<i8> = (0..n_spins)
-            .map(|i| *sp_ptr.add(base_a + i) * *sp_ptr.add(base_b + i))
-            .collect();
-
-        // === Phase 1: Blue clusters ===
-        let (mut uf, metrics) = build_graph(lattice, outs.observation.is_some(), |i, d| {
-            let j = lattice.neighbor_fwd(i, d);
-            // Equal site overlaps make replica b satisfied exactly when a is.
-            if overlap[i] != overlap[j] {
-                return false;
+            // Flip grey clusters (each replica independently). A flipped blue cluster
+            // lies inside the seed's grey cluster (Wolff) or in one of several sites
+            // (Swendsen-Wang), so every blue-flipped site is visited here.
+            let mut flip_grey = |site: usize, k: u8| {
+                flip(site, k);
+                if counting {
+                    tally.moved_sites += net_moved(blue_flipped[site], k);
+                }
+            };
+            if let Some(seed) = seed {
+                let seed_root = uf.parent[seed];
+                let k: u8 = rng.gen_range(1..=3);
+                (0..n_spins)
+                    .filter(|&i| uf.parent[i] == seed_root)
+                    .for_each(|i| flip_grey(i, k));
+                break 'update Some(tally);
             }
-            let coupling = couplings[i * n_neighbors + d];
-            let satisfied =
-                *sp_ptr.add(base_a + i) as f32 * *sp_ptr.add(base_a + j) as f32 * coupling > 0.0;
-            satisfied && blue_bond.sample(coupling.abs(), rng)
-        });
-
-        let counts = uf_flatten_counts(&mut uf.parent);
-        outs.publish_graph(slot, &outs.blue_ids, &uf.parent, &counts, None, metrics);
-        if action == ClusterAction::Observe {
-            return;
-        }
-
-        // Flip blue clusters (both replicas jointly)
-        if let Some(seed) = seed {
-            let seed_root = uf.parent[seed];
-            for i in (0..n_spins).filter(|&i| uf.parent[i] == seed_root) {
-                flip(i, 3);
-            }
-        } else {
-            // Keep UF ranks intact until red bonds extend the blue clusters.
-            let mut do_flip = vec![UNDECIDED; n_spins];
+            let storage = &mut *uf;
             decide_clusters(
-                &uf.parent,
-                &mut do_flip,
-                |_, root| counts[root] > 1,
-                |_| u8::from(rng.gen::<f32>() < 0.5),
-                |site, both| {
-                    if both == 1 {
-                        flip(site, 3);
-                    }
-                },
+                &storage.parent,
+                &mut storage.rank,
+                |_, root| grey_counts[root] > 1,
+                |_| rng.gen_range(0..=3),
+                flip_grey,
             );
-        }
-
-        // === Phase 2: Grey clusters (extend blue UF with red bonds) ===
-        // Red bond: singly-satisfied edges on post-flip spins, prob 1 - r.
-        // No clone needed: blue flips preserve the singly-satisfied classification.
-        // Return blue counts so grey counts can reuse the pooled allocation.
-        drop(counts);
-        let storage = &mut *uf;
-        uf_bonds_extend(&mut storage.parent, &mut storage.rank, lattice, |i, d| {
-            let j = lattice.neighbor_fwd(i, d);
-            let coupling = couplings[i * n_neighbors + d];
-            overlap[i] != overlap[j] && coupling != 0.0 && red_bond.sample(coupling.abs(), rng)
-        });
-
-        let grey_counts = uf_flatten_counts(&mut uf.parent);
-        if let Some(ids) = outs.cluster_ids.get(slot) {
-            ids.clear();
-            ids.extend_from_slice(&uf.parent);
-        }
-
-        // Flip grey clusters (each replica independently)
-        if let Some(seed) = seed {
-            let seed_root = uf.parent[seed];
-            let k: u8 = rng.gen_range(1..=3);
-            for i in (0..n_spins).filter(|&i| uf.parent[i] == seed_root) {
-                flip(i, k);
-            }
-            return;
-        }
-        let storage = &mut *uf;
-        decide_clusters(
-            &storage.parent,
-            &mut storage.rank,
-            |_, root| grey_counts[root] > 1,
-            |_| rng.gen_range(0..=3),
-            flip,
-        );
+            Some(tally)
+        };
+        outs.record_move(slot, tally);
     });
 }
 
@@ -1008,6 +1100,7 @@ mod tests {
                     None,
                     None,
                     None,
+                    None,
                 );
             }
             assert_ne!(spins, initial, "{cluster_mode:?}");
@@ -1052,6 +1145,7 @@ mod tests {
                 None,
                 true,
                 Some(&mut snapshot),
+                None,
                 None,
                 None,
                 None,

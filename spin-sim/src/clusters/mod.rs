@@ -8,4 +8,4 @@ mod utils;
 pub use fk::fk_update;
 pub use overlap::overlap_update;
 pub use rmc::rmc_update;
-pub(crate) use utils::GraphObservationSlot;
+pub(crate) use utils::{GraphObservationSlot, MAX_WINDING_DIMS};
