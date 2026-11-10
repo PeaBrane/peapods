@@ -1,4 +1,5 @@
-//! XY sweep timing through the public `XySimulation` API.
+//! XY sweep timing through the public `XySimulation` API; prints ms/sweep and a state
+//! checksum that behavior-neutral changes must leave unchanged.
 //!
 //! `cargo run --release -p spin-sim --example bench_xy`, configured by
 //! environment variables (defaults first):
@@ -10,11 +11,12 @@
 //! `PEAPODS_DILUTION` (vacancy probability, 0), `PEAPODS_SEQUENTIAL` (flag).
 //! Temperatures are geometric on [0.5, 2], spanning the 2D KT point.
 use std::env;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use rand::{Rng, SeedableRng};
+use rand::{Rng, RngCore, SeedableRng};
 use rand_xoshiro::Xoshiro256StarStar;
 use spin_sim::config::*;
 use spin_sim::statistics::physics::PhysicsOptions;
@@ -124,6 +126,29 @@ fn main() {
     };
     let elapsed = start.elapsed();
     let energy: f64 = result.values["energies"].iter().map(|row| row[0]).sum();
+
+    let mut state_hash = DefaultHasher::new();
+    for realization in &simulation.realizations {
+        for spin in &realization.spins {
+            spin.map(f64::to_bits).hash(&mut state_hash);
+        }
+        realization.system_ids.hash(&mut state_hash);
+        for rng in &realization.rngs {
+            rng.clone().next_u64().hash(&mut state_hash);
+        }
+    }
+    for (name, rows) in &result.values {
+        name.hash(&mut state_hash);
+        for value in rows.iter().flatten() {
+            value.to_bits().hash(&mut state_hash);
+        }
+    }
+    for disorder in &result.per_disorder {
+        for value in disorder.physics.moments.iter().flatten() {
+            value.to_bits().hash(&mut state_hash);
+        }
+        disorder.visited_spins.hash(&mut state_hash);
+    }
     println!(
         "L={l} dims={dims} temps={n_temps} replicas={n_replicas} realizations={n_realizations} \
          sweeps={n_sweeps} warmup={warmup_sweeps} sweep={sweep_mode} cluster={cluster_mode} \
@@ -131,7 +156,8 @@ fn main() {
          dilution={dilution} sequential={sequential} threads={}",
         rayon::current_num_threads()
     );
-    println!("mean energy checksum: {:.6}", energy / n_temps as f64);
+    println!("mean energy: {:.6}", energy / n_temps as f64);
+    println!("State checksum: {:016x}", state_hash.finish());
     println!(
         "{:.3} ms/sweep ({:.3} s total)",
         elapsed.as_secs_f64() * 1e3 / n_sweeps as f64,
