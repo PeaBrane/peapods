@@ -9,7 +9,8 @@ lattice given by forward neighbor offsets (`Lattice::with_offsets`).
 - Swendsen-Wang cluster updates
 - Wolff single-cluster updates
 - Parallel tempering (replica exchange)
-- Overlap cluster moves (Houdayer / pairN / Jörg / CMR / replica Monte Carlo) for spin glasses
+- Overlap cluster moves (Houdayer / pairN / Jörg / CMR / permN / gpermN / replica Monte Carlo) for spin glasses
+- Open and antiperiodic boundaries as a coupling transform (`Lattice::boundary_factors`)
 
 Replicas are parallelized over threads with [rayon](https://crates.io/crates/rayon).
 
@@ -43,6 +44,7 @@ let config = SimConfig {
     autocorrelation_backend: AutocorrelationBackend::Ring,
     sequential: false,
     equilibration_diagnostic: false,
+    conditional_link_overlap: true,
 };
 
 use std::sync::atomic::AtomicBool;
@@ -69,6 +71,24 @@ are provided. To keep 0.2.0's move schedule:
 
 Realization seeds are now derived per system rather than `base_seed + i`, so a given
 seed produces different trajectories than in 0.2.0.
+
+Since 0.2.1:
+
+- `SimConfig::validate` is an inherent method returning `Result<(), String>`; the
+  `validator` dependency is gone. `SimConfig` has a new field
+  `conditional_link_overlap` (set `true` to keep the link-overlap sums per overlap
+  bin) and `XyConfig` a new field `measure_interval` (set `1`).
+- Overlap modes `Perm(usize)` and `GaugedPerm(usize)` break exhaustive matches; their
+  size must be between 2 and 8, as validation now enforces.
+- Moments of a call that measured nothing are NaN instead of zero, and a τ of a series
+  without variance is NaN instead of 0.5. Each τ has a `*_converged` flag.
+- Interval events keep their phase across calls; `reset` restarts it.
+- Lattices with an extent of 1 are rejected.
+- `SweepResult`, `ClusterStats`, `Diagnostics` and `GraphObservationSummary` gained
+  fields (per-disorder samples, energy τ, FK visit counts, overlap and replica Monte
+  Carlo counters, 3D wrapping and cluster moments).
+- Swendsen-Wang Houdayer, pair and Jörg moves now update single-site clusters, so
+  their trajectories differ from 0.2.1.
 
 ## Python
 

@@ -369,7 +369,7 @@ def run_sweep(
     cluster_mode="sw",
     cluster_action="update",
     pt_interval=None,
-    pt_schedule="single_random_edge",
+    pt_schedule="full_ladder",
     overlap_cluster_update_interval=None,
     overlap_cluster_build_modes=("houdayer",),
     overlap_cluster_modes=("wolff",),

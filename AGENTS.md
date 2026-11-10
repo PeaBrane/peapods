@@ -17,7 +17,7 @@
 
 Median of 5 interleaved runs of `benchmarks/sweep_modes.py` (removed 2026-10-03; in git history).
 
-Rust bench: `cargo run --release --example bench -p spin-sim` (configure with `PEAPODS_*` env vars, see the example). It prints a state checksum; behavior-neutral changes must leave it unchanged.
+Rust bench: `cargo run --release --example bench -p spin-sim` (configure with `PEAPODS_*` env vars, see the example). It prints a state checksum; behavior-neutral changes must leave it unchanged. `bench_xy` does the same for XY.
 
 ## Performance notes
 

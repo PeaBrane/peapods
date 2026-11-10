@@ -63,7 +63,7 @@ def _add_common_args(parser):
     )
     parser.add_argument(
         "--pt-schedule",
-        default="single_random_edge",
+        default="full_ladder",
         choices=["single_random_edge", "full_ladder"],
     )
     parser.add_argument(
@@ -364,7 +364,7 @@ _SWEEP_DEFAULTS = dict(
     cluster_mode="sw",
     cluster_action="update",
     pt_interval=None,
-    pt_schedule="single_random_edge",
+    pt_schedule="full_ladder",
     overlap_cluster_update_interval=None,
     overlap_cluster_build_mode=("houdayer",),
     overlap_cluster_mode=("wolff",),

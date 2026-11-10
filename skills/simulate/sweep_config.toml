@@ -29,7 +29,7 @@ action = "update"
 
 [parallel_tempering]
 interval = 1
-schedule = "single_random_edge"
+schedule = "full_ladder"
 
 [overlap_cluster]
 interval = 1

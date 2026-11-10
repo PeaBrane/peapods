@@ -1,6 +1,6 @@
 import numpy as np
 
-from peapods._core import IsingSimulation, XYSimulation
+from peapods._core import IsingSimulation, XYSimulation, boundary_factors
 
 # Forward nearest-neighbor offsets in primitive-cell coordinates, so an L^d lattice
 # is one connected Bravais lattice. (Conventional-cell offsets on a cubic grid would
@@ -37,6 +37,16 @@ def _prepare_temperatures(temperatures, dtype):
             "temperatures must be a nonempty vector of positive finite values"
         )
     return result
+
+
+def _apply_boundaries(couplings, shape, boundaries, neighbor_offsets=None):
+    """Turns periodic couplings into ones with the given boundary per dimension."""
+    if boundaries is None:
+        return couplings
+    if isinstance(boundaries, str):
+        boundaries = [boundaries] * len(shape)
+    factors = boundary_factors(list(shape), list(boundaries), neighbor_offsets)
+    return np.ascontiguousarray(couplings * factors.astype(couplings.dtype))
 
 
 def _prepare_couplings(shape, neighbors, n_disorder, couplings, coupling_seed, dtype):
@@ -99,10 +109,21 @@ _OPTIONAL_SAMPLE_ATTRIBUTES = (
     "top_cluster_sizes",
     "mags2_tau",
     "overlap2_tau",
+    "energy_tau",
+    "mags2_tau_converged",
+    "overlap2_tau_converged",
+    "energy_tau_converged",
+    "autocorrelation_lag",
     "_equil_sweeps",
     "_equil_energy_avg",
     "_equil_link_overlap_avg",
+    "_equil_overlap2_avg",
     "cluster_snapshots",
+    "fk_updates",
+    "fk_visited_spins",
+    "mean_fk_cluster_size",
+    "overlap_moves",
+    "rmc_edges",
 )
 
 
@@ -116,7 +137,8 @@ class Ising:
     Attributes:
         lattice_shape: Shape of the lattice as a tuple of ints.
         n_dims: Number of spatial dimensions.
-        n_neighbors: Number of nearest neighbors per site.
+        n_neighbors: Number of forward neighbor offsets per site, half the
+            coordination number; the last axis of `couplings`.
         temperatures: Array of temperatures for parallel tempering.
         n_temps: Number of temperature points.
         n_replicas: Number of replicas per temperature.
@@ -142,6 +164,7 @@ class Ising:
         neighbor_offsets=None,
         geometry=None,
         seed=None,
+        boundaries=None,
     ):
         """Create an Ising model.
 
@@ -167,6 +190,13 @@ class Ising:
                 If neither is given, defaults to a hypercubic lattice.
             seed: Optional non-negative integer controlling built-in random
                 couplings and initial dynamics. `None` uses fresh entropy.
+            boundaries: Boundary condition per dimension, each `"periodic"`
+                (the default), `"open"` (bonds that cross the edge of the cell
+                are removed) or `"antiperiodic"` (they change sign), or one
+                string for every dimension. Applied to `couplings`, which then
+                hold the transformed values. A periodic and an antiperiodic run
+                together give the domain-wall free energy. Lattice extents must
+                be at least 2.
         """
         if geometry is not None:
             if neighbor_offsets is not None:
@@ -197,6 +227,7 @@ class Ising:
             coupling_seed,
             np.float32,
         )
+        coup = _apply_boundaries(coup, self.lattice_shape, boundaries, neighbor_offsets)
 
         self.couplings = coup
         self.n_disorder = 1 if coup.ndim == self.n_dims + 1 else coup.shape[0]
@@ -225,7 +256,7 @@ class Ising:
         cluster_mode="sw",
         cluster_action="update",
         pt_interval=None,
-        pt_schedule="single_random_edge",
+        pt_schedule="full_ladder",
         overlap_cluster_update_interval=None,
         overlap_cluster_build_mode="houdayer",
         overlap_cluster_mode="wolff",
@@ -241,6 +272,7 @@ class Ising:
         collect_physics=False,
         displacements=None,
         block_size=None,
+        conditional_link_overlap=True,
     ):
         """Run Monte Carlo sampling and compute observables.
 
@@ -271,8 +303,10 @@ class Ising:
                 measure a full SW/FK graph without flipping spins.
             pt_interval: If set, attempt parallel tempering swaps every this many
                 sweeps.
-            pt_schedule: `"single_random_edge"` for legacy PT or
-                `"full_ladder"` to attempt every adjacent edge per event.
+            pt_schedule: `"full_ladder"` (the default) attempts every adjacent
+                edge per event, even edges then odd; `"single_random_edge"`
+                attempts one random edge, which moves walkers along the ladder
+                about `n_temps` times more slowly.
             overlap_cluster_update_interval: If set, attempt overlap cluster
                 moves every this many sweeps. Requires `n_replicas >= 2`, except
                 for `"rmc"`, which needs at least one replica and two temperatures.
@@ -313,12 +347,21 @@ class Ising:
             warmup_ratio: Fraction of sweeps discarded as warmup before
                 collecting statistics. Default 0.25.
             collect_cluster_stats: If `True`, collect FK cluster size
-                distribution and top-4 overlap cluster sizes.
+                distribution, top-4 overlap cluster sizes, and the overlap move
+                counters `overlap_moves` (group updates, moved and active sites
+                per mode and temperature) and `rmc_edges` (replica Monte Carlo
+                proposals, acceptances and flipped sites per temperature edge).
+                Overlap statistics count clusters of the sites a move acts on.
             autocorrelation_max_lag: If set, estimate the integrated
-                autocorrelation times `mags2_tau` (and `overlap2_tau` with
-                `n_replicas >= 2`) in measured sweeps, using lags up to this value
-                (capped at a quarter of the measured sweeps). `overlap2_tau` uses
-                q^2 averaged over all replica pairs at each temperature, so moves
+                autocorrelation times `mags2_tau`, `energy_tau` (and
+                `overlap2_tau` with `n_replicas >= 2`) in measured sweeps, using
+                lags up to `autocorrelation_lag`, this value capped at a quarter of
+                the measured sweeps. τ follows the convention τ = 1/2 for an
+                uncorrelated series. Each τ comes with a `*_converged` flag: when
+                the automatic window does not close within the lags, τ is a
+                truncated lower bound. A series without variance (frozen, or not
+                measured) has no τ and reports NaN. `overlap2_tau` uses q^2
+                averaged over all replica pairs at each temperature, so moves
                 that only relabel replicas do not count as decorrelation.
             autocorrelation_backend: `"ring"` for exact bounded-memory
                 accumulation or `"fft"` to retain the full measurement history
@@ -326,9 +369,11 @@ class Ising:
             sequential: If `True`, disable inner-loop parallelism over
                 replicas/temperatures. Use when outer-level parallelism over
                 disorder realizations already saturates all physical cores.
-            equilibration_diagnostic: If `True`, record replica-averaged energy
-                and link overlap over log-binned windows for
-                [`equilibration_delta`][peapods.Ising.equilibration_delta].
+            equilibration_diagnostic: If `True`, record replica-averaged energy,
+                link overlap and q^2 over log-binned windows for
+                [`equilibration_delta`][peapods.Ising.equilibration_delta] and
+                [`equilibration_overlap2`][peapods.Ising.equilibration_overlap2].
+                Needs `n_replicas >= 2`.
             snapshot_interval: Every this many sweeps, record overlap-cluster
                 snapshots of disorder realization 0 in
                 `result["cluster_snapshots"]` (not for `"rmc"`). Requires
@@ -346,14 +391,33 @@ class Ising:
                 implies `collect_physics`.
             block_size: Also keep `"physics"` sums over blocks of this many
                 measured sweeps; implies `collect_physics`.
+            conditional_link_overlap: Keep the link overlap summed per overlap
+                bin (`ql_at_q_sum`, `ql2_at_q_sum` and their per-sample forms).
+                They are two thirds of the overlap-histogram memory; turn them off
+                for large lattices that do not need them.
+
+        Moments are NaN when the call measured nothing (all sweeps warmup).
+        Interval events keep their phase across calls, so a run split into
+        short calls follows the same schedule as one long call.
 
         Returns:
             Raw results dictionary with keys like `"mags"`, `"energies"`, etc.
-            With `pt_interval`, `result["per_disorder"]["parallel_tempering"]`
-            holds this call's PT edge attempts, edge acceptances and completed
-            round trips (not running totals); a round trip that began in an
-            earlier call counts when it completes. `round_trips[d, r, t]` is
-            indexed by the walker that started in replica row r at slot t.
+            `result["per_disorder"]["moments"]` holds every disorder sample's
+            thermal averages (`mags2`, `energies`, `overlap2`, τ, ...), shaped
+            `(n_disorder, n_temps)`, for error bars on disorder averages; with
+            `collect_physics`, `result["physics"]["stderr"]` holds jackknife
+            errors of every physics value. With `pt_interval`,
+            `result["per_disorder"]["parallel_tempering"]` holds this call's PT
+            edge attempts, edge acceptances, completed round trips and the flow
+            counters `flow_up` and `flow_labelled` (not running totals; they
+            include warmup sweeps). A round trip that began in an earlier call
+            counts when it completes; `round_trips[d, r, t]` is indexed by the
+            walker that started in replica row r at slot t. `flow_up /
+            flow_labelled` is the fraction of visits to each temperature by
+            walkers that last visited the cold end, which falls steeply across a
+            ladder bottleneck. FK updates report `fk_updates` and
+            `fk_visited_spins`; `mean_fk_cluster_size` is their ratio, the mean
+            Wolff cluster size (equal to `N <m^2>` for a ferromagnet).
         """
         if cluster_action not in {"update", "observe"}:
             raise ValueError("cluster_action must be 'update' or 'observe'")
@@ -417,6 +481,7 @@ class Ising:
             collect_physics=collect_physics,
             displacements=displacements,
             block_size=block_size,
+            conditional_link_overlap=conditional_link_overlap,
         )
         self.mags = result["mags"]
         self.mags2 = result["mags2"]
@@ -472,15 +537,35 @@ class Ising:
         if "top_cluster_sizes" in result:
             self.top_cluster_sizes = result["top_cluster_sizes"]
 
-        if "mags2_tau" in result:
-            self.mags2_tau = result["mags2_tau"]
-        if "overlap2_tau" in result:
-            self.overlap2_tau = result["overlap2_tau"]
+        for name in (
+            "mags2_tau",
+            "overlap2_tau",
+            "energy_tau",
+            "mags2_tau_converged",
+            "overlap2_tau_converged",
+            "energy_tau_converged",
+            "autocorrelation_lag",
+            "fk_updates",
+            "fk_visited_spins",
+            "overlap_moves",
+            "rmc_edges",
+        ):
+            if name in result:
+                setattr(self, name, result[name])
+        if "fk_updates" in result:
+            updates = result["fk_updates"]
+            self.mean_fk_cluster_size = np.divide(
+                result["fk_visited_spins"],
+                updates,
+                out=np.full(len(updates), np.nan),
+                where=updates > 0,
+            )
 
         if "equil_sweeps" in result:
             self._equil_sweeps = result["equil_sweeps"]
             self._equil_energy_avg = result["equil_energy_avg"]
             self._equil_link_overlap_avg = result["equil_link_overlap_avg"]
+            self._equil_overlap2_avg = result["equil_overlap2_avg"]
 
         if "cluster_snapshots" in result:
             self.cluster_snapshots = result["cluster_snapshots"]
@@ -523,6 +608,25 @@ class Ising:
         )
         return self._equil_sweeps, delta
 
+    def equilibration_overlap2(self):
+        """Return the pair-averaged q^2 over log-binned windows.
+
+        Uses the same windows as
+        [`equilibration_delta`][peapods.Ising.equilibration_delta]. From
+        random initial states q^2 rises toward equilibrium; a plateau over the
+        last few windows is the usual thermalization criterion where the energy
+        identity does not hold (bimodal couplings).
+
+        Returns:
+            Tuple of (sweeps, overlap2) with shapes ``(n_checkpoints,)`` and
+            ``(n_checkpoints, n_temps)``.
+        """
+        if not hasattr(self, "_equil_overlap2_avg"):
+            raise ValueError(
+                "equilibration_overlap2 needs sample(equilibration_diagnostic=True)"
+            )
+        return self._equil_sweeps, self._equil_overlap2_avg
+
     def get_energies(self):
         """Return the mean energies per temperature from the last sample run."""
         return self.energies_avg
@@ -548,6 +652,7 @@ class XY:
         geometry=None,
         seed=None,
         occupation=None,
+        boundaries=None,
     ):
         self.lattice_shape = tuple(lattice_shape)
         if not self.lattice_shape or any(
@@ -575,6 +680,7 @@ class XY:
             coupling_seed,
             np.float64,
         )
+        coup = _apply_boundaries(coup, self.lattice_shape, boundaries)
         self.n_disorder = 1 if coup.ndim == self.n_dims + 1 else coup.shape[0]
         mask_shape = (self.n_disorder,) + self.lattice_shape
         if occupation is None:
@@ -619,7 +725,7 @@ class XY:
         cluster_updates=1,
         overrelaxation_sweeps=0,
         pt_interval=None,
-        pt_schedule="single_random_edge",
+        pt_schedule="full_ladder",
         warmup_ratio=0.25,
         displacements=None,
         vortices=False,
@@ -628,6 +734,7 @@ class XY:
         autocorrelation_max_lag=None,
         autocorrelation_backend="ring",
         sequential=False,
+        measure_interval=1,
     ):
         """Sample physical moments, with Metropolis plus embedded SW by default.
 
@@ -644,7 +751,12 @@ class XY:
         ``per_disorder`` retains individual moments, derived quantities and work
         counters; optional ``blocks`` and PT diagnostics are nested there.
         ``angle_vortex_density`` is geometric angle winding on intact plaquettes,
-        not frustration-adjusted vorticity or chirality.
+        not frustration-adjusted vorticity or chirality. ``measure_interval``
+        measures every k-th sweep after warmup; blocks and τ then count
+        measurements. ``per_disorder`` also holds ``metropolis_accepted`` and
+        ``metropolis_attempts`` over the measured sweeps, and ``stderr`` the
+        jackknife errors of every value. ``boundaries`` in the constructor
+        works as for [`Ising`][peapods.Ising].
         """
         result = self._sim.sample(
             n_sweeps,
@@ -662,6 +774,7 @@ class XY:
             autocorrelation_max_lag=autocorrelation_max_lag,
             autocorrelation_backend=autocorrelation_backend,
             sequential=sequential,
+            measure_interval=measure_interval,
         )
         self.result = result
         for name in (

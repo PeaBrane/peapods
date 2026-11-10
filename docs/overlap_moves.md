@@ -159,6 +159,11 @@ reaches the energy and Q2 that PT alone reaches after 65 536 sweeps.
 - **Moves on more than two replicas do not pay.** `pairN`, `jorgN`, `permN` and `gpermN`
   with N > 2 are valid, but their clusters percolate more readily: at 3D L=8 the largest
   `perm4` cluster covers 88 % of the lattice at every temperature.
+- **Check what a move does.** With `collect_cluster_stats=True`, `overlap_moves` counts
+  per mode and temperature the group updates, the sites they acted on and the active
+  sites, and `rmc_edges` counts replica Monte Carlo proposals, acceptances and flipped
+  sites per edge. A move that acts on more than half of the active sites mostly
+  relabels replicas. Cluster-size statistics count clusters of active sites only.
 - **Measure τ on replica-symmetric observables.** A fixed replica pair overstates the gain
   of same-temperature moves, because relabeling replicas decorrelates the pair without
   moving the ensemble. The built-in `overlap2_tau` therefore uses Q2. Its automatic

@@ -54,6 +54,15 @@ def test_reset_and_parallel_replay_with_signed_disorder_and_tempering():
     assert np.all(a["per_disorder"]["parallel_tempering"]["edge_attempts"] == 256)
 
 
+def test_thermalize_only_calls_advance_the_chain_and_measure_nothing():
+    model = XY((4, 4), temperatures=[1.0, 2.0], seed=91)
+    before = model._sim.get_spins().copy()
+    result = model.sample(10, warmup_ratio=1)
+    assert not np.array_equal(model._sim.get_spins(), before)
+    assert np.all(np.isnan(result["energies"]))
+    assert np.all(result["per_disorder"]["metropolis_attempts"] == 0)
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -63,7 +72,7 @@ def test_reset_and_parallel_replay_with_signed_disorder_and_tempering():
         {"pt_interval": 0},
         {"warmup_ratio": float("nan")},
         {"warmup_ratio": -1},
-        {"warmup_ratio": 1},
+        {"measure_interval": 0},
         {"collect_blocks": True, "block_size": 0},
         {"displacements": [[1]]},
         {"autocorrelation_backend": "fft"},

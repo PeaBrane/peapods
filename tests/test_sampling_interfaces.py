@@ -342,3 +342,64 @@ def test_overlap_max_temperature_limits_moves():
             overlap_cluster_update_interval=1,
             overlap_cluster_max_temperature=-1.0,
         )
+
+
+def test_boundaries_transform_couplings():
+    periodic = Ising((4, 3), couplings="ferro", seed=1)
+    mixed = Ising(
+        (4, 3), couplings="ferro", seed=1, boundaries=("antiperiodic", "open")
+    )
+    np.testing.assert_array_equal(periodic.couplings, np.ones((4, 3, 2)))
+    # Bonds leaving the last row change sign; bonds leaving the last column vanish.
+    np.testing.assert_array_equal(mixed.couplings[:3, :, 0], 1)
+    np.testing.assert_array_equal(mixed.couplings[3, :, 0], -1)
+    np.testing.assert_array_equal(mixed.couplings[:, :2, 1], 1)
+    np.testing.assert_array_equal(mixed.couplings[:, 2, 1], 0)
+    with pytest.raises(ValueError, match="boundary"):
+        Ising((4, 3), boundaries=("periodic", "twisted"))
+    with pytest.raises(ValueError):
+        Ising((4, 1))
+
+
+def test_diagnostics_report_per_disorder_samples_and_tau_flags():
+    model = Ising(
+        (6, 6),
+        couplings="bimodal",
+        temperatures=np.array([0.8, 1.6, 3.0]),
+        n_replicas=2,
+        n_disorder=2,
+        seed=5,
+    )
+    result = model.sample(
+        64,
+        pt_interval=1,
+        cluster_update_interval=1,
+        cluster_mode="wolff",
+        overlap_cluster_update_interval=1,
+        overlap_cluster_build_mode="houdayer+rmc",
+        overlap_cluster_mode="sw",
+        collect_cluster_stats=True,
+        autocorrelation_max_lag=8,
+        equilibration_diagnostic=True,
+        conditional_link_overlap=False,
+    )
+    moments = result["per_disorder"]["moments"]
+    assert moments["mags2"].shape == (2, 3)
+    np.testing.assert_allclose(moments["mags2"].mean(axis=0), result["mags2"])
+    assert model.energy_tau.shape == model.mags2_tau_converged.shape == (3,)
+    assert model.autocorrelation_lag == 8
+    assert np.all(model.mean_fk_cluster_size >= 1)
+    moves = model.overlap_moves
+    assert moves["groups"].shape == (2, 3)
+    assert np.all(moves["groups"][1] == 0), "rmc publishes no group moves"
+    assert np.all(model.rmc_edges["accepted"] <= model.rmc_edges["proposed"])
+    pt = result["per_disorder"]["parallel_tempering"]
+    assert np.all(pt["flow_up"] <= pt["flow_labelled"])
+    assert "ql_at_q_sum" not in result
+    sweeps, overlap2 = model.equilibration_overlap2()
+    assert overlap2.shape == (len(sweeps), 3)
+
+
+def test_equilibration_diagnostic_needs_two_replicas():
+    with pytest.raises(ValueError, match="n_replicas >= 2"):
+        Ising((4, 4), seed=1).sample(4, equilibration_diagnostic=True)

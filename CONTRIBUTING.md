@@ -48,6 +48,12 @@ environment variables, see the example):
 cargo run --release --example bench -p spin-sim
 ```
 
+`bench_xy` does the same for the XY kernels:
+
+```bash
+cargo run --release --example bench_xy -p spin-sim
+```
+
 ## Code style
 
 - **Python**: formatted and linted with [ruff](https://docs.astral.sh/ruff/)

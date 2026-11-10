@@ -1,7 +1,7 @@
 mod execution;
 mod xy;
 use execution::{
-    coupling_count, execute, physics_dict, pt_delta, pt_snapshot, set_array, warmup_sweeps,
+    coupling_count, execute, physics_dict, pt_dict, pt_snapshot, set_array, warmup_sweeps,
 };
 use spin_sim::simulation::realization::realization_seed;
 use spin_sim::simulation::run_sweep_parallel_with_physics;
@@ -12,7 +12,9 @@ use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArrayDyn, PyUntyp
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use spin_sim::config::*;
-use spin_sim::{GraphObservationSummary, Lattice, Realization};
+use spin_sim::geometry::Boundary;
+use spin_sim::statistics::DisorderSample;
+use spin_sim::{ClusterStats, GraphObservationSummary, Lattice, Realization};
 
 #[pyclass]
 struct IsingSimulation {
@@ -73,6 +75,46 @@ fn set_graph_observation<'py>(
         })
         .into_pyarray(py),
     )?;
+
+    let per_temperature = |field: fn(&GraphObservationSummary) -> &Vec<f64>| {
+        Array2::from_shape_fn((n_disorder, n_temps), |(d, t)| field(summaries[d])[t])
+    };
+    for (name, field) in [
+        (
+            "cluster_s2",
+            (|s| &s.cluster_s2) as fn(&GraphObservationSummary) -> &Vec<f64>,
+        ),
+        ("cluster_s4", |s| &s.cluster_s4),
+        ("cluster_s2_squared", |s| &s.cluster_s2_squared),
+    ] {
+        graph.set_item(name, per_temperature(field).into_pyarray(py))?;
+    }
+    if let Some(axes) = summaries[0].wrapping_axes.as_ref() {
+        let n_axes = axes.first().map_or(0, Vec::len);
+        graph.set_item(
+            "wrapping_axes",
+            Array3::from_shape_fn((n_disorder, n_temps, n_axes), |(d, t, axis)| {
+                summaries[d].wrapping_axes.as_ref().unwrap()[t][axis]
+            })
+            .into_pyarray(py),
+        )?;
+        type Optional = fn(&GraphObservationSummary) -> &Option<Vec<f64>>;
+        let optional: [(&str, Optional); 4] = [
+            ("wrapping_any", |s| &s.wrapping_any),
+            ("wrapping_all", |s| &s.wrapping_all),
+            ("wrapping_cluster_count", |s| &s.wrapping_cluster_count),
+            ("wrapping_fraction", |s| &s.wrapping_fraction),
+        ];
+        for (name, field) in optional {
+            graph.set_item(
+                name,
+                Array2::from_shape_fn((n_disorder, n_temps), |(d, t)| {
+                    field(summaries[d]).as_ref().unwrap()[t]
+                })
+                .into_pyarray(py),
+            )?;
+        }
+    }
 
     if summaries[0].winding.is_some() {
         for (name, index) in [
@@ -198,6 +240,7 @@ impl IsingSimulation {
         collect_physics=false,
         displacements=None,
         block_size=None,
+        conditional_link_overlap=true,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn sample<'py>(
@@ -225,6 +268,7 @@ impl IsingSimulation {
         collect_physics: bool,
         displacements: Option<Vec<Vec<isize>>>,
         block_size: Option<usize>,
+        conditional_link_overlap: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         let warmup = warmup_ratio.unwrap_or(0.25);
         let warmup_sweeps = warmup_sweeps(n_sweeps, warmup)?;
@@ -232,7 +276,7 @@ impl IsingSimulation {
 
         let sweep_mode_enum =
             SweepMode::try_from(sweep_mode).map_err(pyo3::exceptions::PyValueError::new_err)?;
-        let pt_schedule = PtSchedule::try_from(pt_schedule.unwrap_or("single_random_edge"))
+        let pt_schedule = PtSchedule::try_from(pt_schedule.unwrap_or("full_ladder"))
             .map_err(pyo3::exceptions::PyValueError::new_err)?;
         let autocorrelation_backend =
             AutocorrelationBackend::try_from(autocorrelation_backend.unwrap_or("ring"))
@@ -295,7 +339,7 @@ impl IsingSimulation {
             autocorrelation_backend,
             sequential: sequential.unwrap_or(false),
             equilibration_diagnostic: equilibration_diagnostic.unwrap_or(false),
-            conditional_link_overlap: true,
+            conditional_link_overlap,
         };
 
         let n_replicas = self.n_replicas;
@@ -328,6 +372,7 @@ impl IsingSimulation {
         )?;
 
         let dict = PyDict::new(py);
+        set_cluster_work(py, &dict, &agg.cluster_stats, n_temps)?;
         if !agg.per_disorder_physics.is_empty() {
             let temperatures: Vec<f64> = self.realizations[0].temperatures[..n_temps]
                 .iter()
@@ -458,43 +503,32 @@ impl IsingSimulation {
                     .collect::<Vec<_>>(),
             ),
         ];
-        let mut has_per_disorder = false;
+        let mut has_observations = false;
         for (name, summaries) in observation_sets {
             if summaries.len() != self.n_realizations {
                 continue;
             }
             set_graph_observation(py, &cluster_observations, name, &summaries)?;
-            has_per_disorder = true;
+            has_observations = true;
         }
-        if has_per_disorder {
+        if has_observations {
             per_disorder.set_item("cluster_observations", cluster_observations)?;
         }
 
         if pt_interval.is_some() {
-            let n_edges = self.n_temps.saturating_sub(1);
-            let pt = PyDict::new(py);
-            let delta = |which| pt_delta(&self.realizations, &pt_before, which);
-            for (which, name) in ["edge_attempts", "edge_acceptances"]
-                .into_iter()
-                .enumerate()
-            {
-                set_array(py, &pt, name, &[self.n_realizations, n_edges], delta(which))?;
-            }
             // Round trips are counted per walker: index (replica, t) is the system that
             // started at that slot, not whichever system sits there now.
-            set_array(
+            let pt = pt_dict(
                 py,
-                &pt,
-                "round_trips",
-                &[self.n_realizations, self.n_replicas, self.n_temps],
-                delta(2),
+                &self.realizations,
+                &pt_before,
+                self.n_replicas,
+                self.n_temps,
             )?;
             per_disorder.set_item("parallel_tempering", pt)?;
-            has_per_disorder = true;
         }
-        if has_per_disorder {
-            dict.set_item("per_disorder", per_disorder)?;
-        }
+        set_disorder_samples(py, &per_disorder, &agg.per_disorder, n_temps)?;
+        dict.set_item("per_disorder", per_disorder)?;
 
         if agg
             .cluster_stats
@@ -562,6 +596,25 @@ impl IsingSimulation {
                 Array1::from(agg.diagnostics.overlap2_tau).into_pyarray(py),
             )?;
         }
+        if let Some(lag) = agg.diagnostics.autocorrelation_lag {
+            dict.set_item("autocorrelation_lag", lag)?;
+            dict.set_item(
+                "energy_tau",
+                Array1::from(agg.diagnostics.energy_tau).into_pyarray(py),
+            )?;
+            for (name, flags) in [
+                ("mags2_tau_converged", agg.diagnostics.mags2_tau_converged),
+                (
+                    "overlap2_tau_converged",
+                    agg.diagnostics.overlap2_tau_converged,
+                ),
+                ("energy_tau_converged", agg.diagnostics.energy_tau_converged),
+            ] {
+                if !flags.is_empty() {
+                    dict.set_item(name, Array1::from(flags).into_pyarray(py))?;
+                }
+            }
+        }
 
         let ckpts = &agg.diagnostics.equil_checkpoints;
         if !ckpts.is_empty() {
@@ -578,6 +631,11 @@ impl IsingSimulation {
                 Array2::from_shape_fn((n_ckpts, n_temps), |(i, t)| ckpts[i].link_overlap_avg[t])
                     .into_pyarray(py);
             dict.set_item("equil_link_overlap_avg", equil_link_overlap_avg)?;
+
+            let equil_overlap2_avg =
+                Array2::from_shape_fn((n_ckpts, n_temps), |(i, t)| ckpts[i].overlap2_avg[t])
+                    .into_pyarray(py);
+            dict.set_item("equil_overlap2_avg", equil_overlap2_avg)?;
         }
 
         if !agg.cluster_snapshots.is_empty() {
@@ -640,8 +698,147 @@ impl IsingSimulation {
     }
 }
 
+/// Per-bond factors in {-1, 0, 1} that give periodic couplings the boundary
+/// conditions `boundaries` (one of "periodic", "open", "antiperiodic" per
+/// dimension), shaped like the couplings: `(*lattice_shape, n_neighbors)`.
+#[pyfunction]
+#[pyo3(signature = (lattice_shape, boundaries, neighbor_offsets=None))]
+fn boundary_factors<'py>(
+    py: Python<'py>,
+    lattice_shape: Vec<usize>,
+    boundaries: Vec<String>,
+    neighbor_offsets: Option<Vec<Vec<isize>>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    use pyo3::exceptions::PyValueError;
+    if lattice_shape.is_empty() || lattice_shape.contains(&0) {
+        return Err(PyValueError::new_err("lattice extents must be positive"));
+    }
+    if neighbor_offsets.as_ref().is_some_and(|offsets| {
+        offsets.is_empty() || offsets.iter().any(|o| o.len() != lattice_shape.len())
+    }) {
+        return Err(PyValueError::new_err("invalid neighbor offsets"));
+    }
+    let boundaries = boundaries
+        .iter()
+        .map(|b| Boundary::try_from(b.as_str()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(PyValueError::new_err)?;
+    let lattice = match neighbor_offsets {
+        Some(offsets) => Lattice::with_offsets(lattice_shape.clone(), offsets),
+        None => Lattice::new(lattice_shape.clone()),
+    };
+    let factors = lattice
+        .boundary_factors(&boundaries)
+        .map_err(PyValueError::new_err)?;
+    let shape: Vec<usize> = lattice_shape
+        .into_iter()
+        .chain(std::iter::once(lattice.n_neighbors))
+        .collect();
+    let array = numpy::ndarray::ArrayD::from_shape_vec(numpy::ndarray::IxDyn(&shape), factors)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(array.into_pyarray(py).into_any())
+}
+
+/// Per-disorder thermal averages under `per_disorder["moments"]`, `[n_disorder,
+/// n_temps]` each; overlap and τ entries only where measured.
+fn set_disorder_samples<'py>(
+    py: Python<'py>,
+    per_disorder: &Bound<'py, PyDict>,
+    samples: &[DisorderSample],
+    n_temps: usize,
+) -> PyResult<()> {
+    let moments = PyDict::new(py);
+    type Field = fn(&DisorderSample) -> &Vec<f64>;
+    let fields: [(&str, Field); 12] = [
+        ("mags2", |s| &s.mags2),
+        ("mags4", |s| &s.mags4),
+        ("energies", |s| &s.energies),
+        ("energy_variance", |s| &s.energy_variance),
+        ("overlap2", |s| &s.overlap2),
+        ("overlap4", |s| &s.overlap4),
+        ("link_overlap", |s| &s.link_overlap),
+        ("link_overlap2", |s| &s.link_overlap2),
+        ("link_overlap4", |s| &s.link_overlap4),
+        ("mags2_tau", |s| &s.mags2_tau),
+        ("overlap2_tau", |s| &s.overlap2_tau),
+        ("energy_tau", |s| &s.energy_tau),
+    ];
+    for (name, field) in fields {
+        if samples.iter().any(|s| field(s).len() != n_temps) {
+            continue;
+        }
+        let data = samples
+            .iter()
+            .flat_map(|s| field(s).iter().copied())
+            .collect();
+        set_array(py, &moments, name, &[samples.len(), n_temps], data)?;
+    }
+    per_disorder.set_item("moments", moments)
+}
+
+/// FK cluster work, overlap move counters and replica Monte Carlo counters.
+fn set_cluster_work<'py>(
+    py: Python<'py>,
+    dict: &Bound<'py, PyDict>,
+    stats: &ClusterStats,
+    n_temps: usize,
+) -> PyResult<()> {
+    if !stats.fk_updates.is_empty() {
+        dict.set_item(
+            "fk_updates",
+            Array1::from(stats.fk_updates.clone()).into_pyarray(py),
+        )?;
+        dict.set_item(
+            "fk_visited_spins",
+            Array1::from(stats.fk_visited_spins.clone()).into_pyarray(py),
+        )?;
+    }
+    if !stats.overlap_moves.is_empty() {
+        let moves = PyDict::new(py);
+        type Counter = fn(&spin_sim::statistics::OverlapMoveCounts) -> u64;
+        let counters: [(&str, Counter); 4] = [
+            ("groups", |c| c.groups),
+            ("moved_sites", |c| c.moved_sites),
+            ("counted_groups", |c| c.counted_groups),
+            ("active_sites", |c| c.active_sites),
+        ];
+        for (name, counter) in counters {
+            // Modes without group moves (rmc) report zeros.
+            let data = stats
+                .overlap_moves
+                .iter()
+                .flat_map(|mode| (0..n_temps).map(move |t| mode.get(t).map_or(0, counter)))
+                .collect();
+            set_array(
+                py,
+                &moves,
+                name,
+                &[stats.overlap_moves.len(), n_temps],
+                data,
+            )?;
+        }
+        dict.set_item("overlap_moves", moves)?;
+    }
+    if !stats.rmc_edges.is_empty() {
+        let edges = PyDict::new(py);
+        type Counter = fn(&spin_sim::statistics::RmcEdgeCounts) -> u64;
+        let counters: [(&str, Counter); 3] = [
+            ("proposed", |c| c.proposed),
+            ("accepted", |c| c.accepted),
+            ("flipped_sites", |c| c.flipped_sites),
+        ];
+        for (name, counter) in counters {
+            let data = stats.rmc_edges.iter().map(counter).collect();
+            set_array(py, &edges, name, &[stats.rmc_edges.len()], data)?;
+        }
+        dict.set_item("rmc_edges", edges)?;
+    }
+    Ok(())
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(boundary_factors, m)?)?;
     m.add_class::<IsingSimulation>()?;
     m.add_class::<xy::PyXySimulation>()?;
     Ok(())

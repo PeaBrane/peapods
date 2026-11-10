@@ -1,5 +1,5 @@
 use crate::execution::{
-    coupling_count, execute, physics_dict, pt_delta, pt_snapshot, set_array, warmup_sweeps,
+    coupling_count, execute, physics_dict, pt_dict, pt_snapshot, set_array, warmup_sweeps,
 };
 use numpy::{PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use pyo3::{prelude::*, types::PyDict};
@@ -62,7 +62,7 @@ impl PyXySimulation {
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
         Ok(Self { model })
     }
-    #[pyo3(signature=(n_sweeps,sweep_mode="metropolis",cluster_update_interval=Some(1),cluster_mode="sw",cluster_updates=1,overrelaxation_sweeps=0,pt_interval=None,pt_schedule="single_random_edge",warmup_ratio=0.25,displacements=None,vortices=false,block_size=None,autocorrelation_max_lag=None,autocorrelation_backend="ring",sequential=false,measure_interval=1))]
+    #[pyo3(signature=(n_sweeps,sweep_mode="metropolis",cluster_update_interval=Some(1),cluster_mode="sw",cluster_updates=1,overrelaxation_sweeps=0,pt_interval=None,pt_schedule="full_ladder",warmup_ratio=0.25,displacements=None,vortices=false,block_size=None,autocorrelation_max_lag=None,autocorrelation_backend="ring",sequential=false,measure_interval=1))]
     #[allow(clippy::too_many_arguments)]
     fn sample<'py>(
         &mut self,
@@ -184,15 +184,7 @@ impl PyXySimulation {
             }
         }
         if pt_interval.is_some() {
-            let pt = PyDict::new(py);
-            let delta = |which| pt_delta(&self.model.realizations, &pt_before, which);
-            for (which, name) in ["edge_attempts", "edge_acceptances"]
-                .into_iter()
-                .enumerate()
-            {
-                set_array(py, &pt, name, &[nd, nt.saturating_sub(1)], delta(which))?;
-            }
-            set_array(py, &pt, "round_trips", &[nd, nr, nt], delta(2))?;
+            let pt = pt_dict(py, &self.model.realizations, &pt_before, nr, nt)?;
             per.set_item("parallel_tempering", pt)?;
         }
         Ok(dict)

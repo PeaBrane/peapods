@@ -159,6 +159,14 @@ pub(crate) fn physics_dict<'py>(
         }
     };
     set_values(py, &output, aggregate)?;
+    // Delete-one-disorder errors of every aggregated value; NaN with one sample.
+    let stderr = PyDict::new(py);
+    set_values(
+        py,
+        &stderr,
+        &PhysicsResult::jackknife_stderr(results.iter().copied(), shape, temperatures, components),
+    )?;
+    output.set_item("stderr", stderr)?;
     let per = PyDict::new(py);
     let individual: Vec<_> = results
         .iter()
@@ -253,19 +261,55 @@ pub(crate) fn coupling_count(
     )))
 }
 
-/// Lifetime PT edge attempts, edge acceptances and round trips of one realization.
+/// Lifetime PT edge attempts, edge acceptances, round trips and the two flow
+/// counters of one realization, in the order of [`PT_COUNTERS`].
 ///
 /// They persist across `sample()` calls; bindings report each call's increments.
-pub(crate) fn pt_counters<S: Spin>(real: &ModelRealization<S>) -> [&[u64]; 3] {
+pub(crate) fn pt_counters<S: Spin>(real: &ModelRealization<S>) -> [&[u64]; 5] {
     [
         real.pt_edge_attempts(),
         real.pt_edge_acceptances(),
         real.pt_round_trips(),
+        real.pt_flow_up(),
+        real.pt_flow_labelled(),
     ]
 }
 
+/// Names of [`pt_counters`] in the result dictionaries.
+const PT_COUNTERS: [&str; 5] = [
+    "edge_attempts",
+    "edge_acceptances",
+    "round_trips",
+    "flow_up",
+    "flow_labelled",
+];
+
+/// This call's tempering counters as a dictionary of arrays: edge counters are
+/// `[n_disorder, n_temps - 1]`, round trips `[n_disorder, n_replicas, n_temps]`
+/// (indexed by the walker that started at that slot) and flow counters
+/// `[n_disorder, n_temps]`.
+pub(crate) fn pt_dict<'py, S: Spin>(
+    py: Python<'py>,
+    reals: &[ModelRealization<S>],
+    before: &[[Vec<u64>; 5]],
+    n_replicas: usize,
+    n_temps: usize,
+) -> PyResult<Bound<'py, PyDict>> {
+    let pt = PyDict::new(py);
+    let nd = reals.len();
+    for (which, name) in PT_COUNTERS.into_iter().enumerate() {
+        let shape: &[usize] = match which {
+            0 | 1 => &[nd, n_temps.saturating_sub(1)],
+            2 => &[nd, n_replicas, n_temps],
+            _ => &[nd, n_temps],
+        };
+        set_array(py, &pt, name, shape, pt_delta(reals, before, which))?;
+    }
+    Ok(pt)
+}
+
 /// Per-realization snapshot of [`pt_counters`].
-pub(crate) fn pt_snapshot<S: Spin>(reals: &[ModelRealization<S>]) -> Vec<[Vec<u64>; 3]> {
+pub(crate) fn pt_snapshot<S: Spin>(reals: &[ModelRealization<S>]) -> Vec<[Vec<u64>; 5]> {
     reals
         .iter()
         .map(|real| pt_counters(real).map(<[u64]>::to_vec))
@@ -275,7 +319,7 @@ pub(crate) fn pt_snapshot<S: Spin>(reals: &[ModelRealization<S>]) -> Vec<[Vec<u6
 /// Increments of counter `which` since `before`, concatenated over realizations.
 pub(crate) fn pt_delta<S: Spin>(
     reals: &[ModelRealization<S>],
-    before: &[[Vec<u64>; 3]],
+    before: &[[Vec<u64>; 5]],
     which: usize,
 ) -> Vec<u64> {
     reals

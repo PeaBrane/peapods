@@ -68,7 +68,10 @@ which helps at low temperature, where uniform proposals are rarely accepted.
 Optional overrelaxation passes run after the local pass and before clusters,
 reflecting spins about their signed local field; zero fields are skipped.
 Measurements follow these updates; PT follows measurement. `n_sweeps` includes
-warmup, rounded from `warmup_ratio`.
+warmup, rounded from `warmup_ratio`. `warmup_ratio=1` thermalizes without
+measuring: the chain advances and every moment is NaN. `measure_interval=k`
+measures every k-th sweep after warmup. Interval events keep their phase across
+`sample()` calls.
 
 - Local updates only: `cluster_update_interval=None`.
 - Cluster only: `sweep_mode="none"`, with `cluster_mode="sw"` or `"wolff"`.
@@ -77,8 +80,9 @@ warmup, rounded from `warmup_ratio`.
   does not adapt the measurement clock to the random cluster size.
 - `overrelaxation_sweeps=k` adds deterministic passes. It defaults to zero and
   must accompany Metropolis, Gibbs or cluster updates.
-- `pt_interval` defaults to `None`. Existing `single_random_edge` and
-  `full_ladder` schedules and edge/round-trip diagnostics are shared with Ising.
+- `pt_interval` defaults to `None`. The `full_ladder` (default) and
+  `single_random_edge` schedules and the edge, round-trip and flow diagnostics
+  are shared with Ising.
 
 For a random reflection axis \(r\), let \(a_i=r\cdot s_i\). A satisfied
 embedded bond has \(J_{ij}a_i a_j>0\), and is activated with probability
@@ -93,7 +97,9 @@ promise efficient equilibration of large frustrated samples.
 `per_disorder["cluster_updates"]` and `["visited_spins"]` have shape
 `(n_disorder, n_temps)`, sum over replicas, and include warmup. A SW update visits
 all `N` spins; Wolff visits its seed cluster. Neither counts only accepted spin
-reflections. `sequential=True` processes replicas on each realization's current
+reflections. `["metropolis_accepted"]` and `["metropolis_attempts"]` count
+Metropolis proposals over the measured sweeps; their ratio shows where uniform
+proposals freeze and `sweep_mode="gibbs"` pays off. `sequential=True` processes replicas on each realization's current
 thread; otherwise measurements are also split over temperatures, with results
 identical to sequential runs. Disorder batches use the same global Rayon pool; no
 nested pools are created. Set `RAYON_NUM_THREADS` before sampling to bound it.
@@ -158,10 +164,16 @@ summed counts, then derive nonlinear observables. Use a block jackknife for
 nonlinear errors. Blocks grow in memory with the number of measured sweeps;
 none are stored by default.
 
+`stderr` holds delete-one-disorder jackknife errors of every aggregated value,
+including Binder ratios and correlation lengths; it is NaN with one disorder
+sample.
+
 `autocorrelation_max_lag=k` adds per-disorder `energy_tau` and `mags2_tau`, using
-the existing Sokal-window infrastructure with `float64` storage for XY.
-Their time unit is one measured sweep and their input averages replicas at each
-temperature. The lag is bounded by one quarter of production length (minimum
+the existing Sokal-window infrastructure with `float64` storage for XY, and
+`energy_tau_converged`/`mags2_tau_converged`: when the automatic window does not
+close, τ is a truncated lower bound. A series without variance has no τ and
+reports NaN. Their time unit is one measurement and their input averages
+replicas at each temperature. The lag is bounded by one quarter of production length (minimum
 one). The default `ring` backend has bounded history; `fft` retains the series
 and requires an explicit maximum lag. Neither block sizes nor these diagnostics
 automatically certify equilibration, especially for frustrated systems.
