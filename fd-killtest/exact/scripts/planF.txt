@@ -1,0 +1,51 @@
+# phase E1: exact enumeration in the near-tree regime (honeycomb, diluted lattices)
+honey 2 48 --exh-budget 6e11
+honey 3 24 --exh-budget 6e11
+honey 4 16 --exh-budget 6e11
+honey 5 12 --exh-budget 6e11
+honey 6 10 --exh-budget 6e11
+honey 7 9 --exh-budget 6e11
+honey 8 8 --exh-budget 6e11
+honey 4 12 --cyl --exh-budget 6e11
+honey 6 8 --cyl --exh-budget 6e11
+square 8 16 --dilute 0.6,0.5,1.5,11 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+square 8 16 --dilute 0.6,1,1,11 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+square 10 20 --dilute 0.55,0.5,1.5,11 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+tri 8 16 --dilute 0.42,0.5,1.5,11 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+tri 10 20 --dilute 0.38,1,1,11 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+honey 8 16 --dilute 0.9,0.5,1.5,11 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+honey 10 20 --dilute 0.9,1,1,11 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+square 8 16 --dilute 0.6,0.5,1.5,12 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+square 8 16 --dilute 0.6,1,1,12 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+square 10 20 --dilute 0.55,0.5,1.5,12 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+tri 8 16 --dilute 0.42,0.5,1.5,12 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+tri 10 20 --dilute 0.38,1,1,12 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+honey 8 16 --dilute 0.9,0.5,1.5,12 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+honey 10 20 --dilute 0.9,1,1,12 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+square 8 16 --dilute 0.6,0.5,1.5,13 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+square 8 16 --dilute 0.6,1,1,13 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+square 10 20 --dilute 0.55,0.5,1.5,13 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+tri 8 16 --dilute 0.42,0.5,1.5,13 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+tri 10 20 --dilute 0.38,1,1,13 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+honey 8 16 --dilute 0.9,0.5,1.5,13 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+honey 10 20 --dilute 0.9,1,1,13 --exh-budget 4e11 --rse 0.0005 --nmax 524288
+# phase E2: high-precision pure honeycomb (slack ~0.1% of AG at beta >= 0.44)
+honey 5 10 --rse 0.0002 --nmax 1048576 --chunk 64
+honey 6 12 --rse 0.0002 --nmax 1048576 --chunk 64
+honey 7 14 --rse 0.0002 --nmax 1048576 --chunk 64
+honey 8 16 --rse 0.0002 --nmax 1048576 --chunk 64
+honey 9 18 --rse 0.0002 --nmax 1048576 --chunk 64
+honey 10 20 --rse 0.0002 --nmax 1048576 --chunk 64
+honey 8 16 --cyl --rse 0.0002 --nmax 1048576 --chunk 64
+honey 10 20 --cyl --rse 0.0002 --nmax 1048576 --chunk 64
+# phase B: widths 13-14 (near-pair set)
+honey 13 13 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.3,0.5,0.8,1.2,2.0,3.0
+square 13 13 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.3,0.5,0.8,1.2,2.0,3.0
+tri 13 13 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.3,0.5,0.8,1.2,2.0,3.0
+honey 13 26 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.3,0.5,0.8,1.2,2.0,3.0
+square 13 26 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.3,0.5,0.8,1.2,2.0,3.0
+tri 13 26 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.3,0.5,0.8,1.2,2.0,3.0
+honey 14 14 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.3,0.5,0.8,1.2,2.0,3.0
+square 14 14 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.3,0.5,0.8,1.2,2.0,3.0
+tri 14 14 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.3,0.5,0.8,1.2,2.0,3.0
+honey 14 28 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.3,0.5,0.8,1.2,2.0,3.0

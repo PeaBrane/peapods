@@ -1,0 +1,18 @@
+[package]
+name = "fd-mc"
+version = "0.1.0"
+edition = "2021"
+description = "Monte Carlo kill test for forest domination: arboreal gas vs +-J spin-glass correlations"
+publish = false
+
+[workspace]
+
+[dependencies]
+faer = "0.24"
+rand = "0.8"
+rand_xoshiro = "0.6"
+rayon = "1.10"
+
+[profile.release]
+opt-level = 3
+debug = false

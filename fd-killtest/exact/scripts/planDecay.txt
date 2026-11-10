@@ -1,0 +1,34 @@
+# targeted measurement 1: decay along strips (kind w L extra)
+square 2 128 --ag both --nsamp 16384
+square 3 128 --ag both --nsamp 16384
+square 4 128 --ag both --nsamp 16384
+square 5 128 --ag both --nsamp 16384
+square 6 128 --ag both --nsamp 16384
+square 7 128 --ag both --nsamp 16384
+square 8 128 --ag both --nsamp 16384
+square 9 48 --ag both --sparse --nsamp 8192
+square 10 48 --ag both --sparse --nsamp 8192
+square 11 64 --ag survival --nsamp 8192
+square 12 64 --ag survival --nsamp 8192
+tri 2 128 --ag both --nsamp 16384
+tri 3 128 --ag both --nsamp 16384
+tri 4 128 --ag both --nsamp 16384
+tri 5 128 --ag both --nsamp 16384
+tri 6 128 --ag both --nsamp 16384
+tri 7 128 --ag both --nsamp 16384
+tri 8 128 --ag both --nsamp 16384
+tri 9 48 --ag both --sparse --nsamp 8192
+tri 10 48 --ag both --sparse --nsamp 8192
+tri 11 64 --ag survival --nsamp 8192
+tri 12 64 --ag survival --nsamp 8192
+honey 2 128 --ag both --nsamp 16384
+honey 3 128 --ag both --nsamp 16384
+honey 4 128 --ag both --nsamp 16384
+honey 5 128 --ag both --nsamp 16384
+honey 6 128 --ag both --nsamp 16384
+honey 7 128 --ag both --nsamp 16384
+honey 8 128 --ag both --nsamp 16384
+honey 9 48 --ag both --sparse --nsamp 8192
+honey 10 48 --ag both --sparse --nsamp 8192
+honey 11 64 --ag survival --nsamp 8192
+honey 12 64 --ag survival --nsamp 8192

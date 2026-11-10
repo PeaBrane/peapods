@@ -1,0 +1,7 @@
+# plan G: the beta points dropped from phase B, at L = w
+honey 13 13 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.2,0.44,0.6,1.0,1.5,2.5
+square 13 13 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.2,0.44,0.6,1.0,1.5,2.5
+tri 13 13 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.2,0.44,0.6,1.0,1.5,2.5
+honey 14 14 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.2,0.44,0.6,1.0,1.5,2.5
+square 14 14 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.2,0.44,0.6,1.0,1.5,2.5
+tri 14 14 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536 --chunk 32 --betas 0.2,0.44,0.6,1.0,1.5,2.5

@@ -1,0 +1,164 @@
+# phase A: widths 2-12, all lattices, L in {w,2w,4w} plus L=64 for w<=8; cylinders; dilution
+square 2 4
+square 2 8
+square 2 16
+square 2 64
+tri 2 4
+tri 2 8
+tri 2 16
+tri 2 64
+honey 2 4
+honey 2 8
+honey 2 16
+honey 2 64
+square 3 3
+square 3 6
+square 3 12
+square 3 64
+tri 3 3
+tri 3 6
+tri 3 12
+tri 3 64
+honey 3 3
+honey 3 6
+honey 3 12
+honey 3 64
+square 4 4
+square 4 8
+square 4 16
+square 4 64
+tri 4 4
+tri 4 8
+tri 4 16
+tri 4 64
+honey 4 4
+honey 4 8
+honey 4 16
+honey 4 64
+square 4 8 --cyl
+tri 4 8 --cyl
+honey 4 8 --cyl
+square 5 5
+square 5 10
+square 5 20
+square 5 64
+tri 5 5
+tri 5 10
+tri 5 20
+tri 5 64
+honey 5 5
+honey 5 10
+honey 5 20
+honey 5 64
+square 6 6
+square 6 12
+square 6 24
+square 6 64
+tri 6 6
+tri 6 12
+tri 6 24
+tri 6 64
+honey 6 6
+honey 6 12
+honey 6 24
+honey 6 64
+square 6 12 --cyl
+tri 6 12 --cyl
+honey 6 12 --cyl
+square 7 7
+square 7 14
+square 7 28
+square 7 64
+tri 7 7
+tri 7 14
+tri 7 28
+tri 7 64
+honey 7 7
+honey 7 14
+honey 7 28
+honey 7 64
+square 8 8
+square 8 16
+square 8 32
+square 8 64
+tri 8 8
+tri 8 16
+tri 8 32
+tri 8 64
+honey 8 8
+honey 8 16
+honey 8 32
+honey 8 64
+square 8 16 --cyl
+tri 8 16 --cyl
+honey 8 16 --cyl
+square 8 16 --dilute 0.7,0.5,1.5,1
+square 8 16 --dilute 0.85,0.5,1.5,1
+tri 8 16 --dilute 0.55,0.5,1.5,1
+tri 8 16 --dilute 0.7,0.5,1.5,1
+honey 8 16 --dilute 0.85,0.5,1.5,1
+square 8 16 --dilute 1.0,0.3,1.7,1
+square 8 16 --dilute 0.7,0.5,1.5,2
+square 8 16 --dilute 0.85,0.5,1.5,2
+tri 8 16 --dilute 0.55,0.5,1.5,2
+tri 8 16 --dilute 0.7,0.5,1.5,2
+honey 8 16 --dilute 0.85,0.5,1.5,2
+square 8 16 --dilute 1.0,0.3,1.7,2
+square 9 9
+square 9 18
+square 9 36
+tri 9 9
+tri 9 18
+tri 9 36
+honey 9 9
+honey 9 18
+honey 9 36
+square 10 10
+square 10 20
+square 10 40
+tri 10 10
+tri 10 20
+tri 10 40
+honey 10 10
+honey 10 20
+honey 10 40
+square 10 20 --cyl
+tri 10 20 --cyl
+honey 10 20 --cyl
+square 11 11 --nmax 65536
+square 11 22 --nmax 65536
+square 11 44 --nmax 65536
+tri 11 11 --nmax 65536
+tri 11 22 --nmax 65536
+tri 11 44 --nmax 65536
+honey 11 11 --nmax 65536
+honey 11 22 --nmax 65536
+honey 11 44 --nmax 65536
+square 12 12 --nmax 65536
+square 12 24 --nmax 65536
+square 12 48 --nmax 65536
+tri 12 12 --nmax 65536
+tri 12 24 --nmax 65536
+tri 12 48 --nmax 65536
+honey 12 12 --nmax 65536
+honey 12 24 --nmax 65536
+honey 12 48 --nmax 65536
+square 12 24 --cyl --nmax 65536
+tri 12 24 --cyl --nmax 65536
+honey 12 24 --cyl --nmax 65536
+square 12 24 --dilute 0.7,0.5,1.5,3 --nmax 65536
+tri 12 24 --dilute 0.6,0.5,1.5,3 --nmax 65536
+honey 12 24 --dilute 0.85,0.5,1.5,3 --nmax 65536
+# phase B: widths 13 and 14 with the near-pair set (AG Contract branches only; far pairs omitted)
+square 13 13 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+square 13 26 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+tri 13 13 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+tri 13 26 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+honey 13 13 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+honey 13 26 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+square 14 14 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+square 14 28 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+tri 14 14 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+tri 14 28 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+honey 14 14 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+honey 14 28 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536

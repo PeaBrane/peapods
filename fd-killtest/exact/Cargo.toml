@@ -1,0 +1,15 @@
+[package]
+name = "fd-exact"
+version = "0.1.0"
+edition = "2021"
+description = "Exact arboreal-gas DP and spin-glass transfer matrices for the forest-domination kill test"
+publish = false
+
+# Standalone: keep this crate out of the root workspace.
+[workspace]
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+codegen-units = 4

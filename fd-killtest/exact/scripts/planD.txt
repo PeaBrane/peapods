@@ -1,0 +1,6 @@
+square 13 52 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+tri 13 52 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+honey 13 52 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+square 14 56 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+tri 14 56 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
+honey 14 56 --pairs corner-adj-a,corner-adj-l,bdry-adj-a,bdry-adj-l,bdry-adj-lmid,bdry-d2-l,bdry-d2-a,short-end-to-end,centre-adj-l,centre-adj-a,centre-d2-l --nmax 65536
