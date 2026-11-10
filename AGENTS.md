@@ -5,6 +5,13 @@
 - When unsure about an algorithm or physics claim, check `refs/` and `notes/` first; only fall back to web search if they don't cover it
 - For restoring private project files, use the [restore-private-files skill](skills/restore-private-files/SKILL.md). Read `notes/AGENTS.md` after restoration for ledger maintenance and artifact-availability policy.
 
+## Git
+
+- No branches besides `main` and `gh-pages` (the docs site). Work on a local `main` that tracks `origin/main` and push straight to it: `git fetch origin`, `git merge origin/main` (never rebase or force-push), `git push origin HEAD:main`. No feature branches or pull requests.
+- Several sessions may share one checkout: stage only your own files.
+- A session in its own worktree cannot check out `main`; it works detached at `origin/main` and pushes `HEAD:main` the same way.
+- Branches removed on 2026-11-10 are archived in `notes/branch-archive/` (see its README). Never push those refs.
+
 ## Benchmark baseline (main, 2026-09-29; 64x64, 16 temps, 50 sweeps, 128 realizations; Intel Core Ultra 9 285K, 24 threads, Linux)
 
 | Mode | ms/sweep | v0.2.1, same machine |
