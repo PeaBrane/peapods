@@ -117,6 +117,11 @@ fn sweep_sites<C: Coupling, St, const K: usize>(
         for x in 0..l0 {
             for y in 0..l1 {
                 let row = (x * l1 + y) * l2;
+                // TODO(perf, unmeasured): rows on an x or y face use the neighbor table
+                // (58% of sites at L = 8, 33% at L = 16). Their x and y neighbors are
+                // whole rows, so four wrapped row bases in place of `i ± s0`, `i ± s1`
+                // would give every row the stride path with the same term order, leaving
+                // only the two z-end sites generic. Bench at large L before adopting.
                 if x == 0 || x == l0 - 1 || y == 0 || y == l1 - 1 {
                     for i in row..row + l2 {
                         visit_generic(lattice, states, couplings, &spins, &mut attempt, i);

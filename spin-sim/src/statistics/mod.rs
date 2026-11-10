@@ -1,5 +1,6 @@
 pub mod autocorrelation;
 pub mod equilibration;
+pub(crate) mod graph;
 pub mod overlap;
 pub mod results;
 mod stats;

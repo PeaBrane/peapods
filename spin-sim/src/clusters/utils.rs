@@ -1,5 +1,5 @@
 use crate::geometry::Lattice;
-use crate::mcmc::uniform_draw;
+use crate::mcmc::{threshold_f64, uniform_draw};
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 use std::cell::RefCell;
@@ -31,8 +31,7 @@ impl BondSampler {
     fn general_threshold(neg_rate: f64, x: f32) -> i64 {
         // f64 exp keeps 1 - e^-y accurate to ~1e-16 / y (better than f32 for y > 1e-9)
         // and is far cheaper than expm1f.
-        let p = 1.0 - (f64::from(x) * neg_rate).exp();
-        (p * TWO_POW_62) as i64
+        threshold_f64(1.0 - (f64::from(x) * neg_rate).exp())
     }
 
     #[inline]
@@ -45,8 +44,6 @@ impl BondSampler {
         uniform_draw(rng) < threshold
     }
 }
-
-const TWO_POW_62: f64 = 4_611_686_018_427_387_904.0;
 
 // --- Union-Find ---
 

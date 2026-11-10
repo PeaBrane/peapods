@@ -996,7 +996,7 @@ mod tests {
     }
 
     /// With identical replicas no site is active, so the Wolff seed search fails; the
-    /// all-singleton cluster statistics must still be written for every build mode.
+    /// all-singleton cluster statistics must still be written.
     #[test]
     fn wolff_records_statistics_without_active_sites() {
         let lattice = Lattice::new(vec![4, 4]);

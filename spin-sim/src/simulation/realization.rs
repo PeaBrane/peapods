@@ -324,10 +324,6 @@ impl<S: Spin> ModelRealization<S> {
                     ids,
                     n_spins,
                     &mut self.rngs[offset],
-                    // Always even edges, then odd: the passes alternate E, O, E, O, so
-                    // accepted swaps carry walkers along the ladder. Flipping the order
-                    // each event (E, O, O, E) lets a pass undo the previous one.
-                    0,
                     &mut record,
                 ),
             }

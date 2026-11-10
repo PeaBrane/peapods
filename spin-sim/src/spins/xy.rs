@@ -151,6 +151,10 @@ fn sweep_sites(
     occupied: Option<&[bool]>,
     mut update: impl FnMut(&mut [XySpin], usize, XySpin),
 ) {
+    // TODO(perf, unmeasured): only canonical 2D lattices get a stride path; in 3D every
+    // site reads the neighbor table. A cubic interior field summed in `local_field`
+    // order, as in `mcmc::sweep`, would be bit-identical; bench it before adopting
+    // (`square_specialization_matches_generic_trajectory` is the equality oracle).
     let square = lattice
         .square_shape()
         .filter(|&(height, width)| height >= 3 && width >= 3);
@@ -262,16 +266,11 @@ impl Embedding for XyEmbedding {
     fn axis(rng: &mut Xoshiro256StarStar) -> XySpin {
         XySpin::random(rng)
     }
-    fn bond(
-        a: XySpin,
-        b: XySpin,
-        j: f64,
-        t: f64,
-        axis: &XySpin,
-        rng: &mut Xoshiro256StarStar,
-    ) -> bool {
-        let inter = j * dot(a, *axis) * dot(b, *axis);
-        inter > 0.0 && rng.gen::<f64>() < -(-2.0 * inter / t).exp_m1()
+    fn bond_at(t: f64) -> impl Fn(XySpin, XySpin, f64, &XySpin, &mut Xoshiro256StarStar) -> bool {
+        move |a, b, j, axis, rng| {
+            let inter = j * dot(a, *axis) * dot(b, *axis);
+            inter > 0.0 && rng.gen::<f64>() < -(-2.0 * inter / t).exp_m1()
+        }
     }
     fn reflect(spin: &mut XySpin, axis: &XySpin) {
         let projection = dot(*spin, *axis);
@@ -639,6 +638,7 @@ mod tests {
                 < 1e-12
         );
         let axis = XySpin::random(&mut rng);
+        let bond = XyEmbedding::bond_at(0.7);
         for i in 0..24 {
             for d in 0..2 {
                 let j = lattice.neighbor_fwd(i, d);
@@ -649,8 +649,8 @@ mod tests {
                 let mut a = rng.clone();
                 let mut b = rng.clone();
                 assert_eq!(
-                    XyEmbedding::bond(original[i], original[j], 1.0, 0.7, &axis, &mut a),
-                    XyEmbedding::bond(transformed[i], transformed[j], -1.0, 0.7, &axis, &mut b)
+                    bond(original[i], original[j], 1.0, &axis, &mut a),
+                    bond(transformed[i], transformed[j], -1.0, &axis, &mut b)
                 );
             }
         }

@@ -211,15 +211,7 @@ pub(crate) trait Embedding {
     type Spin: Spin;
     type Axis;
     fn axis(rng: &mut Xoshiro256StarStar) -> Self::Axis;
-    fn bond(
-        a: Self::Spin,
-        b: Self::Spin,
-        j: <Self::Spin as Spin>::Value,
-        temperature: <Self::Spin as Spin>::Value,
-        axis: &Self::Axis,
-        rng: &mut Xoshiro256StarStar,
-    ) -> bool;
-    /// Bond test at a fixed temperature, letting models hoist per-temperature work.
+    /// Bond test at a fixed temperature, so models can hoist per-temperature work.
     #[allow(clippy::type_complexity)]
     fn bond_at(
         temperature: <Self::Spin as Spin>::Value,
@@ -229,9 +221,7 @@ pub(crate) trait Embedding {
         <Self::Spin as Spin>::Value,
         &Self::Axis,
         &mut Xoshiro256StarStar,
-    ) -> bool {
-        move |a, b, j, axis, rng| Self::bond(a, b, j, temperature, axis, rng)
-    }
+    ) -> bool;
     fn reflect(spin: &mut Self::Spin, axis: &Self::Axis);
     fn coin(rng: &mut Xoshiro256StarStar) -> bool;
 }
@@ -240,9 +230,6 @@ impl Embedding for IsingEmbedding {
     type Spin = i8;
     type Axis = ();
     fn axis(_: &mut Xoshiro256StarStar) {}
-    fn bond(a: i8, b: i8, j: f32, t: f32, axis: &(), rng: &mut Xoshiro256StarStar) -> bool {
-        Self::bond_at(t)(a, b, j, axis, rng)
-    }
     fn bond_at(t: f32) -> impl Fn(i8, i8, f32, &(), &mut Xoshiro256StarStar) -> bool {
         let sampler = BondSampler::new(2.0 / t);
         move |a, b, j, _, rng| {

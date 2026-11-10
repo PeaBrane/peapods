@@ -1,5 +1,6 @@
 pub(crate) mod driver;
 pub mod realization;
+pub mod xy;
 
 pub use realization::Realization;
 
@@ -7,142 +8,99 @@ use std::sync::atomic::AtomicBool;
 
 use crate::config::{ClusterAction, OverlapClusterBuildMode, SimConfig, SweepMode};
 use crate::geometry::Lattice;
+use crate::statistics::graph::{fold_histograms, histograms, ClusterObservationAccums};
 use crate::statistics::physics::{CachedTotals, PhysicsCollector, PhysicsOptions};
 use crate::statistics::{
-    sokal_tau, AutocorrAccum, ClusterObservations, ClusterSnapshot, ClusterStats, Diagnostics,
-    EquilDiagnosticAccum, GraphObservationSummary, OverlapAccum, Statistics, SweepResult,
+    sokal_tau, AutocorrAccum, ClusterSnapshot, ClusterStats, Diagnostics, EquilDiagnosticAccum,
+    OverlapAccum, Statistics, SweepResult,
 };
 use crate::{clusters, mcmc, spins};
 
-struct GraphObservationAccum {
-    observation_count: Vec<u64>,
-    cluster_size_counts: Vec<Vec<u64>>,
-    top4_sum: Vec<[u64; 4]>,
-    active_bonds: Vec<u64>,
-    winding: Vec<[u64; 4]>,
-    large_components: Vec<u64>,
+/// Energies and magnetization sums of every system, kept in step with the spins.
+///
+/// With unit couplings a sweep reports exact integer deltas, so the cache survives
+/// single-spin sweeps; every other mutation invalidates it until the next refresh.
+struct ObservableCache<'a> {
+    lattice: &'a Lattice,
+    lookup: Option<&'a mcmc::sweep::UnitCouplingLookup>,
+    sequential: bool,
+    /// Exact -H per system, maintained only with a unit-coupling lookup.
+    unit_totals: Vec<i64>,
+    deltas: Vec<mcmc::sweep::UnitSweepDelta>,
+    magnetization_sums: Vec<i64>,
+    valid: bool,
 }
 
-impl GraphObservationAccum {
-    fn new(n_temps: usize, n_spins: usize) -> Self {
+impl<'a> ObservableCache<'a> {
+    fn new(
+        lattice: &'a Lattice,
+        lookup: Option<&'a mcmc::sweep::UnitCouplingLookup>,
+        n_systems: usize,
+        config: &SimConfig,
+    ) -> Self {
+        let n_tracked = if lookup.is_some() { n_systems } else { 0 };
         Self {
-            observation_count: vec![0; n_temps],
-            cluster_size_counts: (0..n_temps).map(|_| vec![0; n_spins + 1]).collect(),
-            top4_sum: vec![[0; 4]; n_temps],
-            active_bonds: vec![0; n_temps],
-            winding: vec![[0; 4]; n_temps],
-            large_components: vec![0; n_temps],
+            lattice,
+            lookup,
+            sequential: config.sequential,
+            unit_totals: vec![0; n_tracked],
+            deltas: vec![mcmc::sweep::UnitSweepDelta::default(); n_tracked],
+            magnetization_sums: vec![0; n_systems],
+            valid: false,
         }
     }
 
-    fn push(&mut self, temp: usize, cluster_sizes: &[u64], slot: clusters::GraphObservationSlot) {
-        if !slot.observed {
+    /// Where the coming sweep reports its deltas. They are tracked only while the
+    /// cache is valid and `consumed` before a cluster move invalidates it anyway.
+    fn begin_sweep(&mut self, consumed: bool) -> Option<&mut [mcmc::sweep::UnitSweepDelta]> {
+        self.valid &= self.lookup.is_some() && consumed;
+        self.valid.then_some(self.deltas.as_mut_slice())
+    }
+
+    /// Applies the deltas of a tracked sweep.
+    fn end_sweep(&mut self, energies: &mut [f32]) {
+        if !self.valid {
             return;
         }
-        self.observation_count[temp] += 1;
-        for (total, &count) in self.cluster_size_counts[temp].iter_mut().zip(cluster_sizes) {
-            *total += count;
+        for (system, delta) in self.deltas.iter().enumerate() {
+            self.unit_totals[system] += delta.interaction;
+            self.magnetization_sums[system] += delta.magnetization;
+            energies[system] =
+                spins::energy::unit_energy(self.unit_totals[system], self.lattice.n_spins);
         }
-        for (total, value) in self.top4_sum[temp].iter_mut().zip(slot.top4) {
-            *total += u64::from(value);
-        }
-        self.active_bonds[temp] += u64::from(slot.active_bonds);
-        self.winding[temp][0] += u64::from(slot.winding_x);
-        self.winding[temp][1] += u64::from(slot.winding_y);
-        self.winding[temp][2] += u64::from(slot.winding_x || slot.winding_y);
-        self.winding[temp][3] += u64::from(slot.winding_x && slot.winding_y);
-        self.large_components[temp] += u64::from(slot.large_components);
     }
 
-    fn finish(
-        self,
-        n_spins: usize,
-        n_neighbors: usize,
-        has_winding: bool,
-    ) -> Option<GraphObservationSummary> {
-        if self.observation_count.iter().all(|&count| count == 0) {
-            return None;
-        }
-
-        let mut top_four_component_fractions = vec![[0.0; 4]; self.observation_count.len()];
-        let mut active_bond_density = vec![0.0; self.observation_count.len()];
-        let mut large_component_count = vec![0.0; self.observation_count.len()];
-        let mut winding = has_winding.then(|| vec![[0.0; 4]; self.observation_count.len()]);
-        for temp in 0..self.observation_count.len() {
-            let count = self.observation_count[temp];
-            if count == 0 {
-                continue;
-            }
-            let count_f64 = count as f64;
-            for k in 0..4 {
-                top_four_component_fractions[temp][k] =
-                    self.top4_sum[temp][k] as f64 / (count_f64 * n_spins as f64);
-                if let Some(ref mut winding) = winding {
-                    winding[temp][k] = self.winding[temp][k] as f64 / count_f64;
-                }
-            }
-            active_bond_density[temp] =
-                self.active_bonds[temp] as f64 / (count_f64 * n_spins as f64 * n_neighbors as f64);
-            large_component_count[temp] = self.large_components[temp] as f64 / count_f64;
-        }
-
-        Some(GraphObservationSummary {
-            observation_count: self.observation_count,
-            cluster_size_counts: self.cluster_size_counts,
-            top_four_component_fractions,
-            active_bond_density,
-            large_component_count,
-            winding,
-        })
-    }
-}
-
-#[derive(Default)]
-struct ClusterObservationAccums {
-    fk: Option<GraphObservationAccum>,
-    houdayer: Option<GraphObservationAccum>,
-    jorg: Option<GraphObservationAccum>,
-    cmr_blue: Option<GraphObservationAccum>,
-}
-
-impl ClusterObservationAccums {
-    fn enable_fk(&mut self, n_temps: usize, n_spins: usize) {
-        self.fk = Some(GraphObservationAccum::new(n_temps, n_spins));
+    fn invalidate(&mut self) {
+        self.valid = false;
     }
 
-    fn enable_overlap(&mut self, mode: &OverlapClusterBuildMode, n_temps: usize, n_spins: usize) {
-        let target = match mode {
-            OverlapClusterBuildMode::Houdayer(_)
-            | OverlapClusterBuildMode::Pair(_)
-            | OverlapClusterBuildMode::Perm(_)
-            | OverlapClusterBuildMode::GaugedPerm(_) => &mut self.houdayer,
-            OverlapClusterBuildMode::Jorg(_) => &mut self.jorg,
-            OverlapClusterBuildMode::Cmr => &mut self.cmr_blue,
-            OverlapClusterBuildMode::Rmc => return,
+    /// Recomputes energies and magnetization sums unless they are current.
+    fn ensure(&mut self, real: &mut Realization) {
+        if self.valid {
+            return;
+        }
+        self.valid = true;
+        let Some(lookup) = self.lookup else {
+            spins::energy::refresh_energies_and_magnetizations(
+                self.lattice,
+                &real.spins,
+                &real.couplings,
+                &mut real.energies,
+                &mut self.magnetization_sums,
+                self.sequential,
+            );
+            return;
         };
-        target.get_or_insert_with(|| GraphObservationAccum::new(n_temps, n_spins));
-    }
-
-    fn overlap_mut(&mut self, mode: &OverlapClusterBuildMode) -> &mut GraphObservationAccum {
-        match mode {
-            OverlapClusterBuildMode::Houdayer(_)
-            | OverlapClusterBuildMode::Pair(_)
-            | OverlapClusterBuildMode::Perm(_)
-            | OverlapClusterBuildMode::GaugedPerm(_) => self.houdayer.as_mut(),
-            OverlapClusterBuildMode::Jorg(_) => self.jorg.as_mut(),
-            OverlapClusterBuildMode::Cmr => self.cmr_blue.as_mut(),
-            OverlapClusterBuildMode::Rmc => None,
-        }
-        .expect("observed graph accumulator must be allocated")
-    }
-
-    fn finish(self, n_spins: usize, n_neighbors: usize, has_winding: bool) -> ClusterObservations {
-        let finish = |accum: GraphObservationAccum| accum.finish(n_spins, n_neighbors, has_winding);
-        ClusterObservations {
-            fk: self.fk.and_then(finish),
-            houdayer: self.houdayer.and_then(finish),
-            jorg: self.jorg.and_then(finish),
-            cmr_blue: self.cmr_blue.and_then(finish),
+        spins::energy::refresh_unit_totals(
+            self.lattice,
+            &real.spins,
+            lookup.couplings(),
+            &mut self.unit_totals,
+            &mut self.magnetization_sums,
+            self.sequential,
+        );
+        for (energy, &total) in real.energies.iter_mut().zip(&self.unit_totals) {
+            *energy = spins::energy::unit_energy(total, self.lattice.n_spins);
         }
     }
 }
@@ -248,45 +206,35 @@ fn run_sweep_loop_impl(
 
     let mut observation_accums = ClusterObservationAccums::default();
     if observe_fk {
-        observation_accums.enable_fk(n_temps, n_spins);
+        observation_accums.enable_fk(n_temps);
     }
     if let Some(overlap) = config.overlap_cluster.as_ref().filter(|_| observe_overlap) {
         for mode in &overlap.modes {
-            observation_accums.enable_overlap(mode, n_temps, n_spins);
+            observation_accums.enable_overlap(mode, n_temps);
         }
     }
 
-    let mut fk_csd_accum: Vec<Vec<u64>> = if collect_fk || materialize_disabled_stats {
-        (0..n_temps).map(|_| vec![0u64; n_spins + 1]).collect()
-    } else {
-        vec![]
-    };
-    let mut sw_csd_buf: Vec<Vec<u64>> = if collect_fk {
-        (0..n_systems).map(|_| vec![0u64; n_spins + 1]).collect()
-    } else {
-        vec![]
-    };
+    // The moves add to these histograms in place, one per output slot; they are
+    // folded per temperature once the run ends.
+    let mut fk_csd_slots = histograms(if collect_fk { n_systems } else { 0 }, n_spins);
     let mut fk_observation_buf = if observe_fk {
         vec![clusters::GraphObservationSlot::default(); n_systems]
     } else {
         vec![]
     };
 
-    let mut overlap_csd_accum: Vec<Vec<Vec<u64>>> =
-        if collect_overlap || (materialize_disabled_stats && n_modes > 0) {
-            (0..n_modes)
-                .map(|_| (0..n_temps).map(|_| vec![0u64; n_spins + 1]).collect())
-                .collect()
-        } else {
-            vec![]
-        };
-    let mut overlap_csd_buf: Vec<Vec<u64>> = if collect_overlap {
-        (0..n_temps * n_pairs)
-            .map(|_| vec![0u64; n_spins + 1])
-            .collect()
-    } else {
-        vec![]
-    };
+    let mut overlap_csd_slots: Vec<Vec<Vec<u64>>> = (0..n_modes)
+        .map(|_| {
+            histograms(
+                if collect_overlap {
+                    n_temps * n_pairs
+                } else {
+                    0
+                },
+                n_spins,
+            )
+        })
+        .collect();
 
     let collect_top = collect_overlap;
 
@@ -409,41 +357,7 @@ fn run_sweep_loop_impl(
     let mut mags2_buf = vec![0.0f32; n_temps];
     let mut mags4_buf = vec![0.0f32; n_temps];
     let mut energies_buf = vec![0.0f32; n_temps];
-    let mut magnetization_sums = vec![0i64; n_systems];
-    // Observables (energies, magnetization sums) stay valid across sweeps when unit
-    // couplings let the sweep report exact integer deltas; any other mutation
-    // invalidates them until the next refresh.
-    let mut unit_totals = vec![0i64; if unit_lookup.is_some() { n_systems } else { 0 }];
-    let mut sweep_deltas = vec![
-        mcmc::sweep::UnitSweepDelta::default();
-        if unit_lookup.is_some() { n_systems } else { 0 }
-    ];
-    let mut observables_valid = false;
-    let refresh_observables =
-        |real: &mut Realization, unit_totals: &mut [i64], magnetization_sums: &mut [i64]| {
-            let Some(lookup) = unit_lookup.as_ref() else {
-                spins::energy::refresh_energies_and_magnetizations(
-                    lattice,
-                    &real.spins,
-                    &real.couplings,
-                    &mut real.energies,
-                    magnetization_sums,
-                    config.sequential,
-                );
-                return;
-            };
-            spins::energy::refresh_unit_totals(
-                lattice,
-                &real.spins,
-                lookup.couplings(),
-                unit_totals,
-                magnetization_sums,
-                config.sequential,
-            );
-            for (energy, &total) in real.energies.iter_mut().zip(unit_totals.iter()) {
-                *energy = spins::energy::unit_energy(total, n_spins);
-            }
-        };
+    let mut cache = ObservableCache::new(lattice, unit_lookup.as_ref(), n_systems, config);
 
     let mut physics = physics_options
         .map(|options| PhysicsCollector::new(lattice, n_temps, options, 1))
@@ -476,10 +390,7 @@ fn run_sweep_loop_impl(
                 && config.overlap_cluster.as_ref().is_some_and(|overlap| {
                     overlap.action == ClusterAction::Update && sweep_id % overlap.interval == 0
                 });
-            let track = observables_valid
-                && unit_lookup.is_some()
-                && !cluster_mutates
-                && !overlap_mutates_first;
+            let deltas = cache.begin_sweep(!cluster_mutates && !overlap_mutates_first);
             mcmc::sweep::single_spin_sweep(
                 lattice,
                 &mut real.spins,
@@ -490,17 +401,9 @@ fn run_sweep_loop_impl(
                 config.sequential,
                 acceptance,
                 unit_lookup.as_ref(),
-                track.then_some(sweep_deltas.as_mut_slice()),
+                deltas,
             );
-            observables_valid = track;
-            if track {
-                for (system, delta) in sweep_deltas.iter().enumerate() {
-                    unit_totals[system] += delta.interaction;
-                    magnetization_sums[system] += delta.magnetization;
-                    real.energies[system] =
-                        spins::energy::unit_energy(unit_totals[system], n_spins);
-                }
-            }
+            cache.end_sweep(&mut real.energies);
         }
 
         let do_cluster = step.cluster;
@@ -508,14 +411,7 @@ fn run_sweep_loop_impl(
         if do_cluster {
             let cluster_cfg = config.cluster_update.as_ref().unwrap();
             let wolff = cluster_cfg.mode == crate::config::ClusterMode::Wolff;
-            let csd_out = if collect_fk && record {
-                for buf in sw_csd_buf.iter_mut() {
-                    buf.fill(0);
-                }
-                Some(sw_csd_buf.as_mut_slice())
-            } else {
-                None
-            };
+            let csd_out = (collect_fk && record).then_some(fk_csd_slots.as_mut_slice());
             let observation_out = if cluster_cfg.action == ClusterAction::Observe && record {
                 fk_observation_buf.fill(clusters::GraphObservationSlot::default());
                 Some(fk_observation_buf.as_mut_slice())
@@ -537,20 +433,12 @@ fn run_sweep_loop_impl(
                 config.sequential,
             );
             if cluster_cfg.action == ClusterAction::Update {
-                observables_valid = false;
+                cache.invalidate();
             }
 
-            if collect_fk && record {
-                for (slot, buf) in sw_csd_buf.iter().enumerate() {
-                    let accum = &mut fk_csd_accum[slot % n_temps];
-                    for (a, &b) in accum.iter_mut().zip(buf.iter()) {
-                        *a += b;
-                    }
-                }
-            }
             if let Some(accum) = observation_accums.fk.as_mut().filter(|_| record) {
                 for (slot, observation) in fk_observation_buf.iter().copied().enumerate() {
-                    accum.push(slot % n_temps, &sw_csd_buf[slot], observation);
+                    accum.push(slot % n_temps, observation);
                 }
             }
         }
@@ -559,9 +447,8 @@ fn run_sweep_loop_impl(
         let pt_this_sweep = step.temper && n_temps > 1;
 
         // Tempering refreshes for itself below, after any overlap move.
-        if (record || equil_diag) && !observables_valid {
-            refresh_observables(real, &mut unit_totals, &mut magnetization_sums);
-            observables_valid = true;
+        if record || equil_diag {
+            cache.ensure(real);
         }
 
         if equil_diag {
@@ -607,7 +494,7 @@ fn run_sweep_loop_impl(
                 let offset = r * n_temps;
                 for t in 0..n_temps {
                     let system_id = real.system_ids[offset + t];
-                    let mag = magnetization_sums[system_id] as f32 / n_spins as f32;
+                    let mag = cache.magnetization_sums[system_id] as f32 / n_spins as f32;
                     let m2 = mag * mag;
                     mags_buf[t] = mag;
                     mags2_buf[t] = m2;
@@ -652,7 +539,7 @@ fn run_sweep_loop_impl(
                     slot % n_temps,
                     CachedTotals {
                         energy: -(real.energies[system] as f64),
-                        magnetization: [magnetization_sums[system] as f64, 0.0],
+                        magnetization: [cache.magnetization_sums[system] as f64, 0.0],
                     },
                 );
             }
@@ -689,19 +576,13 @@ fn run_sweep_loop_impl(
         if let Some(ref oc_cfg) = config.overlap_cluster {
             if sweep_id % oc_cfg.interval == 0 {
                 if oc_cfg.action == ClusterAction::Update {
-                    observables_valid = false;
+                    cache.invalidate();
                 }
                 let mode_idx = overlap_call_count % n_modes;
                 let mode = &oc_cfg.modes[mode_idx];
 
-                let ov_csd_out = if collect_overlap && record {
-                    for buf in overlap_csd_buf.iter_mut() {
-                        buf.fill(0);
-                    }
-                    Some(overlap_csd_buf.as_mut_slice())
-                } else {
-                    None
-                };
+                let ov_csd_out = (collect_overlap && record)
+                    .then_some(overlap_csd_slots[mode_idx].as_mut_slice());
                 let observation_out = if oc_cfg.action == ClusterAction::Observe && record {
                     overlap_observation_buf.fill(clusters::GraphObservationSlot::default());
                     Some(overlap_observation_buf.as_mut_slice())
@@ -825,15 +706,6 @@ fn run_sweep_loop_impl(
                     });
                 }
 
-                if collect_overlap && record {
-                    for (slot, buf) in overlap_csd_buf.iter().enumerate() {
-                        let accum = &mut overlap_csd_accum[mode_idx][slot / n_pairs];
-                        for (a, &b) in accum.iter_mut().zip(buf.iter()) {
-                            *a += b;
-                        }
-                    }
-                }
-
                 if collect_top && record {
                     for t in 0..n_temps {
                         for p in 0..n_pairs {
@@ -849,7 +721,7 @@ fn run_sweep_loop_impl(
                 if record && oc_cfg.action == ClusterAction::Observe {
                     let accum = observation_accums.overlap_mut(mode);
                     for (slot, observation) in overlap_observation_buf.iter().copied().enumerate() {
-                        accum.push(slot / n_pairs, &overlap_csd_buf[slot], observation);
+                        accum.push(slot / n_pairs, observation);
                     }
                 }
 
@@ -858,10 +730,7 @@ fn run_sweep_loop_impl(
         }
 
         if pt_this_sweep {
-            if !observables_valid {
-                refresh_observables(real, &mut unit_totals, &mut magnetization_sums);
-                observables_valid = true;
-            }
+            cache.ensure(real);
             real.temper(n_spins, n_replicas, n_temps, config.pt_schedule);
         }
     })?;
@@ -910,7 +779,30 @@ fn run_sweep_loop_impl(
 
     let equil_checkpoints = equil_accum.map(|acc| acc.finish()).unwrap_or_default();
     let has_winding = lattice.square_shape().is_some();
-    let cluster_observations = observation_accums.finish(n_spins, lattice.n_neighbors, has_winding);
+
+    // Disabled histograms keep their shape only where the caller asked for it.
+    let keep_shape = |collected: bool| collected || materialize_disabled_stats;
+    let fk_csd = if keep_shape(collect_fk) {
+        fold_histograms(&fk_csd_slots, n_temps, n_spins, |slot| slot % n_temps)
+    } else {
+        vec![]
+    };
+    let overlap_csd: Vec<Vec<Vec<u64>>> = if keep_shape(collect_overlap) {
+        overlap_csd_slots
+            .iter()
+            .map(|slots| fold_histograms(slots, n_temps, n_spins, |slot| slot / n_pairs))
+            .collect()
+    } else {
+        vec![]
+    };
+    let cluster_observations = observation_accums.finish(
+        n_spins,
+        lattice.n_neighbors,
+        has_winding,
+        &fk_csd,
+        config.overlap_cluster.as_ref().map_or(&[], |o| &o.modes),
+        &overlap_csd,
+    );
 
     Ok(SweepResult {
         mags: mags_stat.average(),
@@ -921,8 +813,8 @@ fn run_sweep_loop_impl(
         energy_variance: Statistics::variance(&energies_stat, &energies2_stat),
         overlap_stats: ov_accum.finish(),
         cluster_stats: ClusterStats {
-            fk_csd: fk_csd_accum,
-            overlap_csd: overlap_csd_accum,
+            fk_csd,
+            overlap_csd,
             top_cluster_sizes,
         },
         per_disorder_cluster_observations: vec![cluster_observations],
@@ -938,9 +830,11 @@ fn run_sweep_loop_impl(
 
 /// Run the sweep loop in parallel over multiple disorder realizations.
 ///
-/// Each realization is processed by [`run_sweep_loop`], then results are
-/// averaged via [`SweepResult::aggregate`]. For a single realization the
-/// call is made directly, skipping rayon thread-pool overhead.
+/// The batch is validated before any realization changes, each realization then
+/// runs the same loop as [`run_sweep_loop`], and the results are averaged over
+/// disorder with the per-sample overlap histograms kept. Replicas run on the
+/// calling thread once the realizations alone fill the thread pool. A single
+/// realization is run directly, skipping rayon thread-pool overhead.
 pub fn run_sweep_parallel(
     lattice: &Lattice,
     realizations: &mut [Realization],
@@ -1485,5 +1379,3 @@ mod tests {
         );
     }
 }
-
-pub mod xy;

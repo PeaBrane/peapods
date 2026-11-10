@@ -49,7 +49,6 @@ pub fn parallel_tempering_full_ladder<T: Real>(
     system_ids: &mut [usize],
     n_spins: usize,
     rng: &mut Xoshiro256StarStar,
-    first_parity: usize,
     mut on_attempt: impl FnMut(TemperingAttempt),
 ) {
     let n_temps = system_ids.len();
@@ -57,7 +56,10 @@ pub fn parallel_tempering_full_ladder<T: Real>(
         return;
     }
 
-    for parity in [first_parity, 1 - first_parity] {
+    // Always even edges, then odd: successive events alternate E, O, E, O, so accepted
+    // swaps carry walkers along the ladder. Flipping the order each event (E, O, O, E)
+    // would let a pass undo the previous one.
+    for parity in [0, 1] {
         for edge in (parity..n_temps - 1).step_by(2) {
             on_attempt(attempt_edge(
                 energies,
@@ -105,7 +107,7 @@ mod tests {
     use rand::SeedableRng;
 
     #[test]
-    fn full_ladder_attempts_every_edge_in_requested_parity_order() {
+    fn full_ladder_attempts_even_edges_then_odd_edges() {
         let energies = [0.0; 5];
         let temperatures = [0.5, 0.8, 1.2, 2.0, 4.0];
         let mut system_ids = vec![0, 1, 2, 3, 4];
@@ -117,22 +119,9 @@ mod tests {
             &mut system_ids,
             64,
             &mut rng,
-            0,
             |attempt| edges.push(attempt.edge),
         );
         assert_eq!(edges, vec![0, 2, 1, 3]);
-
-        edges.clear();
-        parallel_tempering_full_ladder(
-            &energies,
-            &temperatures,
-            &mut system_ids,
-            64,
-            &mut rng,
-            1,
-            |attempt| edges.push(attempt.edge),
-        );
-        assert_eq!(edges, vec![1, 3, 0, 2]);
     }
 }
 

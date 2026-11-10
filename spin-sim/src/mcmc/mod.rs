@@ -17,6 +17,12 @@ pub(crate) fn threshold(p: f32) -> i64 {
     (p * TWO_POW_62) as i64
 }
 
+/// [`threshold`] for a probability held in f64.
+#[inline]
+pub(crate) fn threshold_f64(p: f64) -> i64 {
+    (p * f64::from(TWO_POW_62)) as i64
+}
+
 /// Uniform integer in [0, 2^62) from one RNG step.
 #[inline]
 pub(crate) fn uniform_draw(rng: &mut Xoshiro256StarStar) -> i64 {
