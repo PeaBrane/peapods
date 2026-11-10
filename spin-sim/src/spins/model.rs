@@ -17,7 +17,7 @@ pub trait Real: Copy + Default + PartialOrd + Send + Sync + std::fmt::Debug {
     ) -> bool;
 }
 macro_rules! real_impl {
-    ($t:ty) => {
+    ($t:ty, $uniform:expr) => {
         impl Real for $t {
             fn from_f64(value: f64) -> Self {
                 value as Self
@@ -33,15 +33,18 @@ macro_rules! real_impl {
                 n: usize,
                 rng: &mut Xoshiro256StarStar,
             ) -> bool {
-                // Caches store -H/N in both models. Keep legacy f32 arithmetic/RNG intact.
+                // Caches store -H/N in both models.
                 let delta = (n as Self) * (e2 - e1) * (1.0 / t1 - 1.0 / t2);
-                delta >= rng.gen::<Self>().ln()
+                let uniform: fn(&mut Xoshiro256StarStar) -> Self = $uniform;
+                delta >= uniform(rng).ln()
             }
         }
     };
 }
-real_impl!(f32);
-real_impl!(f64);
+// A 24-bit f32 uniform is exactly zero once in 2^24 draws, which would accept any
+// swap; the 62-bit draw keeps rare swaps at their own rate, as the sweeps do.
+real_impl!(f32, crate::mcmc::uniform_f32);
+real_impl!(f64, |rng| rng.gen::<f64>());
 
 /// A spin representation and its statically dispatched model kernels.
 pub trait Spin: Copy + Default + Send + Sync {

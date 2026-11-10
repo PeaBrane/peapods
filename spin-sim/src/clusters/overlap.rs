@@ -520,11 +520,12 @@ fn isoenergetic_step(
             }
             return;
         }
+        // Every cluster of active sites is updated, single sites included.
         let storage = &mut *uf;
         decide_clusters(
             &storage.parent,
             &mut storage.rank,
-            |_, root| counts[root] > 1,
+            |site, _| active[site],
             |_| u8::from(rng.gen::<f32>() < 0.5),
             |site, flip| {
                 if flip == 1 {
@@ -682,11 +683,12 @@ fn jorg_step(
             }
             return;
         }
+        // Every cluster of active sites is updated, single sites included.
         let storage = &mut *uf;
         decide_clusters(
             &storage.parent,
             &mut storage.rank,
-            |_, root| counts[root] > 1,
+            |site, _| active[site],
             |_| u8::from(rng.gen::<f32>() < 0.5),
             |site, flip| {
                 if flip == 1 {

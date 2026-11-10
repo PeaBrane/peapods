@@ -21,7 +21,8 @@ each group independently. `pair2` is bit-identical to `houd2`, and `jorg2` to `j
 
 `overlap_cluster_mode` selects the cluster action:
 
-- `"sw"` updates every cluster.
+- `"sw"` updates every cluster, single sites included. `cmr` is the exception: it
+  leaves single-site blue and grey clusters to the single-spin sweeps.
 - `"wolff"` updates the cluster of one random seed.
 
 ## Symmetry moves at one temperature
