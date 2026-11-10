@@ -147,6 +147,28 @@ impl<T: Real> PrecisionAutocorr<T> {
         }
     }
 
+    /// Sokal estimate of τ_int per temperature.
+    ///
+    /// A series without variance, whether frozen or never measured, has no
+    /// autocorrelation time, and neither does one too short to give a positive sum:
+    /// both report [`SokalEstimate::UNDEFINED`] rather than the τ = 1/2 that an
+    /// uncorrelated series would give.
+    pub fn estimates(&self) -> Vec<SokalEstimate> {
+        let gamma = self.finish();
+        (0..self.n_temps)
+            .map(|temp| {
+                if self.n_recorded == 0 || self.moments(temp).1 <= 0.0 {
+                    return SokalEstimate::UNDEFINED;
+                }
+                let estimate = sokal_estimate(&gamma[temp]);
+                if estimate.tau <= 0.0 {
+                    return SokalEstimate::UNDEFINED;
+                }
+                estimate
+            })
+            .collect()
+    }
+
     /// Population mean and variance of the shifted samples of one temperature.
     fn moments(&self, temp: usize) -> (f64, f64) {
         let n = self.n_recorded as f64;
@@ -279,6 +301,15 @@ pub struct SokalEstimate {
     /// `tau` is truncated at `max_lag` and is a lower bound in practice; increase
     /// `autocorrelation_max_lag` or the run length.
     pub converged: bool,
+}
+
+impl SokalEstimate {
+    /// The estimate of a series that has no autocorrelation time.
+    pub const UNDEFINED: Self = Self {
+        tau: f64::NAN,
+        window: 0,
+        converged: false,
+    };
 }
 
 /// Sokal's self-consistent window `W ≥ 5 τ_int(W)` applied to `Γ`.
@@ -442,7 +473,11 @@ mod tests {
                     constant.push(&[value]);
                 }
                 assert_eq!(constant.finish(), vec![vec![1.0, 0.0, 0.0, 0.0, 0.0]]);
+                // A frozen series must not report the τ of an uncorrelated one.
+                let estimate = constant.estimates()[0];
+                assert!(estimate.tau.is_nan() && !estimate.converged);
             }
+            assert!(empty.estimates()[0].tau.is_nan());
         }
     }
 

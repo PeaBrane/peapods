@@ -109,6 +109,7 @@ fn main() {
             autocorrelation_backend: AutocorrelationBackend::Ring,
             sequential,
             equilibration_diagnostic: false,
+            conditional_link_overlap: true,
         },
         cluster_updates: 1,
         overrelaxation_sweeps,

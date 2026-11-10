@@ -295,6 +295,7 @@ impl IsingSimulation {
             autocorrelation_backend,
             sequential: sequential.unwrap_or(false),
             equilibration_diagnostic: equilibration_diagnostic.unwrap_or(false),
+            conditional_link_overlap: true,
         };
 
         let n_replicas = self.n_replicas;

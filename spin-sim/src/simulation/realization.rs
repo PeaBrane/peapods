@@ -19,6 +19,15 @@ fn child_seed(root: u64, domain: u64, index: usize) -> u64 {
     splitmix64(root ^ domain ^ splitmix64(index as u64))
 }
 
+/// Position in the interval schedule, carried across sampling calls so that an
+/// event due every `k` sweeps stays every `k` sweeps however the run is split.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ScheduleState {
+    pub sweeps: usize,
+    /// Overlap events so far, which selects the next of several build modes.
+    pub overlap_calls: usize,
+}
+
 pub(super) struct PtState {
     edge_attempts: Vec<u64>,
     edge_acceptances: Vec<u64>,
@@ -142,7 +151,9 @@ pub struct ModelRealization<S: Spin> {
     /// One PRNG per overlap-update pair slot, length `n_temps * (n_replicas / 2)`.
     pub pair_rngs: Vec<Xoshiro256StarStar>,
     pub(super) pt: PtState,
-    /// Cached interaction energy per system (-H/N), length `n_systems`.
+    pub(crate) schedule: ScheduleState,
+    /// Scratch cache of the interaction energy per system (-H/N), length
+    /// `n_systems`. It is current only right after a measurement or tempering step.
     pub energies: Vec<S::Value>,
 }
 
@@ -206,6 +217,7 @@ impl<S: Spin> ModelRealization<S> {
             rngs,
             pair_rngs,
             pt,
+            schedule: ScheduleState::default(),
             energies,
         }
     }
@@ -235,6 +247,7 @@ impl<S: Spin> ModelRealization<S> {
         S::interactions(lattice, &self.spins, &self.couplings, &mut self.energies);
         self.pt
             .reset(n_replicas, n_temps, &self.system_ids, &self.temperatures);
+        self.schedule = ScheduleState::default();
     }
 
     /// Validate externally mutable buffers before entering parallel kernels.
@@ -330,6 +343,8 @@ impl<S: Spin> ModelRealization<S> {
         }
     }
 
+    /// Swap attempts per temperature edge since creation or the last reset. Like the
+    /// acceptances and round trips, they count warmup sweeps too.
     pub fn pt_edge_attempts(&self) -> &[u64] {
         &self.pt.edge_attempts
     }

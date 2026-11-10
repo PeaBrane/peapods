@@ -123,7 +123,8 @@ impl SlotOutputs<'_> {
     }
 
     /// Records a built graph: its cluster-size histogram, four largest clusters,
-    /// cluster ids (into `ids`) and bond metrics.
+    /// cluster ids (into `ids`) and bond metrics. With `active`, only clusters of
+    /// active sites count: the sites a move leaves alone are not clusters of it.
     ///
     /// # Safety
     /// `slot` must belong to the calling task.
@@ -133,20 +134,26 @@ impl SlotOutputs<'_> {
         ids: &Slots<'_, Vec<u32>>,
         parent: &[u32],
         counts: &[u32],
+        active: Option<&[bool]>,
         metrics: Option<BondMetrics>,
     ) {
+        let sizes = counts
+            .iter()
+            .enumerate()
+            .filter(|&(root, _)| active.is_none_or(|active| active[root]))
+            .map(|(_, &size)| size);
         if let Some(csd) = self.csd.get(slot) {
-            uf_histogram(counts, csd);
+            uf_histogram(sizes.clone(), csd);
         }
         if let Some(top4) = self.top4.get(slot) {
-            *top4 = top4_sizes(counts);
+            *top4 = top4_sizes(sizes.clone());
         }
         if let Some(ids) = ids.get(slot) {
             ids.clear();
             ids.extend_from_slice(parent);
         }
         if let (Some(metrics), Some(observation)) = (metrics, self.observation.get(slot)) {
-            *observation = metrics.finish(counts);
+            *observation = metrics.finish(parent.len(), sizes);
         }
     }
 }
@@ -475,7 +482,14 @@ fn isoenergetic_step(
         // Statistics and snapshots describe the graph, so record them before the
         // Wolff seed search, which may find no active site.
         let counts = uf_flatten_counts(&mut uf.parent);
-        outs.publish_graph(slot, &outs.cluster_ids, &uf.parent, &counts, metrics);
+        outs.publish_graph(
+            slot,
+            &outs.cluster_ids,
+            &uf.parent,
+            &counts,
+            Some(&active),
+            metrics,
+        );
         if action == ClusterAction::Observe {
             return;
         }
@@ -646,7 +660,14 @@ fn jorg_step(
         // Statistics and snapshots describe the graph, so record them before the
         // Wolff seed search, which may find no active site.
         let counts = uf_flatten_counts(&mut uf.parent);
-        outs.publish_graph(slot, &outs.cluster_ids, &uf.parent, &counts, metrics);
+        outs.publish_graph(
+            slot,
+            &outs.cluster_ids,
+            &uf.parent,
+            &counts,
+            Some(&active),
+            metrics,
+        );
         if action == ClusterAction::Observe {
             return;
         }
@@ -866,7 +887,7 @@ fn cmr_step(
         });
 
         let counts = uf_flatten_counts(&mut uf.parent);
-        outs.publish_graph(slot, &outs.blue_ids, &uf.parent, &counts, metrics);
+        outs.publish_graph(slot, &outs.blue_ids, &uf.parent, &counts, None, metrics);
         if action == ClusterAction::Observe {
             return;
         }
@@ -995,8 +1016,8 @@ mod tests {
         }
     }
 
-    /// With identical replicas no site is active, so the Wolff seed search fails; the
-    /// all-singleton cluster statistics must still be written.
+    /// With identical replicas no site is active, so the Wolff seed search fails and
+    /// the move has no cluster; the statistics must still be written, and empty.
     #[test]
     fn wolff_records_statistics_without_active_sites() {
         let lattice = Lattice::new(vec![4, 4]);
@@ -1009,7 +1030,7 @@ mod tests {
             let mut spins = vec![1i8; 2 * n];
             let mut rngs = vec![Xoshiro256StarStar::seed_from_u64(1)];
             let mut csd = vec![vec![0u64; n + 1]];
-            let mut top4 = vec![[0u32; 4]];
+            let mut top4 = vec![[7u32; 4]];
             let mut snapshot = vec![Vec::new()];
             overlap_update(
                 &lattice,
@@ -1033,8 +1054,8 @@ mod tests {
                 None,
                 None,
             );
-            assert_eq!(csd[0][1], n as u64, "{mode:?}");
-            assert_eq!(top4[0], [1; 4], "{mode:?}");
+            assert!(csd[0].iter().all(|&count| count == 0), "{mode:?}");
+            assert_eq!(top4[0], [0; 4], "{mode:?}");
             assert_eq!(snapshot[0], (0..n as u32).collect::<Vec<_>>(), "{mode:?}");
             assert!(spins.iter().all(|&s| s == 1));
         }

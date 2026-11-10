@@ -337,6 +337,11 @@ pub struct SimConfig {
     pub autocorrelation_backend: AutocorrelationBackend,
     pub sequential: bool,
     pub equilibration_diagnostic: bool,
+    /// Accumulate the link overlap and its square conditioned on the overlap bin
+    /// (`ql_at_q_sum`, `ql2_at_q_sum`), also per disorder sample. They are two of
+    /// the three histogram-sized overlap arrays, so turning this off saves two
+    /// thirds of that memory.
+    pub conditional_link_overlap: bool,
 }
 
 impl SimConfig {
@@ -375,6 +380,7 @@ mod tests {
             autocorrelation_backend: AutocorrelationBackend::Ring,
             sequential: true,
             equilibration_diagnostic: false,
+            conditional_link_overlap: true,
         }
     }
 

@@ -3,39 +3,55 @@ use super::realization::ModelRealization;
 use crate::{
     config::{OverlapClusterBuildMode, SimConfig},
     geometry::Lattice,
-    spins::model::Spin,
+    spins::model::{Real, Spin},
+    statistics::autocorrelation::PrecisionAutocorr,
 };
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) struct SweepStep {
+    /// Sweep within this call.
     pub index: usize,
+    /// Sweep counted from the realization's creation or last reset.
+    pub clock: usize,
     pub record: bool,
     pub cluster: bool,
+    pub overlap: bool,
     pub temper: bool,
 }
 
+/// Runs `config.n_sweeps` sweeps. `start` is the number of sweeps the realization has
+/// already done, so interval events keep their phase across calls; warmup counts from
+/// the start of this call.
 pub(crate) fn run_sweeps(
     config: &SimConfig,
     interrupted: &AtomicBool,
     on_sweep: &(dyn Fn() + Sync),
+    start: usize,
     mut step: impl FnMut(SweepStep),
 ) -> Result<(), String> {
+    let due = |interval: usize, clock: usize| clock.is_multiple_of(interval);
     for index in 0..config.n_sweeps {
         if interrupted.load(Ordering::Relaxed) {
             return Err("interrupted".into());
         }
         on_sweep();
+        let clock = start + index;
         step(SweepStep {
             index,
+            clock,
             record: index >= config.warmup_sweeps,
             cluster: config
                 .cluster_update
                 .as_ref()
-                .is_some_and(|c| index % c.interval == 0),
+                .is_some_and(|c| due(c.interval, clock)),
+            overlap: config
+                .overlap_cluster
+                .as_ref()
+                .is_some_and(|o| due(o.interval, clock)),
             temper: config
                 .pt_interval
-                .is_some_and(|interval| index % interval == 0),
+                .is_some_and(|interval| due(interval, clock)),
         });
     }
     if interrupted.load(Ordering::Relaxed) {
@@ -67,6 +83,19 @@ pub(crate) fn validate_layout(
         return Err("rmc requires at least two temperatures".into());
     }
     Ok(())
+}
+
+/// τ_int per temperature with its convergence flags; empty when autocorrelation is off.
+pub(crate) fn tau_estimates<T: Real>(
+    accum: Option<&PrecisionAutocorr<T>>,
+) -> (Vec<f64>, Vec<bool>) {
+    accum.map_or_else(Default::default, |accum| {
+        accum
+            .estimates()
+            .iter()
+            .map(|estimate| (estimate.tau, estimate.converged))
+            .unzip()
+    })
 }
 
 /// Whether replicas run on the calling thread. Once disorder realizations alone
@@ -126,11 +155,29 @@ mod tests {
         let mut config = XyConfig::default().simulation;
         config.n_sweeps = 1;
         let interrupted = AtomicBool::new(false);
-        let result = run_sweeps(&config, &interrupted, &|| {}, |_| {
+        let result = run_sweeps(&config, &interrupted, &|| {}, 0, |_| {
             interrupted.store(true, Ordering::Relaxed)
         });
         assert_eq!(result.unwrap_err(), "interrupted");
     }
+    #[test]
+    fn interval_phase_continues_from_the_starting_sweep() {
+        let mut config = XyConfig::default().simulation;
+        config.n_sweeps = 3;
+        config.warmup_sweeps = 1;
+        config.pt_interval = Some(4);
+        let mut steps = Vec::new();
+        run_sweeps(&config, &AtomicBool::new(false), &|| {}, 6, |step| {
+            steps.push((step.index, step.record, step.temper));
+        })
+        .unwrap();
+        // Sweeps 6, 7 and 8 of the realization: tempering is due at 8.
+        assert_eq!(
+            steps,
+            vec![(0, false, false), (1, true, false), (2, true, true)]
+        );
+    }
+
     #[test]
     fn equilibration_diagnostic_needs_a_replica_pair() {
         let mut config = XyConfig::default().simulation;

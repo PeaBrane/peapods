@@ -11,8 +11,8 @@ use crate::geometry::Lattice;
 use crate::statistics::graph::{fold_histograms, histograms, ClusterObservationAccums};
 use crate::statistics::physics::{CachedTotals, PhysicsCollector, PhysicsOptions};
 use crate::statistics::{
-    sokal_tau, AutocorrAccum, ClusterSnapshot, ClusterStats, Diagnostics, EquilDiagnosticAccum,
-    OverlapAccum, Statistics, SweepResult,
+    AutocorrAccum, ClusterSnapshot, ClusterStats, Diagnostics, DisorderSample,
+    EquilDiagnosticAccum, OverlapAccum, Statistics, SweepResult,
 };
 use crate::{clusters, mcmc, spins};
 
@@ -259,7 +259,8 @@ fn run_sweep_loop_impl(
         vec![]
     };
 
-    let mut overlap_call_count: usize = 0;
+    // A snapshot waits for the next overlap call that publishes a graph.
+    let mut snapshot_due = false;
 
     let snapshot_interval = if realization_idx == 0 {
         config
@@ -303,15 +304,7 @@ fn run_sweep_loop_impl(
     let mut energies2_stat = Statistics::new(n_temps, 2);
     let n_measurement_sweeps = config.n_measurement_sweeps();
     let ac_max_lag = config.autocorrelation_lag();
-    let mut m2_accum = ac_max_lag.map(|k| {
-        AutocorrAccum::with_backend(
-            k,
-            n_temps,
-            config.autocorrelation_backend,
-            n_measurement_sweeps,
-        )
-    });
-    let mut q2_accum = if ac_max_lag.is_some() && n_pairs > 0 {
+    let autocorrelation = || {
         ac_max_lag.map(|k| {
             AutocorrAccum::with_backend(
                 k,
@@ -320,16 +313,15 @@ fn run_sweep_loop_impl(
                 n_measurement_sweeps,
             )
         })
-    } else {
-        None
     };
+    let mut m2_accum = autocorrelation();
+    let mut energy_accum = autocorrelation();
+    let mut q2_accum = autocorrelation().filter(|_| n_pairs > 0);
     let collect_ac = ac_max_lag.is_some();
     let collect_q2_ac = q2_accum.is_some();
-    let mut m2_ac_buf = if collect_ac {
-        vec![0.0f64; n_temps]
-    } else {
-        vec![]
-    };
+    // Replica-averaged m² and energy of the sweep being measured.
+    let mut m2_ac_buf = vec![0.0f64; if collect_ac { n_temps } else { 0 }];
+    let mut energy_ac_buf = m2_ac_buf.clone();
 
     let equil_diag = config.equilibration_diagnostic;
     let mut equil_accum = if equil_diag {
@@ -352,6 +344,9 @@ fn run_sweep_loop_impl(
         collect_q2_ac,
     )
     .with_replicas(n_replicas);
+    if !config.conditional_link_overlap {
+        ov_accum = ov_accum.without_conditional_link_overlap();
+    }
 
     let mut mags_buf = vec![0.0f32; n_temps];
     let mut mags2_buf = vec![0.0f32; n_temps];
@@ -375,9 +370,11 @@ fn run_sweep_loop_impl(
         vec![]
     };
 
-    driver::run_sweeps(config, interrupted, on_sweep, |step| {
+    let first_sweep = real.schedule.sweeps;
+    driver::run_sweeps(config, interrupted, on_sweep, first_sweep, |step| {
         let sweep_id = step.index;
         let record = step.record;
+        snapshot_due |= record && snapshot_interval.is_some_and(|si| step.clock.is_multiple_of(si));
         if let Some(acceptance) = acceptance {
             // Track only if the deltas can be consumed before a cluster move
             // invalidates them anyway.
@@ -387,9 +384,10 @@ fn run_sweep_loop_impl(
                     .as_ref()
                     .is_some_and(|cluster| cluster.action == ClusterAction::Update);
             let overlap_mutates_first = !(record || equil_diag)
-                && config.overlap_cluster.as_ref().is_some_and(|overlap| {
-                    overlap.action == ClusterAction::Update && sweep_id % overlap.interval == 0
-                });
+                && config
+                    .overlap_cluster
+                    .as_ref()
+                    .is_some_and(|overlap| overlap.action == ClusterAction::Update && step.overlap);
             let deltas = cache.begin_sweep(!cluster_mutates && !overlap_mutates_first);
             mcmc::sweep::single_spin_sweep(
                 lattice,
@@ -406,10 +404,12 @@ fn run_sweep_loop_impl(
             cache.end_sweep(&mut real.energies);
         }
 
-        let do_cluster = step.cluster;
-
-        if do_cluster {
-            let cluster_cfg = config.cluster_update.as_ref().unwrap();
+        // An observation changes nothing, so one that is not recorded is skipped.
+        let cluster_cfg = config
+            .cluster_update
+            .as_ref()
+            .filter(|cluster| step.cluster && (cluster.action == ClusterAction::Update || record));
+        if let Some(cluster_cfg) = cluster_cfg {
             let wolff = cluster_cfg.mode == crate::config::ClusterMode::Wolff;
             let csd_out = (collect_fk && record).then_some(fk_csd_slots.as_mut_slice());
             let observation_out = if cluster_cfg.action == ClusterAction::Observe && record {
@@ -488,6 +488,7 @@ fn run_sweep_loop_impl(
 
             if collect_ac {
                 m2_ac_buf.fill(0.0);
+                energy_ac_buf.fill(0.0);
             }
 
             for r in 0..n_replicas {
@@ -505,6 +506,7 @@ fn run_sweep_loop_impl(
                 if collect_ac {
                     for t in 0..n_temps {
                         m2_ac_buf[t] += mags2_buf[t] as f64;
+                        energy_ac_buf[t] += energies_buf[t] as f64;
                     }
                 }
 
@@ -515,12 +517,13 @@ fn run_sweep_loop_impl(
                 energies2_stat.update(&energies_buf);
             }
 
-            if let Some(ref mut acc) = m2_accum {
+            if let (Some(m2), Some(energy)) = (m2_accum.as_mut(), energy_accum.as_mut()) {
                 let inv = 1.0 / n_replicas as f64;
-                for v in m2_ac_buf.iter_mut() {
+                for v in m2_ac_buf.iter_mut().chain(energy_ac_buf.iter_mut()) {
                     *v *= inv;
                 }
-                acc.push(&m2_ac_buf);
+                m2.push(&m2_ac_buf);
+                energy.push(&energy_ac_buf);
             }
 
             if let Some(ref mut acc) = q2_accum {
@@ -573,13 +576,15 @@ fn run_sweep_loop_impl(
             collector.end_sweep(n_replicas);
         }
 
-        if let Some(ref oc_cfg) = config.overlap_cluster {
-            if sweep_id % oc_cfg.interval == 0 {
+        if let Some(oc_cfg) = config.overlap_cluster.as_ref().filter(|_| step.overlap) {
+            let mode_idx = real.schedule.overlap_calls % n_modes;
+            let mode = &oc_cfg.modes[mode_idx];
+            // A skipped observation still counts, which keeps the mode rotation fixed.
+            real.schedule.overlap_calls += 1;
+            if oc_cfg.action == ClusterAction::Update || record {
                 if oc_cfg.action == ClusterAction::Update {
                     cache.invalidate();
                 }
-                let mode_idx = overlap_call_count % n_modes;
-                let mode = &oc_cfg.modes[mode_idx];
 
                 let ov_csd_out = (collect_overlap && record)
                     .then_some(overlap_csd_slots[mode_idx].as_mut_slice());
@@ -601,8 +606,8 @@ fn run_sweep_loop_impl(
 
                 let is_rmc = *mode == OverlapClusterBuildMode::Rmc;
                 // Replica Monte Carlo builds no overlap graph to publish.
-                let take_snapshot =
-                    snapshot_interval.is_some_and(|si| sweep_id % si == 0) && record && !is_rmc;
+                let take_snapshot = snapshot_due && !is_rmc;
+                snapshot_due &= !take_snapshot;
 
                 let is_cmr = matches!(mode, crate::config::OverlapClusterBuildMode::Cmr);
 
@@ -724,8 +729,6 @@ fn run_sweep_loop_impl(
                         accum.push(slot / n_pairs, observation);
                     }
                 }
-
-                overlap_call_count += 1;
             }
         }
 
@@ -733,6 +736,7 @@ fn run_sweep_loop_impl(
             cache.ensure(real);
             real.temper(n_spins, n_replicas, n_temps, config.pt_schedule);
         }
+        real.schedule.sweeps += 1;
     })?;
 
     let top_cluster_sizes: Vec<Vec<[f64; 4]>> = if collect_top {
@@ -768,14 +772,9 @@ fn run_sweep_loop_impl(
         vec![]
     };
 
-    let mags2_tau = m2_accum
-        .as_ref()
-        .map(|acc| acc.finish().iter().map(|g| sokal_tau(g)).collect())
-        .unwrap_or_default();
-    let overlap2_tau = q2_accum
-        .as_ref()
-        .map(|acc| acc.finish().iter().map(|g| sokal_tau(g)).collect())
-        .unwrap_or_default();
+    let (mags2_tau, mags2_tau_converged) = driver::tau_estimates(m2_accum.as_ref());
+    let (overlap2_tau, overlap2_tau_converged) = driver::tau_estimates(q2_accum.as_ref());
+    let (energy_tau, energy_tau_converged) = driver::tau_estimates(energy_accum.as_ref());
 
     let equil_checkpoints = equil_accum.map(|acc| acc.finish()).unwrap_or_default();
     let has_winding = lattice.square_shape().is_some();
@@ -804,14 +803,37 @@ fn run_sweep_loop_impl(
         &overlap_csd,
     );
 
+    let overlap_stats = ov_accum.finish();
+    let mags2 = mags2_stat.average();
+    let mags4 = mags4_stat.average();
+    let energies = energies_stat.average();
+    let energy_variance = Statistics::variance(&energies_stat, &energies2_stat);
+    let sample = DisorderSample {
+        mags2: mags2.clone(),
+        mags4: mags4.clone(),
+        energies: energies.clone(),
+        energy_variance: energy_variance.clone(),
+        overlap2: overlap_stats.overlap2.clone(),
+        overlap4: overlap_stats.overlap4.clone(),
+        link_overlap: overlap_stats.link_overlap.clone(),
+        link_overlap2: overlap_stats.link_overlap2.clone(),
+        link_overlap4: overlap_stats.link_overlap4.clone(),
+        mags2_tau: mags2_tau.clone(),
+        overlap2_tau: overlap2_tau.clone(),
+        energy_tau: energy_tau.clone(),
+        mags2_tau_converged: mags2_tau_converged.clone(),
+        overlap2_tau_converged: overlap2_tau_converged.clone(),
+        energy_tau_converged: energy_tau_converged.clone(),
+    };
+
     Ok(SweepResult {
         mags: mags_stat.average(),
-        mags2: mags2_stat.average(),
-        mags4: mags4_stat.average(),
-        energies: energies_stat.average(),
+        mags2,
+        mags4,
+        energies,
         energies2: energies2_stat.average(),
-        energy_variance: Statistics::variance(&energies_stat, &energies2_stat),
-        overlap_stats: ov_accum.finish(),
+        energy_variance,
+        overlap_stats,
         cluster_stats: ClusterStats {
             fk_csd,
             overlap_csd,
@@ -819,9 +841,15 @@ fn run_sweep_loop_impl(
         },
         per_disorder_cluster_observations: vec![cluster_observations],
         per_disorder_physics: physics.map(|p| vec![p.finish()]).unwrap_or_default(),
+        per_disorder: vec![sample],
         diagnostics: Diagnostics {
             mags2_tau,
             overlap2_tau,
+            energy_tau,
+            mags2_tau_converged,
+            overlap2_tau_converged,
+            energy_tau_converged,
+            autocorrelation_lag: ac_max_lag,
             equil_checkpoints,
         },
         cluster_snapshots,
@@ -905,6 +933,8 @@ pub fn run_sweep_parallel_with_physics(
             .iter_mut()
             .map(|r| std::mem::take(&mut r.overlap_stats.histogram))
             .collect();
+    }
+    if !agg.overlap_stats.ql_at_q_sum.is_empty() {
         agg.overlap_stats.per_sample_ql_at_q_sum = results
             .iter_mut()
             .map(|r| std::mem::take(&mut r.overlap_stats.ql_at_q_sum))
@@ -962,6 +992,7 @@ mod tests {
             autocorrelation_backend: AutocorrelationBackend::Ring,
             sequential: true,
             equilibration_diagnostic: false,
+            conditional_link_overlap: true,
         };
 
         run_sweep_loop(
@@ -975,6 +1006,94 @@ mod tests {
             0,
         )
         .unwrap()
+    }
+
+    fn plain_config(n_sweeps: usize) -> SimConfig {
+        SimConfig {
+            n_sweeps,
+            warmup_sweeps: 0,
+            sweep_mode: SweepMode::Metropolis,
+            cluster_update: None,
+            pt_interval: None,
+            pt_schedule: PtSchedule::SingleRandomEdge,
+            overlap_cluster: None,
+            autocorrelation_max_lag: None,
+            autocorrelation_backend: AutocorrelationBackend::Ring,
+            sequential: true,
+            equilibration_diagnostic: false,
+            conditional_link_overlap: true,
+        }
+    }
+
+    fn run(
+        lattice: &Lattice,
+        real: &mut Realization,
+        n_replicas: usize,
+        config: &SimConfig,
+    ) -> SweepResult {
+        let n_temps = real.temperatures.len() / n_replicas;
+        run_sweep_loop(
+            lattice,
+            real,
+            n_replicas,
+            n_temps,
+            config,
+            &AtomicBool::new(false),
+            &|| {},
+            0,
+        )
+        .unwrap()
+    }
+
+    /// An event due every two sweeps must stay every two sweeps when the run is
+    /// split into one-sweep calls.
+    #[test]
+    fn interval_phase_spans_calls() {
+        let lattice = Lattice::new(vec![4, 4]);
+        let couplings = vec![1.0; lattice.n_spins * lattice.n_neighbors];
+        let mut real = Realization::new(&lattice, couplings, &[1.5, 2.5], 1, 9);
+        let mut config = plain_config(1);
+        config.pt_interval = Some(2);
+        for _ in 0..6 {
+            run(&lattice, &mut real, 1, &config);
+        }
+        assert_eq!(real.pt_edge_attempts(), &[3]);
+
+        real.reset(&lattice, 1, 2, 9);
+        run(&lattice, &mut real, 1, &config);
+        assert_eq!(real.pt_edge_attempts(), &[1], "reset restarts the phase");
+    }
+
+    #[test]
+    fn conditional_link_overlap_can_be_turned_off() {
+        let lattice = Lattice::new(vec![4, 4]);
+        let couplings = vec![1.0; lattice.n_spins * lattice.n_neighbors];
+        let mut config = plain_config(4);
+        for enabled in [true, false] {
+            config.conditional_link_overlap = enabled;
+            let mut real = Realization::new(&lattice, couplings.clone(), &[2.0], 2, 3);
+            let stats = run(&lattice, &mut real, 2, &config).overlap_stats;
+            assert_eq!(stats.histogram[0].iter().sum::<u64>(), 4);
+            assert_eq!(stats.ql_at_q_sum.is_empty(), !enabled);
+            assert_eq!(stats.ql2_at_q_sum.is_empty(), !enabled);
+        }
+    }
+
+    /// A call that only thermalizes measures nothing, so its moments are undefined.
+    #[test]
+    fn warmup_only_calls_report_nan_moments() {
+        let lattice = Lattice::new(vec![4, 4]);
+        let couplings = vec![1.0; lattice.n_spins * lattice.n_neighbors];
+        let mut real = Realization::new(&lattice, couplings, &[2.0], 2, 3);
+        let mut config = plain_config(5);
+        config.warmup_sweeps = 5;
+        config.autocorrelation_max_lag = Some(2);
+        let result = run(&lattice, &mut real, 2, &config);
+        assert!(result.mags2[0].is_nan() && result.energies[0].is_nan());
+        assert!(result.overlap_stats.overlap2[0].is_nan());
+        assert!(result.diagnostics.mags2_tau[0].is_nan());
+        assert_eq!(result.diagnostics.mags2_tau_converged, vec![false]);
+        assert_eq!(result.per_disorder.len(), 1);
     }
 
     /// Unit-coupling sweeps track energies from exact per-flip deltas; after a long run
@@ -1017,6 +1136,7 @@ mod tests {
                 autocorrelation_backend: AutocorrelationBackend::Ring,
                 sequential: false,
                 equilibration_diagnostic: false,
+                conditional_link_overlap: true,
             };
             run_sweep_loop(
                 &lattice,
@@ -1080,6 +1200,7 @@ mod tests {
                 autocorrelation_backend: AutocorrelationBackend::Ring,
                 sequential: true,
                 equilibration_diagnostic: false,
+                conditional_link_overlap: true,
             };
             run_sweep_loop(
                 &lattice,
@@ -1143,6 +1264,7 @@ mod tests {
                 autocorrelation_backend: AutocorrelationBackend::Ring,
                 sequential: true,
                 equilibration_diagnostic: false,
+                conditional_link_overlap: true,
             };
 
             let result = run_sweep_loop(
@@ -1231,6 +1353,7 @@ mod tests {
             autocorrelation_backend: AutocorrelationBackend::Ring,
             sequential: true,
             equilibration_diagnostic: false,
+            conditional_link_overlap: true,
         };
         let result = run_sweep_loop(
             &lattice,
@@ -1267,6 +1390,7 @@ mod tests {
             autocorrelation_backend: AutocorrelationBackend::Ring,
             sequential: true,
             equilibration_diagnostic: false,
+            conditional_link_overlap: true,
         };
         run_sweep_loop(
             &lattice,
@@ -1333,6 +1457,7 @@ mod tests {
             autocorrelation_backend: AutocorrelationBackend::Ring,
             sequential: true,
             equilibration_diagnostic: false,
+            conditional_link_overlap: true,
         };
         run_sweep_loop(
             &lattice,

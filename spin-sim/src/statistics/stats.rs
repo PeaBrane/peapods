@@ -26,16 +26,14 @@ impl Statistics {
         }
     }
 
+    /// Mean per temperature; NaN when nothing was recorded.
     pub fn average(&self) -> Vec<f64> {
-        if self.count == 0 {
-            return self.aggregate.clone();
-        }
         let c = self.count as f64;
         self.aggregate.iter().map(|&a| a / c).collect()
     }
 
     /// Per-temperature `⟨v²⟩ - ⟨v⟩²` from first- and second-power accumulators of the
-    /// same samples; zeros when nothing was recorded.
+    /// same samples; NaN when nothing was recorded.
     pub fn variance(first: &Self, second: &Self) -> Vec<f64> {
         debug_assert!(first.power == 1 && second.power == 2 && first.count == second.count);
         first

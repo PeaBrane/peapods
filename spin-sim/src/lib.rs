@@ -47,6 +47,7 @@
 //!     autocorrelation_backend: AutocorrelationBackend::Ring,
 //!     sequential: false,
 //!     equilibration_diagnostic: false,
+//!     conditional_link_overlap: true,
 //! };
 //!
 //! use std::sync::atomic::AtomicBool;

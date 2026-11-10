@@ -371,19 +371,19 @@ pub(super) fn decide_clusters(
     }
 }
 
-/// Histogram cluster sizes into `hist[s] += 1`.
+/// Histogram cluster sizes into `hist[s] += 1`; zero entries are not clusters.
 #[inline]
-pub(super) fn uf_histogram(counts: &[u32], hist: &mut [u64]) {
-    for &c in counts {
-        if c > 0 {
-            hist[c as usize] += 1;
+pub(super) fn uf_histogram(sizes: impl IntoIterator<Item = u32>, hist: &mut [u64]) {
+    for size in sizes {
+        if size > 0 {
+            hist[size as usize] += 1;
         }
     }
 }
 
-pub(super) fn top4_sizes(counts: &[u32]) -> [u32; 4] {
+pub(super) fn top4_sizes(sizes: impl IntoIterator<Item = u32>) -> [u32; 4] {
     let mut top = [0u32; 4]; // ascending; top[0] = current minimum of top-4
-    for &c in counts {
+    for c in sizes {
         if c > top[0] {
             top[0] = c;
             top.sort_unstable();
@@ -402,6 +402,9 @@ pub(crate) struct GraphObservationSlot {
     pub large_components: u32,
     pub observed: bool,
 }
+
+/// A component counts as large from this fraction of the sites.
+const LARGE_COMPONENT_FRACTION: f64 = 0.05;
 
 pub(super) struct BondMetrics {
     active_bonds: u32,
@@ -428,20 +431,25 @@ impl BondMetrics {
         }
     }
 
-    pub fn finish(mut self, counts: &[u32]) -> GraphObservationSlot {
+    /// `sizes` are the cluster sizes of a graph on `n_sites` sites (zeros ignored).
+    pub fn finish(
+        mut self,
+        n_sites: usize,
+        sizes: impl Iterator<Item = u32> + Clone,
+    ) -> GraphObservationSlot {
         let mut winding_x = false;
         let mut winding_y = false;
         if let Some(ref mut winding) = self.winding {
             (winding_x, winding_y) = winding.winding();
         }
 
-        let threshold = ((counts.len() as f64) * 0.05).ceil() as u32;
+        let threshold = ((n_sites as f64) * LARGE_COMPONENT_FRACTION).ceil() as u32;
         GraphObservationSlot {
-            top4: top4_sizes(counts),
+            top4: top4_sizes(sizes.clone()),
             active_bonds: self.active_bonds,
             winding_x,
             winding_y,
-            large_components: counts.iter().filter(|&&count| count >= threshold).count() as u32,
+            large_components: sizes.filter(|&size| size >= threshold).count() as u32,
             observed: true,
         }
     }
@@ -772,7 +780,7 @@ mod tests {
         let mut uf = uf_bonds(&lattice, |i, d| bonds.contains(&(i, d)));
         let counts = uf_flatten_counts(&mut uf.parent);
         let mut hist = vec![0u64; n + 1];
-        uf_histogram(&counts, &mut hist);
+        uf_histogram(counts.iter().copied(), &mut hist);
 
         // Clusters: size 4 ×1, size 3 ×1, size 1 ×9
         assert_eq!(hist[1], 9);
@@ -790,7 +798,7 @@ mod tests {
         let mut uf = uf_bonds(&lattice, |i, _d| sites.contains(&i));
         let counts = uf_flatten_counts(&mut uf.parent);
         let mut hist = vec![0u64; n + 1];
-        uf_histogram(&counts, &mut hist);
+        uf_histogram(counts.iter().copied(), &mut hist);
 
         // Clusters: size 5 ×1, size 3 ×1, size 1 ×8
         assert_eq!(hist[1], 8);
@@ -850,7 +858,7 @@ mod tests {
             |site, dim| metrics.record_bond(&lattice, site, dim),
         );
         let counts = uf_flatten_counts(&mut uf.parent);
-        let summary = metrics.finish(&counts);
+        let summary = metrics.finish(counts.len(), counts.iter().copied());
 
         assert_eq!(summary.active_bonds, bonds.len() as u32);
         assert_eq!(summary.top4, [4, 3, 1, 1]);

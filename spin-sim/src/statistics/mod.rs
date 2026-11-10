@@ -9,8 +9,8 @@ pub use autocorrelation::{sokal_estimate, sokal_tau, AutocorrAccum, SokalEstimat
 pub use equilibration::{EquilCheckpoint, EquilDiagnosticAccum};
 pub use overlap::{OverlapAccum, OverlapStats};
 pub use results::{
-    ClusterObservations, ClusterSnapshot, ClusterStats, Diagnostics, GraphObservationSummary,
-    SweepResult,
+    ClusterObservations, ClusterSnapshot, ClusterStats, Diagnostics, DisorderSample,
+    GraphObservationSummary, SweepResult,
 };
 pub use stats::Statistics;
 

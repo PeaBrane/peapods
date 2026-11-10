@@ -17,6 +17,7 @@ fn config(n_sweeps: usize, warmup_sweeps: usize) -> SimConfig {
         autocorrelation_backend: AutocorrelationBackend::Ring,
         sequential: true,
         equilibration_diagnostic: false,
+        conditional_link_overlap: true,
     }
 }
 

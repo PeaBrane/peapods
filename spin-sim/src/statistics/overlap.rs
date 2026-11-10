@@ -358,6 +358,14 @@ impl OverlapAccum {
         }
     }
 
+    /// Drops the link-overlap sums conditioned on the overlap bin, which are two of
+    /// the three histogram-sized arrays.
+    pub fn without_conditional_link_overlap(mut self) -> Self {
+        self.ql_at_q_sum = vec![];
+        self.ql2_at_q_sum = vec![];
+        self
+    }
+
     /// Sets the replica count for the all-pairs q² average, which also covers the
     /// unpaired replica of an odd count.
     pub fn with_replicas(mut self, n_replicas: usize) -> Self {
@@ -406,8 +414,10 @@ impl OverlapAccum {
 
                 let idx = ((dot_spin + self.n_spins as i64) / 2) as usize;
                 self.histogram[t][idx] += 1;
-                self.ql_at_q_sum[t][idx] += ql as f64;
-                self.ql2_at_q_sum[t][idx] += (ql * ql) as f64;
+                if let Some(sum) = self.ql_at_q_sum.get_mut(t) {
+                    sum[idx] += ql as f64;
+                    self.ql2_at_q_sum[t][idx] += (ql * ql) as f64;
+                }
             }
 
             if !record {

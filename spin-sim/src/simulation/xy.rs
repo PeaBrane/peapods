@@ -11,7 +11,6 @@ use crate::{
     statistics::{
         autocorrelation::PrecisionAutocorr,
         physics::{MomentBlock, PhysicsCollector, PhysicsOptions, PhysicsResult, PhysicsValues},
-        sokal_tau,
     },
 };
 use rayon::prelude::*;
@@ -45,6 +44,7 @@ impl Default for XyConfig {
                 autocorrelation_backend: AutocorrelationBackend::Ring,
                 sequential: false,
                 equilibration_diagnostic: false,
+                conditional_link_overlap: true,
             },
             cluster_updates: 1,
             overrelaxation_sweeps: 0,
@@ -56,9 +56,6 @@ impl XyConfig {
     fn validate(&self) -> Result<(), String> {
         let cfg = &self.simulation;
         cfg.validate()?;
-        if cfg.n_sweeps <= cfg.warmup_sweeps {
-            return Err("XY sampling requires at least one measurement sweep".into());
-        }
         if cfg.overlap_cluster.is_some() || cfg.equilibration_diagnostic {
             return Err(
                 "overlap updates and Ising equilibration diagnostics are not supported for XY"
@@ -84,8 +81,12 @@ impl XyConfig {
 
 pub struct XyDisorderResult {
     pub physics: PhysicsResult,
+    /// τ_int per temperature in measured sweeps; NaN for a series without variance.
     pub energy_tau: Vec<f64>,
     pub mags2_tau: Vec<f64>,
+    /// Whether each τ's Sokal window closed; if not, τ is a truncated lower bound.
+    pub energy_tau_converged: Vec<bool>,
+    pub mags2_tau_converged: Vec<bool>,
     /// Counts per temperature, summed over replicas, including warmup.
     pub cluster_updates: Vec<u64>,
     /// SW visits N spins; Wolff visits its seed cluster, including vacant spins.
@@ -403,7 +404,7 @@ fn run_xy(
         SweepMode::Gibbs => Some(LocalMove::HeatBath),
         SweepMode::None => None,
     };
-    driver::run_sweeps(cfg, interrupted, on_sweep, |step| {
+    driver::run_sweeps(cfg, interrupted, on_sweep, real.schedule.sweeps, |step| {
         let moves = local_move.into_iter().chain(std::iter::repeat_n(
             LocalMove::Overrelaxation,
             config.overrelaxation_sweeps,
@@ -480,19 +481,20 @@ fn run_xy(
         if step.temper {
             real.temper(lattice.n_spins, n_replicas, n_temps, cfg.pt_schedule);
         }
+        real.schedule.sweeps += 1;
     })?;
-    let tau = |ac: Option<PrecisionAutocorr<f64>>| {
-        ac.map(|a| a.finish().iter().map(|g| sokal_tau(g)).collect())
-            .unwrap_or_default()
-    };
+    let (energy_tau, energy_tau_converged) = driver::tau_estimates(energy_ac.as_ref());
+    let (mags2_tau, mags2_tau_converged) = driver::tau_estimates(m2_ac.as_ref());
     let mut visited_spins = vec![0; n_temps];
     for (slot, visited) in visits.into_iter().enumerate() {
         visited_spins[slot % n_temps] += visited;
     }
     Ok(XyDisorderResult {
         physics: physics.finish(n_temps),
-        energy_tau: tau(energy_ac),
-        mags2_tau: tau(m2_ac),
+        energy_tau,
+        mags2_tau,
+        energy_tau_converged,
+        mags2_tau_converged,
         cluster_updates: updates,
         visited_spins,
     })

@@ -188,6 +188,7 @@ fn main() {
         autocorrelation_backend: AutocorrelationBackend::Ring,
         sequential,
         equilibration_diagnostic: false,
+        conditional_link_overlap: true,
     };
 
     println!(

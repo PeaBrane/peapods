@@ -161,11 +161,11 @@ pub(crate) fn embedded_update<E: Embedding>(
                 let counts = uf_flatten_counts_fresh(&mut parent);
                 // SAFETY: `temp_id` is unique to this task.
                 if let Some(histogram) = unsafe { csd.get(temp_id) } {
-                    uf_histogram(&counts, histogram);
+                    uf_histogram(counts.iter().copied(), histogram);
                 }
                 if let (Some(metrics), Some(slot)) = (metrics, unsafe { observations.get(temp_id) })
                 {
-                    *slot = metrics.finish(&counts);
+                    *slot = metrics.finish(n_spins, counts.iter().copied());
                 }
             } else {
                 uf_flatten(&mut parent);

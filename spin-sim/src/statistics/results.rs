@@ -14,9 +14,12 @@ pub struct ClusterStats {
     /// FK cluster size histogram per temperature: `hist[s]` = count of size-`s` clusters.
     pub fk_csd: Vec<Vec<u64>>,
     /// Per-mode overlap cluster size histogram: `[n_modes][n_temps][n_spins+1]`.
+    /// Counts clusters of the sites a move acts on; the sites it leaves alone are
+    /// not size-1 clusters. CMR acts on every site.
     pub overlap_csd: Vec<Vec<Vec<u64>>>,
     /// Per-mode average relative size of k-th largest overlap cluster: `[n_modes][n_temps][4]`.
-    /// Zero for a mode that never ran during measurement.
+    /// Zero for a mode that never ran during measurement, and where fewer than `k`
+    /// clusters exist.
     pub top_cluster_sizes: Vec<Vec<[f64; 4]>>,
 }
 
@@ -39,16 +42,70 @@ pub struct ClusterObservations {
 }
 
 pub struct Diagnostics {
-    /// Integrated autocorrelation time τ_int(m²) per temperature.
-    /// Empty if autocorrelation_max_lag is None.
+    /// Integrated autocorrelation time τ_int(m²) per temperature, in measured sweeps.
+    /// Empty if autocorrelation_max_lag is None. A series without variance (frozen,
+    /// or never measured) has no autocorrelation time and reports NaN; after
+    /// aggregation this is the mean over the disorder samples with a defined τ.
     pub mags2_tau: Vec<f64>,
-    /// Integrated autocorrelation time τ_int(q²) per temperature.
+    /// τ_int(q²) per temperature, with q² averaged over all replica pairs.
     /// Empty if autocorrelation_max_lag is None or n_replicas < 2.
     pub overlap2_tau: Vec<f64>,
+    /// τ_int of the replica-averaged energy per temperature.
+    /// Empty if autocorrelation_max_lag is None.
+    pub energy_tau: Vec<f64>,
+    /// Whether the Sokal window of each τ closed within the estimated lags. A τ
+    /// whose window did not close is truncated and is a lower bound. After
+    /// aggregation: whether it closed in every disorder sample.
+    pub mags2_tau_converged: Vec<bool>,
+    pub overlap2_tau_converged: Vec<bool>,
+    pub energy_tau_converged: Vec<bool>,
+    /// Largest lag that was estimated: the requested lag capped at a quarter of the
+    /// measured sweeps. `None` if autocorrelation_max_lag is None.
+    pub autocorrelation_lag: Option<usize>,
     /// Equilibration diagnostic checkpoints: energy and link overlap averaged over
     /// the log-binned window of each checkpoint (see [`EquilCheckpoint`]).
     /// Empty if equilibration_diagnostic is false.
     pub equil_checkpoints: Vec<EquilCheckpoint>,
+}
+
+impl Diagnostics {
+    fn empty() -> Self {
+        Self {
+            mags2_tau: vec![],
+            overlap2_tau: vec![],
+            energy_tau: vec![],
+            mags2_tau_converged: vec![],
+            overlap2_tau_converged: vec![],
+            energy_tau_converged: vec![],
+            autocorrelation_lag: None,
+            equil_checkpoints: vec![],
+        }
+    }
+}
+
+/// Thermal averages of one disorder realization, per temperature.
+///
+/// The disorder mean alone carries no error bar; these per-sample values give the
+/// standard error of any disorder average and feed jackknife or bootstrap errors of
+/// ratios such as the Binder parameter. Overlap vectors are empty when
+/// `n_replicas < 2`, and τ vectors when autocorrelation is off.
+#[derive(Clone, Debug, Default)]
+pub struct DisorderSample {
+    pub mags2: Vec<f64>,
+    pub mags4: Vec<f64>,
+    pub energies: Vec<f64>,
+    pub energy_variance: Vec<f64>,
+    pub overlap2: Vec<f64>,
+    pub overlap4: Vec<f64>,
+    pub link_overlap: Vec<f64>,
+    pub link_overlap2: Vec<f64>,
+    pub link_overlap4: Vec<f64>,
+    pub mags2_tau: Vec<f64>,
+    pub overlap2_tau: Vec<f64>,
+    pub energy_tau: Vec<f64>,
+    pub mags2_tau_converged: Vec<bool>,
+    pub overlap2_tau_converged: Vec<bool>,
+    pub energy_tau_converged: Vec<bool>,
 }
 
 /// Per-temperature observables averaged over measurement sweeps and replicas.
@@ -78,8 +135,51 @@ pub struct SweepResult {
     pub cluster_stats: ClusterStats,
     pub per_disorder_physics: Vec<super::physics::PhysicsResult>,
     pub per_disorder_cluster_observations: Vec<ClusterObservations>,
+    /// One entry per disorder realization, in order.
+    pub per_disorder: Vec<DisorderSample>,
     pub diagnostics: Diagnostics,
     pub cluster_snapshots: Vec<ClusterSnapshot>,
+}
+
+/// Element-wise mean over `results` of the vector that `field` selects, with the
+/// length of the first.
+fn mean_over<'a, R>(results: &'a [R], field: impl Fn(&'a R) -> &'a [f64]) -> Vec<f64> {
+    let mut mean = vec![0.0; results.first().map_or(0, |first| field(first).len())];
+    for result in results {
+        for (total, &value) in mean.iter_mut().zip(field(result)) {
+            *total += value;
+        }
+    }
+    let n = results.len() as f64;
+    for value in &mut mean {
+        *value /= n;
+    }
+    mean
+}
+
+/// [`mean_over`] that skips NaN entries; NaN where every entry is NaN.
+fn defined_mean_over<'a, R>(results: &'a [R], field: impl Fn(&'a R) -> &'a [f64]) -> Vec<f64> {
+    let len = results.first().map_or(0, |first| field(first).len());
+    (0..len)
+        .map(|index| {
+            let defined = results
+                .iter()
+                .filter_map(|result| field(result).get(index).copied())
+                .filter(|value| !value.is_nan());
+            let (sum, count) = defined.fold((0.0, 0usize), |(sum, count), value| {
+                (sum + value, count + 1)
+            });
+            sum / count as f64
+        })
+        .collect()
+}
+
+/// Element-wise conjunction over `results`.
+fn all_over<'a, R>(results: &'a [R], field: impl Fn(&'a R) -> &'a [bool]) -> Vec<bool> {
+    let len = results.first().map_or(0, |first| field(first).len());
+    (0..len)
+        .map(|index| results.iter().all(|result| field(result)[index]))
+        .collect()
 }
 
 impl SweepResult {
@@ -100,11 +200,8 @@ impl SweepResult {
             },
             per_disorder_physics: vec![],
             per_disorder_cluster_observations: vec![],
-            diagnostics: Diagnostics {
-                mags2_tau: vec![],
-                overlap2_tau: vec![],
-                equil_checkpoints: vec![],
-            },
+            per_disorder: vec![],
+            diagnostics: Diagnostics::empty(),
             cluster_snapshots: vec![],
         }
     }
@@ -127,42 +224,54 @@ impl SweepResult {
         }
         let n = results.len() as f64;
         let n_temps = results[0].mags.len();
-        let n_fk_csd = results[0].cluster_stats.fk_csd.len();
+        let first = &results[0].cluster_stats;
 
-        let fk_len = results[0]
-            .cluster_stats
-            .fk_csd
-            .first()
-            .map_or(0, |v| v.len());
-
-        let n_modes = results[0].cluster_stats.overlap_csd.len();
-        let ov_inner_len = results[0]
-            .cluster_stats
-            .overlap_csd
-            .first()
-            .and_then(|v| v.first())
-            .map_or(0, |v| v.len());
-        let ov_inner_temps = results[0]
-            .cluster_stats
-            .overlap_csd
-            .first()
-            .map_or(0, |v| v.len());
-
-        let n_top_modes = results[0].cluster_stats.top_cluster_sizes.len();
-        let n_top_temps: Vec<usize> = (0..n_top_modes)
+        let mut fk_csd = first.fk_csd.clone();
+        for histogram in &mut fk_csd {
+            histogram.fill(0);
+        }
+        let mut overlap_csd = first.overlap_csd.clone();
+        for histogram in overlap_csd.iter_mut().flatten() {
+            histogram.fill(0);
+        }
+        // A mode that never measured in one sample reports no temperatures there.
+        let mut top_cluster_sizes: Vec<Vec<[f64; 4]>> = (0..first.top_cluster_sizes.len())
             .map(|mode| {
-                results
+                let n_top_temps = results
                     .iter()
                     .filter_map(|r| r.cluster_stats.top_cluster_sizes.get(mode))
                     .map(Vec::len)
                     .max()
-                    .unwrap_or(0)
+                    .unwrap_or(0);
+                vec![[0.0; 4]; n_top_temps]
             })
             .collect();
-
-        let m2_tau_len = results[0].diagnostics.mags2_tau.len();
-        let q2_tau_len = results[0].diagnostics.overlap2_tau.len();
-        let n_ckpts = results[0].diagnostics.equil_checkpoints.len();
+        for stats in results.iter().map(|r| &r.cluster_stats) {
+            for (total, part) in fk_csd.iter_mut().zip(&stats.fk_csd) {
+                for (total, &count) in total.iter_mut().zip(part) {
+                    *total += count;
+                }
+            }
+            for (total, part) in overlap_csd
+                .iter_mut()
+                .flatten()
+                .zip(stats.overlap_csd.iter().flatten())
+            {
+                for (total, &count) in total.iter_mut().zip(part) {
+                    *total += count;
+                }
+            }
+            for (total, part) in top_cluster_sizes.iter_mut().zip(&stats.top_cluster_sizes) {
+                for (total, sizes) in total.iter_mut().zip(part) {
+                    for k in 0..4 {
+                        total[k] += sizes[k];
+                    }
+                }
+            }
+        }
+        for size in top_cluster_sizes.iter_mut().flatten().flatten() {
+            *size /= n;
+        }
 
         let overlap_results: Vec<_> = results.iter().map(|r| &r.overlap_stats).collect();
         let overlap_stats = if retain_overlap_samples {
@@ -170,173 +279,58 @@ impl SweepResult {
         } else {
             OverlapStats::aggregate_without_samples(&overlap_results)
         };
-        let per_disorder_cluster_observations = results
-            .iter()
-            .flat_map(|result| result.per_disorder_cluster_observations.iter().cloned())
-            .collect();
 
-        let mut agg = SweepResult {
-            mags: vec![0.0; n_temps],
-            mags2: vec![0.0; n_temps],
-            mags4: vec![0.0; n_temps],
-            energies: vec![0.0; n_temps],
-            energies2: vec![0.0; n_temps],
-            energy_variance: vec![0.0; n_temps],
+        let checkpoints = &results[0].diagnostics.equil_checkpoints;
+        let equil_checkpoints = (0..checkpoints.len())
+            .map(|i| EquilCheckpoint {
+                sweep: checkpoints[i].sweep,
+                energy_avg: mean_over(results, |r| &r.diagnostics.equil_checkpoints[i].energy_avg),
+                link_overlap_avg: mean_over(results, |r| {
+                    &r.diagnostics.equil_checkpoints[i].link_overlap_avg
+                }),
+            })
+            .collect();
+        debug_assert!(results.iter().all(|r| r.mags.len() == n_temps));
+
+        SweepResult {
+            mags: mean_over(results, |r| &r.mags),
+            mags2: mean_over(results, |r| &r.mags2),
+            mags4: mean_over(results, |r| &r.mags4),
+            energies: mean_over(results, |r| &r.energies),
+            energies2: mean_over(results, |r| &r.energies2),
+            energy_variance: mean_over(results, |r| &r.energy_variance),
             overlap_stats,
             cluster_stats: ClusterStats {
-                fk_csd: (0..n_fk_csd).map(|_| vec![0u64; fk_len]).collect(),
-                overlap_csd: (0..n_modes)
-                    .map(|_| {
-                        (0..ov_inner_temps)
-                            .map(|_| vec![0u64; ov_inner_len])
-                            .collect()
-                    })
-                    .collect(),
-                top_cluster_sizes: n_top_temps.iter().map(|&len| vec![[0.0; 4]; len]).collect(),
+                fk_csd,
+                overlap_csd,
+                top_cluster_sizes,
             },
-            per_disorder_cluster_observations,
+            per_disorder_cluster_observations: results
+                .iter()
+                .flat_map(|r| r.per_disorder_cluster_observations.iter().cloned())
+                .collect(),
             per_disorder_physics: results
                 .iter()
                 .flat_map(|r| r.per_disorder_physics.iter().cloned())
                 .collect(),
+            per_disorder: results
+                .iter()
+                .flat_map(|r| r.per_disorder.iter().cloned())
+                .collect(),
             diagnostics: Diagnostics {
-                mags2_tau: vec![0.0; m2_tau_len],
-                overlap2_tau: vec![0.0; q2_tau_len],
-                equil_checkpoints: (0..n_ckpts)
-                    .map(|i| EquilCheckpoint {
-                        sweep: results[0].diagnostics.equil_checkpoints[i].sweep,
-                        energy_avg: vec![0.0; n_temps],
-                        link_overlap_avg: vec![0.0; n_temps],
-                    })
-                    .collect(),
+                mags2_tau: defined_mean_over(results, |r| &r.diagnostics.mags2_tau),
+                overlap2_tau: defined_mean_over(results, |r| &r.diagnostics.overlap2_tau),
+                energy_tau: defined_mean_over(results, |r| &r.diagnostics.energy_tau),
+                mags2_tau_converged: all_over(results, |r| &r.diagnostics.mags2_tau_converged),
+                overlap2_tau_converged: all_over(results, |r| {
+                    &r.diagnostics.overlap2_tau_converged
+                }),
+                energy_tau_converged: all_over(results, |r| &r.diagnostics.energy_tau_converged),
+                autocorrelation_lag: results[0].diagnostics.autocorrelation_lag,
+                equil_checkpoints,
             },
             cluster_snapshots: Vec::new(),
-        };
-
-        for r in results {
-            for (a, &v) in agg.mags.iter_mut().zip(r.mags.iter()) {
-                *a += v;
-            }
-            for (a, &v) in agg.mags2.iter_mut().zip(r.mags2.iter()) {
-                *a += v;
-            }
-            for (a, &v) in agg.mags4.iter_mut().zip(r.mags4.iter()) {
-                *a += v;
-            }
-            for (a, &v) in agg.energies.iter_mut().zip(r.energies.iter()) {
-                *a += v;
-            }
-            for (a, &v) in agg.energies2.iter_mut().zip(r.energies2.iter()) {
-                *a += v;
-            }
-            for (a, &v) in agg.energy_variance.iter_mut().zip(r.energy_variance.iter()) {
-                *a += v;
-            }
-            for (a, s) in agg
-                .cluster_stats
-                .fk_csd
-                .iter_mut()
-                .zip(r.cluster_stats.fk_csd.iter())
-            {
-                for (ah, &sh) in a.iter_mut().zip(s.iter()) {
-                    *ah += sh;
-                }
-            }
-            for (am, sm) in agg
-                .cluster_stats
-                .overlap_csd
-                .iter_mut()
-                .zip(r.cluster_stats.overlap_csd.iter())
-            {
-                for (a, s) in am.iter_mut().zip(sm.iter()) {
-                    for (ah, &sh) in a.iter_mut().zip(s.iter()) {
-                        *ah += sh;
-                    }
-                }
-            }
-            for (am, sm) in agg
-                .cluster_stats
-                .top_cluster_sizes
-                .iter_mut()
-                .zip(r.cluster_stats.top_cluster_sizes.iter())
-            {
-                for (a, &s) in am.iter_mut().zip(sm.iter()) {
-                    for k in 0..4 {
-                        a[k] += s[k];
-                    }
-                }
-            }
-            for (a, &v) in agg
-                .diagnostics
-                .mags2_tau
-                .iter_mut()
-                .zip(r.diagnostics.mags2_tau.iter())
-            {
-                *a += v;
-            }
-            for (a, &v) in agg
-                .diagnostics
-                .overlap2_tau
-                .iter_mut()
-                .zip(r.diagnostics.overlap2_tau.iter())
-            {
-                *a += v;
-            }
-            for (ac, rc) in agg
-                .diagnostics
-                .equil_checkpoints
-                .iter_mut()
-                .zip(r.diagnostics.equil_checkpoints.iter())
-            {
-                for (a, &v) in ac.energy_avg.iter_mut().zip(rc.energy_avg.iter()) {
-                    *a += v;
-                }
-                for (a, &v) in ac
-                    .link_overlap_avg
-                    .iter_mut()
-                    .zip(rc.link_overlap_avg.iter())
-                {
-                    *a += v;
-                }
-            }
         }
-
-        for v in agg
-            .mags
-            .iter_mut()
-            .chain(agg.mags2.iter_mut())
-            .chain(agg.mags4.iter_mut())
-            .chain(agg.energies.iter_mut())
-            .chain(agg.energies2.iter_mut())
-            .chain(agg.energy_variance.iter_mut())
-        {
-            *v /= n;
-        }
-
-        for mode_tops in agg.cluster_stats.top_cluster_sizes.iter_mut() {
-            for arr in mode_tops.iter_mut() {
-                for v in arr.iter_mut() {
-                    *v /= n;
-                }
-            }
-        }
-
-        for v in agg.diagnostics.mags2_tau.iter_mut() {
-            *v /= n;
-        }
-        for v in agg.diagnostics.overlap2_tau.iter_mut() {
-            *v /= n;
-        }
-        for ckpt in agg.diagnostics.equil_checkpoints.iter_mut() {
-            for v in ckpt.energy_avg.iter_mut() {
-                *v /= n;
-            }
-            for v in ckpt.link_overlap_avg.iter_mut() {
-                *v /= n;
-            }
-        }
-
-        agg
     }
 }
 

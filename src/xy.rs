@@ -101,6 +101,7 @@ impl PyXySimulation {
                     .map_err(error)?,
                 sequential,
                 equilibration_diagnostic: false,
+                conditional_link_overlap: true,
             },
             cluster_updates,
             overrelaxation_sweeps,
