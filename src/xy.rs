@@ -3,7 +3,10 @@ use crate::execution::{
 };
 use numpy::{PyReadonlyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use pyo3::{prelude::*, types::PyDict};
-use spin_sim::{config::*, statistics::physics::PhysicsOptions, XyConfig, XySimulation};
+use spin_sim::{
+    config::*, simulation::xy::XyDisorderResult, statistics::physics::PhysicsOptions, XyConfig,
+    XySimulation,
+};
 
 #[pyclass(name = "XYSimulation")]
 pub(crate) struct PyXySimulation {
@@ -59,7 +62,7 @@ impl PyXySimulation {
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
         Ok(Self { model })
     }
-    #[pyo3(signature=(n_sweeps,sweep_mode="metropolis",cluster_update_interval=Some(1),cluster_mode="sw",cluster_updates=1,overrelaxation_sweeps=0,pt_interval=None,pt_schedule="single_random_edge",warmup_ratio=0.25,displacements=None,vortices=false,block_size=None,autocorrelation_max_lag=None,autocorrelation_backend="ring",sequential=false))]
+    #[pyo3(signature=(n_sweeps,sweep_mode="metropolis",cluster_update_interval=Some(1),cluster_mode="sw",cluster_updates=1,overrelaxation_sweeps=0,pt_interval=None,pt_schedule="single_random_edge",warmup_ratio=0.25,displacements=None,vortices=false,block_size=None,autocorrelation_max_lag=None,autocorrelation_backend="ring",sequential=false,measure_interval=1))]
     #[allow(clippy::too_many_arguments)]
     fn sample<'py>(
         &mut self,
@@ -79,6 +82,7 @@ impl PyXySimulation {
         autocorrelation_max_lag: Option<usize>,
         autocorrelation_backend: &str,
         sequential: bool,
+        measure_interval: usize,
     ) -> PyResult<Bound<'py, PyDict>> {
         let error = pyo3::exceptions::PyValueError::new_err;
         let mode = ClusterMode::try_from(cluster_mode).map_err(error)?;
@@ -110,6 +114,7 @@ impl PyXySimulation {
                 vortices,
                 block_size,
             },
+            measure_interval,
         };
         // PT counters persist in the realizations; report this call's increments.
         let pt_before = pt_snapshot(&self.model.realizations);
@@ -135,39 +140,47 @@ impl PyXySimulation {
             .get_item("per_disorder")?
             .unwrap()
             .downcast_into::<PyDict>()?;
-        for (name, which) in [("cluster_updates", false), ("visited_spins", true)] {
+        type Counts = fn(&XyDisorderResult) -> &Vec<u64>;
+        let counts: [(&str, Counts); 4] = [
+            ("cluster_updates", |r| &r.cluster_updates),
+            ("visited_spins", |r| &r.visited_spins),
+            ("metropolis_accepted", |r| &r.metropolis_accepted),
+            ("metropolis_attempts", |r| &r.metropolis_attempts),
+        ];
+        for (name, field) in counts {
             let data = result
                 .per_disorder
                 .iter()
-                .flat_map(|r| {
-                    if which {
-                        r.visited_spins.clone()
-                    } else {
-                        r.cluster_updates.clone()
-                    }
-                })
+                .flat_map(|r| field(r).clone())
                 .collect();
             set_array(py, &per, name, &[nd, nt], data)?;
         }
         if autocorrelation_max_lag.is_some() {
-            for (name, energy) in [("energy_tau", true), ("mags2_tau", false)] {
-                set_array(
-                    py,
-                    &per,
-                    name,
-                    &[nd, nt],
-                    result
-                        .per_disorder
-                        .iter()
-                        .flat_map(|r| {
-                            if energy {
-                                r.energy_tau.clone()
-                            } else {
-                                r.mags2_tau.clone()
-                            }
-                        })
-                        .collect(),
-                )?;
+            type Taus = fn(&XyDisorderResult) -> &Vec<f64>;
+            let taus: [(&str, Taus); 2] = [
+                ("energy_tau", |r| &r.energy_tau),
+                ("mags2_tau", |r| &r.mags2_tau),
+            ];
+            for (name, field) in taus {
+                let data = result
+                    .per_disorder
+                    .iter()
+                    .flat_map(|r| field(r).clone())
+                    .collect();
+                set_array(py, &per, name, &[nd, nt], data)?;
+            }
+            type Flags = fn(&XyDisorderResult) -> &Vec<bool>;
+            let flags: [(&str, Flags); 2] = [
+                ("energy_tau_converged", |r| &r.energy_tau_converged),
+                ("mags2_tau_converged", |r| &r.mags2_tau_converged),
+            ];
+            for (name, field) in flags {
+                let data = result
+                    .per_disorder
+                    .iter()
+                    .flat_map(|r| field(r).clone())
+                    .collect();
+                set_array(py, &per, name, &[nd, nt], data)?;
             }
         }
         if pt_interval.is_some() {

@@ -1,5 +1,30 @@
 use super::offsets::hypercubic;
 
+/// What a forward bond that crosses the edge of the cell along one dimension becomes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Boundary {
+    Periodic,
+    /// The bond is removed.
+    Open,
+    /// The bond changes sign each time it crosses.
+    Antiperiodic,
+}
+
+impl TryFrom<&str> for Boundary {
+    type Error = String;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match s {
+            "periodic" => Ok(Self::Periodic),
+            "open" => Ok(Self::Open),
+            "antiperiodic" => Ok(Self::Antiperiodic),
+            _ => Err(format!(
+                "unknown boundary '{s}', expected 'periodic', 'open' or 'antiperiodic'"
+            )),
+        }
+    }
+}
+
 /// Periodic Bravais lattice with precomputed neighbor table.
 ///
 /// Sites are indexed in row-major (C) order. Couplings are stored in a flat
@@ -23,6 +48,7 @@ pub struct Lattice {
     /// Backward neighbors, length `n_spins * n_neighbors`.
     /// Layout: `bwd_neighbors[i * n_neighbors + d]`.
     bwd_neighbors: Vec<u32>,
+    offsets: Vec<Vec<isize>>,
     canonical_square_shape: Option<(usize, usize)>,
     canonical_cubic_shape: Option<[usize; 3]>,
 }
@@ -91,6 +117,7 @@ impl Lattice {
             n_neighbors,
             fwd_neighbors,
             bwd_neighbors,
+            offsets,
             canonical_square_shape: None,
             canonical_cubic_shape: None,
         }
@@ -106,6 +133,48 @@ impl Lattice {
     #[inline]
     pub(crate) fn cubic_shape(&self) -> Option<[usize; 3]> {
         self.canonical_cubic_shape
+    }
+
+    /// How many times the forward bond from `site` along offset `d` crosses the edge of
+    /// the cell along `dim`, with the sign of the crossing.
+    pub fn forward_wraps(&self, site: usize, d: usize, dim: usize) -> isize {
+        let extent = self.shape[dim] as isize;
+        let coord = ((site / self.strides[dim]) % self.shape[dim]) as isize;
+        (coord + self.offsets[d][dim]).div_euclid(extent)
+    }
+
+    /// Per forward bond, the factor that turns periodic couplings into ones with the
+    /// given `boundaries` (one per dimension): 1 for a bond kept as is, -1 for one
+    /// that changes sign, 0 for one removed. Laid out like the couplings.
+    ///
+    /// The factors are in {-1, 0, 1}, so unit couplings stay unit couplings, and a
+    /// pair of runs with periodic and antiperiodic boundaries gives the domain-wall
+    /// free energy. Wrapping observables are zero with open boundaries.
+    pub fn boundary_factors(&self, boundaries: &[Boundary]) -> Result<Vec<i8>, String> {
+        if boundaries.len() != self.n_dims {
+            return Err(format!(
+                "expected one boundary per dimension ({}), got {}",
+                self.n_dims,
+                boundaries.len()
+            ));
+        }
+        let mut factors = vec![1i8; self.n_spins * self.n_neighbors];
+        for site in 0..self.n_spins {
+            for d in 0..self.n_neighbors {
+                for (dim, &boundary) in boundaries.iter().enumerate() {
+                    let wraps = self.forward_wraps(site, d, dim);
+                    let factor = &mut factors[site * self.n_neighbors + d];
+                    match boundary {
+                        Boundary::Periodic => {}
+                        Boundary::Open if wraps != 0 => *factor = 0,
+                        Boundary::Open => {}
+                        Boundary::Antiperiodic if wraps % 2 != 0 => *factor = -*factor,
+                        Boundary::Antiperiodic => {}
+                    }
+                }
+            }
+        }
+        Ok(factors)
     }
 
     /// Whether a neighbor offset maps every site to itself, as an extent of 1 along
@@ -200,6 +269,32 @@ mod tests {
         assert_eq!(lat.neighbor_fwd(15, 1), 12);
         // offset [1,-1] -> (0, 2) = 2
         assert_eq!(lat.neighbor_fwd(15, 2), 2);
+    }
+
+    #[test]
+    fn boundary_factors_mark_the_bonds_that_cross_the_cell_edge() {
+        // 3x4: dimension 0 has stride 4, dimension 1 stride 1.
+        let lattice = Lattice::new(vec![3, 4]);
+        let factors = lattice
+            .boundary_factors(&[Boundary::Antiperiodic, Boundary::Open])
+            .unwrap();
+        for site in 0..12 {
+            let (row, col) = (site / 4, site % 4);
+            assert_eq!(factors[site * 2], if row == 2 { -1 } else { 1 }, "{site}");
+            assert_eq!(
+                factors[site * 2 + 1],
+                if col == 3 { 0 } else { 1 },
+                "{site}"
+            );
+        }
+        // A diagonal offset crosses both edges from the corner, so both rules apply.
+        let tri = Lattice::with_offsets(vec![3, 3], vec![vec![1, 1]]);
+        let factors = tri
+            .boundary_factors(&[Boundary::Antiperiodic, Boundary::Antiperiodic])
+            .unwrap();
+        assert_eq!(factors[8], 1, "two sign changes cancel");
+        assert_eq!(factors[2], -1);
+        assert!(lattice.boundary_factors(&[Boundary::Open]).is_err());
     }
 
     #[test]

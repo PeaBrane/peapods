@@ -1,6 +1,10 @@
 //! O(2) kernels for finite signed, zero-field nearest-neighbor interactions.
 use super::model::Spin;
-use crate::{clusters::fk::Embedding, geometry::Lattice, parallel::par_over_replicas};
+use crate::{
+    clusters::fk::Embedding,
+    geometry::Lattice,
+    parallel::{par_over_replicas, Slots},
+};
 use rand::Rng;
 use rand_xoshiro::Xoshiro256StarStar;
 
@@ -200,7 +204,9 @@ pub(crate) enum LocalMove {
 }
 
 /// One pass of `kind` over every system. `occupied: None` means no vacancies;
-/// vacant sites are skipped since they have no bonds and no measured weight.
+/// vacant sites are skipped since they have no bonds and no measured weight. With
+/// `accepted_out`, each temperature slot's entry grows by its accepted Metropolis
+/// proposals.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn local_sweep(
     lattice: &Lattice,
@@ -212,7 +218,9 @@ pub(crate) fn local_sweep(
     occupied: Option<&[bool]>,
     sequential: bool,
     kind: LocalMove,
+    accepted_out: Option<&mut [u64]>,
 ) {
+    let accepted_out = Slots::new(accepted_out);
     par_over_replicas(
         spins,
         rngs,
@@ -220,16 +228,24 @@ pub(crate) fn local_sweep(
         ids,
         lattice.n_spins,
         sequential,
-        |s, rng, t, _, _| {
+        |s, rng, t, temp_id, _| {
             let beta = 1.0 / t;
             match kind {
-                LocalMove::Metropolis => sweep_sites(lattice, s, couplings, occupied, |s, i, h| {
-                    let proposal = random_unit(rng);
-                    let delta = dot(s[i], h) - dot(proposal, h);
-                    if delta <= 0.0 || rng.gen::<f64>() < (-delta * beta).exp() {
-                        s[i] = proposal;
+                LocalMove::Metropolis => {
+                    let mut accepted = 0;
+                    sweep_sites(lattice, s, couplings, occupied, |s, i, h| {
+                        let proposal = random_unit(rng);
+                        let delta = dot(s[i], h) - dot(proposal, h);
+                        if delta <= 0.0 || rng.gen::<f64>() < (-delta * beta).exp() {
+                            s[i] = proposal;
+                            accepted += 1;
+                        }
+                    });
+                    // SAFETY: `temp_id` is unique to this task.
+                    if let Some(total) = unsafe { accepted_out.get(temp_id) } {
+                        *total += accepted;
                     }
-                }),
+                }
                 LocalMove::HeatBath => sweep_sites(lattice, s, couplings, occupied, |s, i, h| {
                     s[i] = heat_bath(rng, h, beta);
                 }),
@@ -302,6 +318,7 @@ mod tests {
             None,
             true,
             kind,
+            None,
         );
     }
 
@@ -579,6 +596,7 @@ mod tests {
                         occupied,
                         true,
                         kind,
+                        None,
                     );
                 }
                 assert_eq!(

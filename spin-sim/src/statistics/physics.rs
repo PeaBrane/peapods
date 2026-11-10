@@ -548,9 +548,9 @@ impl PhysicsCollector {
     fn plane_structure_factor(&self, d: usize, n: f64) -> f64 {
         let mut fourier = [[0.0; 2]; 2];
         for (plane, phase) in self.planes[d].iter().zip(&self.phases[d]) {
-            for k in 0..2 {
-                for a in 0..2 {
-                    fourier[k][a] += plane[k] * phase[a];
+            for (row, &value) in fourier.iter_mut().zip(plane) {
+                for (entry, &phase) in row.iter_mut().zip(phase) {
+                    *entry += value * phase;
                 }
             }
         }

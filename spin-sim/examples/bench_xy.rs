@@ -114,6 +114,7 @@ fn main() {
         cluster_updates: 1,
         overrelaxation_sweeps,
         physics: PhysicsOptions::default(),
+        measure_interval: 1,
     };
 
     let interrupted = AtomicBool::new(false);
