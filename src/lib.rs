@@ -127,6 +127,11 @@ impl IsingSimulation {
         } else {
             Lattice::new(lattice_shape)
         };
+        if lattice.has_self_neighbors() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "a neighbor offset maps sites to themselves; lattice extents of 1 are not supported",
+            ));
+        }
         let n_spins = lattice.n_spins;
         let n_neighbors = lattice.n_neighbors;
         let n_replicas = n_replicas.unwrap_or(1);

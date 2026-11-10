@@ -1,6 +1,6 @@
 use super::utils::{
     dfs_cluster, uf_bonds_fresh, uf_bonds_fresh_with, uf_flatten, uf_flatten_counts_fresh,
-    uf_histogram, BondMetrics, BondSampler, GraphObservationSlot,
+    uf_histogram, BondMetrics, BondSampler, GraphObservationSlot, UNDECIDED,
 };
 use crate::config::ClusterAction;
 use crate::geometry::Lattice;
@@ -194,15 +194,14 @@ pub(crate) fn embedded_update<E: Embedding>(
                 }
             }
         } else {
-            scratch.fill(2); // 2 = undecided
+            scratch.fill(UNDECIDED);
             for (&site_parent, spin) in parent.iter().zip(spin_slice.iter_mut()) {
                 let root = site_parent as usize;
-                if scratch[root] == 2 {
+                if scratch[root] == UNDECIDED {
                     scratch[root] = u8::from(E::coin(rng));
                 }
                 if scratch[root] == 1 {
                     E::reflect(spin, &axis);
-                    visited += 1;
                 }
             }
         }

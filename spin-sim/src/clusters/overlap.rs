@@ -1,6 +1,7 @@
 use super::utils::{
-    dfs_cluster, find_seed, top4_sizes, uf_bonds, uf_bonds_extend, uf_bonds_with,
+    decide_clusters, dfs_cluster, find_seed, top4_sizes, uf_bonds, uf_bonds_extend, uf_bonds_with,
     uf_flatten_counts, uf_histogram, BondMetrics, BondSampler, GraphObservationSlot, PooledUf,
+    UNDECIDED,
 };
 use crate::config::{ClusterAction, ClusterMode, OverlapClusterBuildMode, MAX_PERM_GROUP};
 use crate::geometry::Lattice;
@@ -376,7 +377,13 @@ fn houdayer_step(
                 *g = *sp_ptr.add(system * n_spins + reference);
             }
         }
-        let gauge = &gauge_store[..systems.len()];
+        // Only the permutation rules read the gauge; pair and balanced groups may
+        // exceed `MAX_PERM_GROUP`.
+        let gauge: &[i8] = if permutation {
+            &gauge_store[..systems.len()]
+        } else {
+            &[]
+        };
         let is_active = |i: usize| -> bool {
             if pairwise {
                 return any_pair_differs(sp_ptr, systems, n_spins, i);
@@ -469,18 +476,17 @@ fn houdayer_step(
                 }
             } else {
                 let storage = &mut *uf;
-                storage.rank.fill(u8::MAX);
-                for &p in storage.parent.iter().take(n_spins) {
-                    let root = p as usize;
-                    if counts[root] > 1 && storage.rank[root] == u8::MAX {
-                        storage.rank[root] = u8::from(rng.gen::<f32>() < 0.5);
-                    }
-                }
-                for (i, &p) in storage.parent.iter().enumerate().take(n_spins) {
-                    if storage.rank[p as usize] == 1 {
-                        flip_group_site(sp_ptr, systems, n_spins, i, pairwise);
-                    }
-                }
+                decide_clusters(
+                    &storage.parent,
+                    &mut storage.rank,
+                    |_, root| counts[root] > 1,
+                    |_| u8::from(rng.gen::<f32>() < 0.5),
+                    |site, flip| {
+                        if flip == 1 {
+                            flip_group_site(sp_ptr, systems, n_spins, site, pairwise);
+                        }
+                    },
+                );
             }
         } else {
             let Some(seed) = find_seed(n_spins, rng, &is_active) else {
@@ -493,7 +499,8 @@ fn houdayer_step(
                 seed,
                 &mut in_cluster,
                 &mut stack,
-                |site, nb, _d, _fwd| is_active(site) && is_active(nb),
+                // Every site already in the cluster is active.
+                |_site, nb, _d, _fwd| is_active(nb),
             );
             let mut perm = [0u8; MAX_PERM_GROUP];
             if permutation {
@@ -702,18 +709,17 @@ fn jorg_step(
                 }
             } else {
                 let storage = &mut *uf;
-                storage.rank.fill(u8::MAX);
-                for &p in storage.parent.iter().take(n_spins) {
-                    let root = p as usize;
-                    if counts[root] > 1 && storage.rank[root] == u8::MAX {
-                        storage.rank[root] = u8::from(rng.gen::<f32>() < 0.5);
-                    }
-                }
-                for (i, &p) in storage.parent.iter().enumerate().take(n_spins) {
-                    if storage.rank[p as usize] == 1 {
-                        flip_group_site(sp_ptr, systems, n_spins, i, true);
-                    }
-                }
+                decide_clusters(
+                    &storage.parent,
+                    &mut storage.rank,
+                    |_, root| counts[root] > 1,
+                    |_| u8::from(rng.gen::<f32>() < 0.5),
+                    |site, flip| {
+                        if flip == 1 {
+                            flip_group_site(sp_ptr, systems, n_spins, site, true);
+                        }
+                    },
+                );
             }
         } else {
             let Some(seed) = find_seed(n_spins, rng, &is_active) else {
@@ -982,19 +988,19 @@ fn cmr_step(
                 }
             } else {
                 // Keep UF ranks intact until red bonds extend the blue clusters.
-                let mut do_flip = vec![u8::MAX; n_spins];
-                for &p in uf.parent.iter().take(n_spins) {
-                    let root = p as usize;
-                    if counts[root] > 1 && do_flip[root] == u8::MAX {
-                        do_flip[root] = u8::from(rng.gen::<f32>() < 0.5);
-                    }
-                }
-                for (i, &p) in uf.parent.iter().enumerate().take(n_spins) {
-                    if do_flip[p as usize] == 1 {
-                        *sp_ptr.add(base_a + i) *= -1;
-                        *sp_ptr.add(base_b + i) *= -1;
-                    }
-                }
+                let mut do_flip = vec![UNDECIDED; n_spins];
+                decide_clusters(
+                    &uf.parent,
+                    &mut do_flip,
+                    |_, root| counts[root] > 1,
+                    |_| u8::from(rng.gen::<f32>() < 0.5),
+                    |site, flip| {
+                        if flip == 1 {
+                            *sp_ptr.add(base_a + site) *= -1;
+                            *sp_ptr.add(base_b + site) *= -1;
+                        }
+                    },
+                );
             }
 
             // === Phase 2: Grey clusters (extend blue UF with red bonds) ===
@@ -1035,25 +1041,20 @@ fn cmr_step(
                 }
             } else {
                 let storage = &mut *uf;
-                storage.rank.fill(u8::MAX);
-                for &p in storage.parent.iter().take(n_spins) {
-                    let root = p as usize;
-                    if grey_counts[root] > 1 && storage.rank[root] == u8::MAX {
-                        storage.rank[root] = rng.gen_range(0..=3);
-                    }
-                }
-                for (i, &p) in storage.parent.iter().enumerate().take(n_spins) {
-                    let k = storage.rank[p as usize];
-                    if k == 0 || k == u8::MAX {
-                        continue;
-                    }
-                    if k & 1 != 0 {
-                        *sp_ptr.add(base_a + i) *= -1;
-                    }
-                    if k & 2 != 0 {
-                        *sp_ptr.add(base_b + i) *= -1;
-                    }
-                }
+                decide_clusters(
+                    &storage.parent,
+                    &mut storage.rank,
+                    |_, root| grey_counts[root] > 1,
+                    |_| rng.gen_range(0..=3),
+                    |site, k| {
+                        if k & 1 != 0 {
+                            *sp_ptr.add(base_a + site) *= -1;
+                        }
+                        if k & 2 != 0 {
+                            *sp_ptr.add(base_b + site) *= -1;
+                        }
+                    },
+                );
             }
         } else {
             // Pure Wolff BFS two-phase (no stats needed)
@@ -1167,7 +1168,66 @@ fn cmr_step(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spins::energy::compute_energies_into;
     use rand::SeedableRng;
+
+    /// The pair rule has no fixed-size state, so its groups may exceed
+    /// `MAX_PERM_GROUP`; the move conserves the group's summed energy.
+    #[test]
+    fn pair_groups_may_exceed_the_permutation_limit() {
+        let lattice = Lattice::new(vec![4, 3]);
+        let n = lattice.n_spins;
+        let n_replicas = MAX_PERM_GROUP + 2;
+        let mut rng = Xoshiro256StarStar::seed_from_u64(3);
+        let couplings: Vec<f32> = (0..n * lattice.n_neighbors)
+            .map(|_| rng.gen_range(-1.0..1.0))
+            .collect();
+        let total_energy = |spins: &[i8]| {
+            let mut energies = vec![0.0; n_replicas];
+            compute_energies_into(&lattice, spins, &couplings, &mut energies);
+            energies.iter().map(|&e| f64::from(e)).sum::<f64>()
+        };
+        for cluster_mode in [ClusterMode::Sw, ClusterMode::Wolff] {
+            let mut spins: Vec<i8> = (0..n_replicas * n)
+                .map(|_| if rng.gen::<bool>() { 1 } else { -1 })
+                .collect();
+            let initial = spins.clone();
+            let before = total_energy(&spins);
+            let mut rngs: Vec<_> = (0..n_replicas as u64 / 2)
+                .map(Xoshiro256StarStar::seed_from_u64)
+                .collect();
+            let system_ids: Vec<usize> = (0..n_replicas).collect();
+            for _ in 0..8 {
+                overlap_update(
+                    &lattice,
+                    &mut spins,
+                    &couplings,
+                    &[1.0],
+                    &system_ids,
+                    n_replicas,
+                    1,
+                    &[true],
+                    &mut rngs,
+                    &OverlapClusterBuildMode::Pair(n_replicas),
+                    cluster_mode,
+                    ClusterAction::Update,
+                    None,
+                    None,
+                    None,
+                    true,
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+            }
+            assert_ne!(spins, initial, "{cluster_mode:?}");
+            assert!(
+                (total_energy(&spins) - before).abs() < 1e-4,
+                "{cluster_mode:?}"
+            );
+        }
+    }
 
     /// With identical replicas no site is active, so the Wolff seed search fails; the
     /// all-singleton cluster statistics must still be written for every build mode.

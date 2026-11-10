@@ -1,4 +1,4 @@
-use super::utils::{dfs_cluster, uf_bonds, uf_flatten};
+use super::utils::{decide_clusters, dfs_cluster, uf_bonds, uf_flatten};
 use crate::config::ClusterMode;
 use crate::geometry::Lattice;
 use rand::Rng;
@@ -102,18 +102,18 @@ pub fn rmc_update(
 
             // τ, and with it the domains and their walls, is invariant under the move.
             let tau: Vec<i8> = (0..n_spins).map(tau).collect();
-            let mut uf = uf_bonds(lattice, |i, d| tau[i] == tau[lattice.neighbor_fwd(i, d)]);
+            // Bonds inside a domain join it; every other bond is a wall.
+            let mut walls = Vec::new();
+            let mut uf = uf_bonds(lattice, |i, d| {
+                let j = lattice.neighbor_fwd(i, d);
+                if tau[i] == tau[j] {
+                    return true;
+                }
+                walls.push((i, j, couplings[i * n_neighbors + d]));
+                false
+            });
             let storage = &mut *uf;
             uf_flatten(&mut storage.parent);
-            let mut walls = Vec::new();
-            for i in 0..n_spins {
-                for d in 0..n_neighbors {
-                    let j = lattice.neighbor_fwd(i, d);
-                    if tau[i] != tau[j] {
-                        walls.push((i, j, couplings[i * n_neighbors + d]));
-                    }
-                }
-            }
             let mut delta = vec![0.0f64; n_spins];
             for sign in [1i8, -1] {
                 delta.fill(0.0);
@@ -121,19 +121,18 @@ pub fn rmc_update(
                     let inside = if tau[i] == sign { i } else { j };
                     delta[storage.parent[inside] as usize] += boundary(i, j, coupling);
                 }
-                // `rank` holds each domain's decision: u8::MAX undecided, 1 flip.
-                storage.rank.fill(u8::MAX);
-                for (&p, &t) in storage.parent.iter().zip(&tau) {
-                    let root = p as usize;
-                    if t == sign && storage.rank[root] == u8::MAX {
-                        storage.rank[root] = u8::from(metropolis(delta[root], rng));
-                    }
-                }
-                for (i, &p) in storage.parent.iter().enumerate() {
-                    if storage.rank[p as usize] == 1 {
-                        flip(i);
-                    }
-                }
+                // `rank` holds each domain's decision; the deltas are already fixed.
+                decide_clusters(
+                    &storage.parent,
+                    &mut storage.rank,
+                    |site, _| tau[site] == sign,
+                    |root| u8::from(metropolis(delta[root], rng)),
+                    |site, accept| {
+                        if accept == 1 {
+                            flip(site);
+                        }
+                    },
+                );
             }
         };
 

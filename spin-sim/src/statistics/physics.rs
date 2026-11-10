@@ -432,20 +432,7 @@ impl PhysicsCollector {
         let Some(offset) = self.overlap_offset else {
             return;
         };
-        let n = replicas.first().map_or(1, |r| r.len()) as f64;
-        let mut sum = 0.0;
-        let mut pairs = 0;
-        for (i, a) in replicas.iter().enumerate() {
-            for b in &replicas[i + 1..] {
-                let dot: i64 = a
-                    .iter()
-                    .zip(b.iter())
-                    .map(|(&x, &y)| i64::from(x * y))
-                    .sum();
-                sum += (dot as f64 / n).powi(2);
-                pairs += 1;
-            }
-        }
+        let (sum, pairs) = super::overlap::pair_q2_sum(replicas.len(), |r| replicas[r]);
         if pairs == 0 {
             return;
         }

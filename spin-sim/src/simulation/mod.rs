@@ -13,7 +13,6 @@ use crate::statistics::{
     EquilDiagnosticAccum, GraphObservationSummary, OverlapAccum, Statistics, SweepResult,
 };
 use crate::{clusters, mcmc, spins};
-use validator::Validate;
 
 struct GraphObservationAccum {
     observation_count: Vec<u64>,
@@ -169,6 +168,8 @@ pub fn run_sweep_loop(
     on_sweep: &(dyn Fn() + Sync),
     realization_idx: usize,
 ) -> Result<SweepResult, String> {
+    driver::validate_layout(config, n_replicas, n_temps)?;
+    real.validate(lattice, n_replicas, n_temps)?;
     run_sweep_loop_impl(
         lattice,
         real,
@@ -196,9 +197,6 @@ fn run_sweep_loop_impl(
     materialize_disabled_stats: bool,
     physics_options: Option<&PhysicsOptions>,
 ) -> Result<SweepResult, String> {
-    config.validate().map_err(|e| format!("{e}"))?;
-    real.validate(lattice, n_replicas, n_temps)?;
-
     let acceptance = match config.sweep_mode {
         SweepMode::Metropolis => Some(mcmc::sweep::Acceptance::Metropolis),
         SweepMode::Gibbs => Some(mcmc::sweep::Acceptance::Gibbs),
@@ -216,21 +214,8 @@ fn run_sweep_loop_impl(
     let n_spins = lattice.n_spins;
     let n_systems = n_replicas * n_temps;
     let n_sweeps = config.n_sweeps;
-    let warmup_sweeps = config.warmup_sweeps;
 
     let n_modes = config.overlap_cluster.as_ref().map_or(0, |h| h.modes.len());
-
-    if let Some(ref oc_cfg) = config.overlap_cluster {
-        let max_gs = oc_cfg.max_group_size();
-        if n_replicas < max_gs {
-            return Err(format!(
-                "overlap cluster requires n_replicas >= max group_size ({n_replicas} < {max_gs})"
-            ));
-        }
-        if n_temps < 2 && oc_cfg.modes.contains(&OverlapClusterBuildMode::Rmc) {
-            return Err("rmc requires at least two temperatures".into());
-        }
-    }
 
     let n_pairs = n_replicas / 2;
     let overlap_active: Vec<bool> = real.temperatures[..n_temps]
@@ -368,10 +353,8 @@ fn run_sweep_loop_impl(
     let mut mags4_stat = Statistics::new(n_temps, 1);
     let mut energies_stat = Statistics::new(n_temps, 1);
     let mut energies2_stat = Statistics::new(n_temps, 2);
-    let n_measurement_sweeps = n_sweeps.saturating_sub(warmup_sweeps);
-    let ac_max_lag = config
-        .autocorrelation_max_lag
-        .map(|k| k.min(n_measurement_sweeps / 4).max(1));
+    let n_measurement_sweeps = config.n_measurement_sweeps();
+    let ac_max_lag = config.autocorrelation_lag();
     let mut m2_accum = ac_max_lag.map(|k| {
         AutocorrAccum::with_backend(
             k,
@@ -419,7 +402,8 @@ fn run_sweep_loop_impl(
         lattice.n_neighbors,
         equil_diag,
         collect_q2_ac,
-    );
+    )
+    .with_replicas(n_replicas);
 
     let mut mags_buf = vec![0.0f32; n_temps];
     let mut mags2_buf = vec![0.0f32; n_temps];
@@ -571,9 +555,11 @@ fn run_sweep_loop_impl(
             }
         }
 
-        let pt_this_sweep = step.temper;
+        // A single temperature has no edge to swap, so skip the energy refresh too.
+        let pt_this_sweep = step.temper && n_temps > 1;
 
-        if (record || pt_this_sweep || equil_diag) && !observables_valid {
+        // Tempering refreshes for itself below, after any overlap move.
+        if (record || equil_diag) && !observables_valid {
             refresh_observables(real, &mut unit_totals, &mut magnetization_sums);
             observables_valid = true;
         }
@@ -599,7 +585,6 @@ fn run_sweep_loop_impl(
         }
 
         if equil_diag {
-            // `diag_ql_buf` stays zero when there are no replica pairs to collect.
             equil_accum
                 .as_mut()
                 .unwrap()
@@ -994,10 +979,8 @@ pub fn run_sweep_parallel_with_physics(
         options.validate(lattice, 1)?;
     }
     let single = realizations.len() == 1;
-    // Once disorder realizations alone occupy every thread, nested replica
-    // parallelism only adds scheduling overhead; results do not depend on it.
     let mut effective = config.clone();
-    effective.sequential |= realizations.len() >= rayon::current_num_threads();
+    effective.sequential = driver::effective_sequential(config, realizations.len());
     let config = &effective;
     let mut results = driver::map_realizations(realizations, |idx, real| {
         run_sweep_loop_impl(

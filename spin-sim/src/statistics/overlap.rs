@@ -159,6 +159,8 @@ impl OverlapStats {
 /// Accumulator for overlap measurements during the sweep loop.
 pub struct OverlapAccum {
     n_pairs: usize,
+    /// Replicas entering the all-pairs q² average; odd counts have one unpaired.
+    n_replicas: usize,
     n_temps: usize,
     n_spins: usize,
     n_bonds: usize,
@@ -188,12 +190,86 @@ pub struct OverlapAccum {
     site_overlap: Vec<i8>,
 }
 
+/// Sum of `q²` over every pair among `n_replicas` equal-length configurations, with
+/// the number of pairs. Unlike fixed pairs, the sum ignores how replicas are labeled.
+pub(crate) fn pair_q2_sum<'a>(
+    n_replicas: usize,
+    replica: impl Fn(usize) -> &'a [i8],
+) -> (f64, usize) {
+    let mut sum = 0.0;
+    let mut pairs = 0;
+    for a in 0..n_replicas {
+        let spins_a = replica(a);
+        let n = spins_a.len() as f64;
+        for b in a + 1..n_replicas {
+            let dot: i64 = spins_a
+                .iter()
+                .zip(replica(b))
+                .map(|(&x, &y)| i64::from(x * y))
+                .sum();
+            let q = dot as f64 / n;
+            sum += q * q;
+            pairs += 1;
+        }
+    }
+    (sum, pairs)
+}
+
 /// Returns `(Σ_i q_i, Σ_i Σ_d q_i q_{fwd(i,d)})` for site overlaps `q_i = ±1`.
 ///
-/// Partial sums are chunked so that each i32 accumulator stays below 2^31 for any
-/// lattice size; the chunk totals are combined in i64.
+/// Canonical square and cubic lattices use contiguous shifted products; other
+/// lattices walk the neighbor table. Both give the same integers.
 fn overlap_sums(lattice: &Lattice, q: &[i8]) -> (i64, i64) {
+    if let Some((l0, l1)) = lattice.square_shape() {
+        return overlap_sums_strided(&[l0, l1], q);
+    }
+    if let Some(shape) = lattice.cubic_shape() {
+        return overlap_sums_strided(&shape, q);
+    }
     overlap_sums_chunked(lattice, q, i32::MAX as usize / (lattice.n_neighbors + 1))
+}
+
+/// Exact dot product of two ±1 vectors.
+fn dot_i8(a: &[i8], b: &[i8]) -> i64 {
+    // Short chunks keep each i32 partial sum far from overflow and vectorizable.
+    const CHUNK: usize = 1 << 15;
+    a.chunks(CHUNK)
+        .zip(b.chunks(CHUNK))
+        .map(|(a, b)| {
+            i64::from(
+                a.iter()
+                    .zip(b)
+                    .map(|(&x, &y)| i32::from(x * y))
+                    .sum::<i32>(),
+            )
+        })
+        .sum()
+}
+
+/// [`overlap_sums`] on a row-major hypercubic lattice with the given extents.
+///
+/// Along a direction of stride `s` and extent `L` the lattice splits into blocks of
+/// `s * L` sites; within a block site `j` pairs with `j + s`, and the last `s` sites
+/// wrap to the first `s`.
+fn overlap_sums_strided(extents: &[usize], q: &[i8]) -> (i64, i64) {
+    if q.is_empty() {
+        return (0, 0);
+    }
+    let dot_spin = q
+        .chunks(1 << 15)
+        .map(|chunk| i64::from(chunk.iter().map(|&v| i32::from(v)).sum::<i32>()))
+        .sum();
+    let mut dot_link = 0i64;
+    let mut stride = q.len();
+    for &extent in extents {
+        let period = stride;
+        stride /= extent;
+        for block in q.chunks_exact(period) {
+            dot_link += dot_i8(&block[..period - stride], &block[stride..]);
+            dot_link += dot_i8(&block[period - stride..], &block[..stride]);
+        }
+    }
+    (dot_spin, dot_link)
 }
 
 fn overlap_sums_chunked(lattice: &Lattice, q: &[i8], chunk: usize) -> (i64, i64) {
@@ -231,6 +307,7 @@ impl OverlapAccum {
         let has_pairs = n_pairs > 0;
         Self {
             n_pairs,
+            n_replicas: 2 * n_pairs,
             n_temps,
             n_spins,
             n_bonds: n_spins * n_neighbors,
@@ -279,6 +356,13 @@ impl OverlapAccum {
             },
             site_overlap: if has_pairs { vec![0; n_spins] } else { vec![] },
         }
+    }
+
+    /// Sets the replica count for the all-pairs q² average, which also covers the
+    /// unpaired replica of an odd count.
+    pub fn with_replicas(mut self, n_replicas: usize) -> Self {
+        self.n_replicas = n_replicas;
+        self
     }
 
     #[inline]
@@ -355,27 +439,13 @@ impl OverlapAccum {
     /// temperature (e.g. a spanning Houdayer cluster) look like decorrelation; the
     /// all-pairs mean is invariant under such relabelings.
     fn average_q2_over_all_pairs(&mut self, spins: &[i8], system_ids: &[usize]) {
-        let n_replicas = 2 * self.n_pairs;
-        let n_pair_total = (n_replicas * (n_replicas - 1) / 2) as f64;
         let n = self.n_spins;
         for t in 0..self.n_temps {
-            let mut sum = 0.0;
-            for a in 0..n_replicas {
-                let sys_a = system_ids[a * self.n_temps + t];
-                let spins_a = &spins[sys_a * n..(sys_a + 1) * n];
-                for b in a + 1..n_replicas {
-                    let sys_b = system_ids[b * self.n_temps + t];
-                    let spins_b = &spins[sys_b * n..(sys_b + 1) * n];
-                    let dot: i64 = spins_a
-                        .iter()
-                        .zip(spins_b)
-                        .map(|(&x, &y)| i64::from(x * y))
-                        .sum();
-                    let q = dot as f64 / n as f64;
-                    sum += q * q;
-                }
-            }
-            self.q2_ac_buf[t] = sum / n_pair_total;
+            let (sum, pairs) = pair_q2_sum(self.n_replicas, |replica| {
+                let system = system_ids[replica * self.n_temps + t];
+                &spins[system * n..(system + 1) * n]
+            });
+            self.q2_ac_buf[t] = sum / pairs as f64;
         }
     }
 
@@ -425,6 +495,21 @@ mod tests {
         relabelled.swap(n_temps, 2 * n_temps);
         assert_eq!(observable(&identity, 2), observable(&relabelled, 2));
 
+        // An odd count keeps its unpaired replica in the average.
+        let three = |system_ids: &[usize]| {
+            let mut accum =
+                OverlapAccum::new(n_temps, n, 1, lattice.n_neighbors, false, true).with_replicas(3);
+            accum.collect(&lattice, &spins, system_ids, true);
+            accum.q2_ac_buf.clone()
+        };
+        let mut rotated = identity[..3 * n_temps].to_vec();
+        rotated.swap(0, 2 * n_temps);
+        assert_eq!(three(&identity[..3 * n_temps]), three(&rotated));
+        assert_ne!(
+            three(&identity[..3 * n_temps]),
+            observable(&identity[..2 * n_temps], 1)
+        );
+
         let two = observable(&identity[..2 * n_temps], 1);
         for (t, value) in two.iter().enumerate() {
             let dot: i64 = (0..n)
@@ -438,6 +523,31 @@ mod tests {
     use super::*;
     use rand::{Rng, SeedableRng};
     use rand_xoshiro::Xoshiro256StarStar;
+
+    /// The strided path must reproduce the neighbor-table walk, including double
+    /// bonds (extent 2) and unequal extents.
+    #[test]
+    fn strided_overlap_sums_match_the_table_walk() {
+        let mut rng = Xoshiro256StarStar::seed_from_u64(21);
+        for shape in [
+            vec![2, 2],
+            vec![3, 7],
+            vec![8, 5],
+            vec![2, 3, 4],
+            vec![5, 2, 3],
+            vec![4, 4, 4],
+        ] {
+            let lattice = Lattice::new(shape.clone());
+            let q: Vec<i8> = (0..lattice.n_spins)
+                .map(|_| if rng.gen::<bool>() { 1 } else { -1 })
+                .collect();
+            assert_eq!(
+                overlap_sums(&lattice, &q),
+                overlap_sums_chunked(&lattice, &q, 7),
+                "{shape:?}"
+            );
+        }
+    }
 
     #[test]
     fn chunked_overlap_sums_match_direct_definition() {

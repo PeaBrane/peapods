@@ -108,6 +108,14 @@ impl Lattice {
         self.canonical_cubic_shape
     }
 
+    /// Whether a neighbor offset maps every site to itself, as an extent of 1 along
+    /// it does. That bond is a constant of the energy, but the single-spin kernels
+    /// would read it as a field.
+    pub fn has_self_neighbors(&self) -> bool {
+        // Offsets act by translation, so site 0 decides for all sites.
+        self.n_spins > 0 && (0..self.n_neighbors).any(|d| self.neighbor_fwd(0, d) == 0)
+    }
+
     #[inline]
     pub fn neighbor_fwd(&self, flat_idx: usize, dim: usize) -> usize {
         self.fwd_neighbors[flat_idx * self.n_neighbors + dim] as usize
@@ -192,6 +200,17 @@ mod tests {
         assert_eq!(lat.neighbor_fwd(15, 1), 12);
         // offset [1,-1] -> (0, 2) = 2
         assert_eq!(lat.neighbor_fwd(15, 2), 2);
+    }
+
+    #[test]
+    fn detects_offsets_that_map_sites_to_themselves() {
+        assert!(Lattice::new(vec![4, 1]).has_self_neighbors());
+        assert!(Lattice::with_offsets(vec![2, 3], vec![vec![2, 0]]).has_self_neighbors());
+        // Extent 2 gives a double bond to a distinct site, which the kernels handle.
+        assert!(!Lattice::new(vec![2, 2]).has_self_neighbors());
+        assert!(
+            !Lattice::with_offsets(vec![4, 4], vec![vec![1, 0], vec![1, -1]]).has_self_neighbors()
+        );
     }
 
     #[test]

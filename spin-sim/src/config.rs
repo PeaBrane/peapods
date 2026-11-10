@@ -1,5 +1,3 @@
-use validator::{Validate, ValidationError};
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SweepMode {
     None,
@@ -229,92 +227,83 @@ pub fn parse_overlap_modes(s: &str) -> Result<Vec<OverlapClusterBuildMode>, Stri
         .collect()
 }
 
-fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
+fn validate_sim_config(cfg: &SimConfig) -> Result<(), &'static str> {
     if cfg.n_sweeps < 1 {
-        return Err(ValidationError::new("n_sweeps must be >= 1"));
+        return Err("n_sweeps must be >= 1");
     }
     if cfg.warmup_sweeps > cfg.n_sweeps {
-        return Err(ValidationError::new("warmup_sweeps must be <= n_sweeps"));
+        return Err("warmup_sweeps must be <= n_sweeps");
     }
     if let Some(ref c) = cfg.cluster_update {
         if c.interval < 1 {
-            return Err(ValidationError::new("cluster_update interval must be >= 1"));
+            return Err("cluster_update interval must be >= 1");
         }
         if c.action == ClusterAction::Observe && c.mode == ClusterMode::Wolff {
-            return Err(ValidationError::new(
-                "cluster_action='observe' requires cluster_mode='sw'",
-            ));
+            return Err("cluster_action='observe' requires cluster_mode='sw'");
         }
     }
     if cfg.pt_interval == Some(0) {
-        return Err(ValidationError::new("pt_interval must be >= 1"));
+        return Err("pt_interval must be >= 1");
     }
     if cfg.autocorrelation_backend == AutocorrelationBackend::Fft
         && cfg.autocorrelation_max_lag.is_none()
     {
-        return Err(ValidationError::new(
-            "autocorrelation_backend='fft' requires autocorrelation_max_lag",
-        ));
+        return Err("autocorrelation_backend='fft' requires autocorrelation_max_lag");
     }
     if let Some(ref h) = cfg.overlap_cluster {
         if h.interval < 1 {
-            return Err(ValidationError::new(
-                "overlap_cluster interval must be >= 1",
-            ));
+            return Err("overlap_cluster interval must be >= 1");
         }
         if let Some(si) = h.snapshot_interval {
             if si < 1 || si % h.interval != 0 {
-                return Err(ValidationError::new(
+                return Err(
                     "snapshot_interval must be a positive multiple of overlap_cluster interval",
-                ));
+                );
             }
         }
         if h.modes.is_empty() {
-            return Err(ValidationError::new(
-                "overlap_cluster modes must not be empty",
-            ));
+            return Err("overlap_cluster modes must not be empty");
         }
         if h.max_temperature
             .is_some_and(|t| !(t.is_finite() && t > 0.0))
         {
-            return Err(ValidationError::new(
-                "overlap_cluster max_temperature must be positive and finite",
-            ));
+            return Err("overlap_cluster max_temperature must be positive and finite");
         }
         // Parallel group tasks index per-pair RNG and output slots, which is sound
-        // only for even group sizes >= 2.
+        // only for group sizes >= 2; the pair rules also need an even size.
+        if h.modes.iter().any(|mode| {
+            matches!(
+                mode,
+                OverlapClusterBuildMode::Perm(n) | OverlapClusterBuildMode::GaugedPerm(n)
+                    if !(2..=MAX_PERM_GROUP).contains(n)
+            )
+        }) {
+            return Err("permN and gpermN group sizes must be between 2 and 8");
+        }
         if h.modes.iter().any(
             |mode| matches!(mode, OverlapClusterBuildMode::Houdayer(n) if *n < 2 || n % 2 != 0),
         ) {
-            return Err(ValidationError::new(
-                "Houdayer group size must be even and >= 2",
-            ));
+            return Err("Houdayer group size must be even and >= 2");
         }
         if h.modes.iter().any(|mode| {
             matches!(mode, OverlapClusterBuildMode::Pair(n) | OverlapClusterBuildMode::Jorg(n) if *n < 2 || n % 2 != 0)
         }) {
-            return Err(ValidationError::new(
-                "pairN and jorgN group sizes must be even and >= 2",
-            ));
+            return Err("pairN and jorgN group sizes must be even and >= 2");
         }
         if h.action == ClusterAction::Observe {
             if h.cluster_mode == ClusterMode::Wolff {
-                return Err(ValidationError::new(
-                    "overlap_cluster_action='observe' requires overlap_cluster_mode='sw'",
-                ));
+                return Err("overlap_cluster_action='observe' requires overlap_cluster_mode='sw'");
             }
             if h.snapshot_interval.is_some() {
-                return Err(ValidationError::new(
+                return Err(
                     "snapshot_interval is not supported with overlap_cluster_action='observe'",
-                ));
+                );
             }
             if h.modes
                 .iter()
                 .any(|mode| matches!(mode, OverlapClusterBuildMode::Houdayer(n) if *n > 2))
             {
-                return Err(ValidationError::new(
-                    "overlap_cluster_action='observe' does not support experimental houdN with N > 2",
-                ));
+                return Err("overlap_cluster_action='observe' does not support experimental houdN with N > 2");
             }
             // Observed graphs are reported per two-replica build mode only.
             if h.modes.iter().any(|mode| {
@@ -326,17 +315,16 @@ fn validate_sim_config(cfg: &SimConfig) -> Result<(), ValidationError> {
                         | OverlapClusterBuildMode::GaugedPerm(_)
                 ) || matches!(mode, OverlapClusterBuildMode::Jorg(n) if *n > 2)
             }) {
-                return Err(ValidationError::new(
+                return Err(
                     "overlap_cluster_action='observe' supports only houdayer, jorg and cmr",
-                ));
+                );
             }
         }
     }
     Ok(())
 }
 
-#[derive(Clone, Debug, Validate)]
-#[validate(schema(function = "validate_sim_config"))]
+#[derive(Clone, Debug)]
 pub struct SimConfig {
     pub n_sweeps: usize,
     pub warmup_sweeps: usize,
@@ -349,6 +337,25 @@ pub struct SimConfig {
     pub autocorrelation_backend: AutocorrelationBackend,
     pub sequential: bool,
     pub equilibration_diagnostic: bool,
+}
+
+impl SimConfig {
+    /// Checks the options against each other; the message names the offending one.
+    pub fn validate(&self) -> Result<(), String> {
+        validate_sim_config(self).map_err(Into::into)
+    }
+
+    /// Sweeps left for measurement after warmup.
+    pub fn n_measurement_sweeps(&self) -> usize {
+        self.n_sweeps.saturating_sub(self.warmup_sweeps)
+    }
+
+    /// Largest autocorrelation lag that is estimated: the requested lag, capped at a
+    /// quarter of the measured sweeps and at least 1.
+    pub fn autocorrelation_lag(&self) -> Option<usize> {
+        self.autocorrelation_max_lag
+            .map(|lag| lag.min(self.n_measurement_sweeps() / 4).max(1))
+    }
 }
 
 #[cfg(test)]
@@ -431,6 +438,29 @@ mod tests {
                 max_temperature: None,
             });
             assert!(config.validate().is_err(), "houd{group_size} accepted");
+        }
+    }
+
+    /// The string parser bounds perm sizes, but the enum can be built directly.
+    #[test]
+    fn rejects_invalid_permutation_group_sizes() {
+        for mode in [
+            OverlapClusterBuildMode::Perm(0),
+            OverlapClusterBuildMode::Perm(1),
+            OverlapClusterBuildMode::GaugedPerm(1),
+            OverlapClusterBuildMode::GaugedPerm(MAX_PERM_GROUP + 1),
+        ] {
+            let mut config = config();
+            config.overlap_cluster = Some(OverlapClusterConfig {
+                interval: 1,
+                modes: vec![mode],
+                cluster_mode: ClusterMode::Wolff,
+                action: ClusterAction::Update,
+                collect_stats: false,
+                snapshot_interval: None,
+                max_temperature: None,
+            });
+            assert!(config.validate().is_err(), "{mode:?} accepted");
         }
     }
 

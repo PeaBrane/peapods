@@ -60,8 +60,9 @@ def _cumulative_overlap_ratio(per_sample_hist):
 
     x_samples = np.zeros((n_disorder, n_temps, n_q))
     for qi in range(n_q):
-        lo = center - qi
+        # Bins mirror about q = 0, which is a bin centre only for an even spin count.
         hi = center + qi + 1
+        lo = n_bins - hi
         x_samples[:, :, qi] = per_sample_hist[:, :, lo:hi].sum(axis=2)
 
     totals = per_sample_hist.sum(axis=2, keepdims=True)

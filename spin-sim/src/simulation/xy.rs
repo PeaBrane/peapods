@@ -16,7 +16,6 @@ use crate::{
 };
 use rayon::prelude::*;
 use std::sync::atomic::AtomicBool;
-use validator::Validate;
 
 #[derive(Debug)]
 pub struct XyConfig {
@@ -56,7 +55,7 @@ impl Default for XyConfig {
 impl XyConfig {
     fn validate(&self) -> Result<(), String> {
         let cfg = &self.simulation;
-        cfg.validate().map_err(|e| e.to_string())?;
+        cfg.validate()?;
         if cfg.n_sweeps <= cfg.warmup_sweeps {
             return Err("XY sampling requires at least one measurement sweep".into());
         }
@@ -213,8 +212,8 @@ impl XySimulation {
             self.n_temps,
             &config.simulation,
         )?;
-        // Preflight every optional collector and mask before any realization mutates.
-        PhysicsCollector::new(&self.lattice, self.n_temps, &config.physics, 2)?;
+        // Preflight the physics options and masks before any realization mutates.
+        config.physics.validate(&self.lattice, 2)?;
         if self.occupation.len() != self.realizations.len()
             || self
                 .occupation
@@ -224,8 +223,10 @@ impl XySimulation {
             return Err("occupation dimensions changed".into());
         }
         for (real, mask) in self.realizations.iter().zip(&self.occupation) {
+            // |r² - 1| <= 2e-8 bounds |r - 1| by 1e-8; NaN components fail as well.
             if real.spins.iter().any(|s| {
-                !s[0].is_finite() || !s[1].is_finite() || (s[0].hypot(s[1]) - 1.0).abs() > 1e-8
+                let excess = (s[0] * s[0] + s[1] * s[1] - 1.0).abs();
+                excess.is_nan() || excess > 2e-8
             }) {
                 return Err("XY spins must be finite unit vectors".into());
             }
@@ -239,8 +240,9 @@ impl XySimulation {
                 }
             }
         }
+        let sequential = driver::effective_sequential(&config.simulation, self.realizations.len());
         // Disorder batches already measure in parallel; split temperatures only for idle threads.
-        let measurement_groups = if config.simulation.sequential {
+        let measurement_groups = if sequential {
             1
         } else {
             (rayon::current_num_threads() / self.realizations.len()).max(1)
@@ -253,6 +255,7 @@ impl XySimulation {
                 self.n_replicas,
                 self.n_temps,
                 config,
+                sequential,
                 measurement_groups,
                 interrupted,
                 on_sweep,
@@ -374,16 +377,15 @@ fn run_xy(
     n_replicas: usize,
     n_temps: usize,
     config: &XyConfig,
+    sequential: bool,
     measurement_groups: usize,
     interrupted: &AtomicBool,
     on_sweep: &(dyn Fn() + Sync),
 ) -> Result<XyDisorderResult, String> {
     let cfg = &config.simulation;
     let mut physics = Measurement::new(lattice, n_temps, &config.physics, measurement_groups)?;
-    let n_measures = cfg.n_sweeps - cfg.warmup_sweeps;
-    let lag = cfg
-        .autocorrelation_max_lag
-        .map(|k| k.min(n_measures / 4).max(1));
+    let n_measures = cfg.n_measurement_sweeps();
+    let lag = cfg.autocorrelation_lag();
     let mut energy_ac = lag.map(|k| {
         PrecisionAutocorr::<f64>::with_backend(k, n_temps, cfg.autocorrelation_backend, n_measures)
     });
@@ -415,7 +417,7 @@ fn run_xy(
                 &real.system_ids,
                 &mut real.rngs,
                 occupied,
-                cfg.sequential,
+                sequential,
                 kind,
             );
         }
@@ -433,7 +435,7 @@ fn run_xy(
                     ClusterAction::Update,
                     None,
                     None,
-                    cfg.sequential,
+                    sequential,
                     Some(&mut visits),
                 );
                 for count in &mut updates {
@@ -463,7 +465,7 @@ fn run_xy(
             let refresh = |(energy, spins): (&mut f64, &[[f64; 2]])| {
                 *energy = interaction(lattice, spins, &real.couplings) / n as f64;
             };
-            if cfg.sequential {
+            if sequential {
                 real.energies
                     .iter_mut()
                     .zip(real.spins.chunks_exact(n))

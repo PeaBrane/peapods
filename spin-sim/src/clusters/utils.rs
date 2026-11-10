@@ -336,6 +336,33 @@ pub(super) fn uf_flatten(parent: &mut [u32]) {
     }
 }
 
+/// Marks a cluster whose update has not been drawn yet.
+pub(super) const UNDECIDED: u8 = u8::MAX;
+
+/// Swendsen-Wang pass over a flattened union-find: sites are visited in order, each
+/// cluster draws its decision at its first eligible site, and `apply` sees every
+/// eligible site with its cluster's decision. `eligible` and `decide` take the root.
+#[inline]
+pub(super) fn decide_clusters(
+    parent: &[u32],
+    decisions: &mut [u8],
+    mut eligible: impl FnMut(usize, usize) -> bool,
+    mut decide: impl FnMut(usize) -> u8,
+    mut apply: impl FnMut(usize, u8),
+) {
+    decisions.fill(UNDECIDED);
+    for (site, &root) in parent.iter().enumerate() {
+        let root = root as usize;
+        if !eligible(site, root) {
+            continue;
+        }
+        if decisions[root] == UNDECIDED {
+            decisions[root] = decide(root);
+        }
+        apply(site, decisions[root]);
+    }
+}
+
 /// Histogram cluster sizes into `hist[s] += 1`.
 #[inline]
 pub(super) fn uf_histogram(counts: &[u32], hist: &mut [u64]) {
@@ -482,9 +509,7 @@ impl WindingUf {
     }
 
     fn winding(&mut self) -> (bool, bool) {
-        for site in 0..self.parent.len() {
-            self.find(site);
-        }
+        // Wrap flags live on roots, and path compression never changes a root.
         let mut x = false;
         let mut y = false;
         for site in 0..self.parent.len() {

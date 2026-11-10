@@ -1,9 +1,12 @@
 //! Shared scheduling and ordered disorder dispatch. Model hooks are monomorphized.
 use super::realization::ModelRealization;
-use crate::{config::SimConfig, geometry::Lattice, spins::model::Spin};
+use crate::{
+    config::{OverlapClusterBuildMode, SimConfig},
+    geometry::Lattice,
+    spins::model::Spin,
+};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
-use validator::Validate;
 
 pub(crate) struct SweepStep {
     pub index: usize,
@@ -41,6 +44,38 @@ pub(crate) fn run_sweeps(
     Ok(())
 }
 
+/// Every rule that needs the replica and temperature counts as well as the config.
+pub(crate) fn validate_layout(
+    config: &SimConfig,
+    n_replicas: usize,
+    n_temps: usize,
+) -> Result<(), String> {
+    config.validate()?;
+    if config.equilibration_diagnostic && n_replicas < 2 {
+        return Err("equilibration_diagnostic needs n_replicas >= 2 for the link overlap".into());
+    }
+    let Some(overlap) = &config.overlap_cluster else {
+        return Ok(());
+    };
+    let max_group = overlap.max_group_size();
+    if n_replicas < max_group {
+        return Err(format!(
+            "overlap cluster moves need n_replicas >= {max_group} (the largest mode's group size), got {n_replicas}"
+        ));
+    }
+    if n_temps < 2 && overlap.modes.contains(&OverlapClusterBuildMode::Rmc) {
+        return Err("rmc requires at least two temperatures".into());
+    }
+    Ok(())
+}
+
+/// Whether replicas run on the calling thread. Once disorder realizations alone
+/// occupy every thread, nested replica parallelism only adds scheduling overhead;
+/// results do not depend on the choice.
+pub(crate) fn effective_sequential(config: &SimConfig, n_realizations: usize) -> bool {
+    config.sequential || n_realizations >= rayon::current_num_threads()
+}
+
 pub(crate) fn validate_batch<S: Spin>(
     lattice: &Lattice,
     realizations: &[ModelRealization<S>],
@@ -48,17 +83,9 @@ pub(crate) fn validate_batch<S: Spin>(
     n_temps: usize,
     config: &SimConfig,
 ) -> Result<(), String> {
-    config.validate().map_err(|e| e.to_string())?;
+    validate_layout(config, n_replicas, n_temps)?;
     if realizations.is_empty() {
         return Err("at least one disorder realization is required".into());
-    }
-    if let Some(overlap) = &config.overlap_cluster {
-        if n_replicas < overlap.max_group_size() {
-            return Err(format!(
-                "overlap cluster moves need n_replicas >= {} (the largest mode's group size), got {n_replicas}",
-                overlap.max_group_size()
-            ));
-        }
     }
     for real in realizations {
         real.validate(lattice, n_replicas, n_temps)?;
@@ -104,6 +131,15 @@ mod tests {
         });
         assert_eq!(result.unwrap_err(), "interrupted");
     }
+    #[test]
+    fn equilibration_diagnostic_needs_a_replica_pair() {
+        let mut config = XyConfig::default().simulation;
+        config.equilibration_diagnostic = true;
+        let error = validate_layout(&config, 1, 2).unwrap_err();
+        assert!(error.contains("n_replicas >= 2"), "{error}");
+        assert!(validate_layout(&config, 2, 2).is_ok());
+    }
+
     #[test]
     fn validates_entire_batch_and_equal_ladders_before_sampling() {
         let mut simulation =

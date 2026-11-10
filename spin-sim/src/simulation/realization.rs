@@ -244,6 +244,14 @@ impl<S: Spin> ModelRealization<S> {
         n_replicas: usize,
         n_temps: usize,
     ) -> Result<(), String> {
+        if lattice.n_spins == 0 {
+            return Err("lattice has no sites".into());
+        }
+        if lattice.has_self_neighbors() {
+            return Err(
+                "a neighbor offset maps sites to themselves (lattice extent 1 along it)".into(),
+            );
+        }
         let n = n_replicas
             .checked_mul(n_temps)
             .ok_or("system count overflow")?;
@@ -348,6 +356,15 @@ pub fn realization_seed(root: u64, realization: usize) -> u64 {
 mod tests {
     use super::*;
     use crate::mcmc::tempering::TemperingAttempt;
+
+    #[test]
+    fn rejects_lattices_with_self_neighbors() {
+        let lattice = Lattice::new(vec![4, 1]);
+        let couplings = vec![1.0; lattice.n_spins * lattice.n_neighbors];
+        let realization = Realization::new(&lattice, couplings, &[1.0], 1, 0);
+        let error = realization.validate(&lattice, 1, 1).unwrap_err();
+        assert!(error.contains("themselves"), "{error}");
+    }
 
     #[test]
     fn reset_replays_spins_and_pt_state() {
