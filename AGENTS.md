@@ -14,8 +14,8 @@
 
 ## Benchmark baseline (main, 2026-09-29; 64x64, 16 temps, 50 sweeps, 128 realizations; Intel Core Ultra 9 285K, 24 threads, Linux)
 
-| Mode | ms/sweep | v0.2.1, same machine |
-|------|----------|----------------------|
+| Mode | ms/sweep | d945d92 (2026-07-01, unreleased), same machine |
+|------|----------|------------------------------------------------|
 | metropolis | 1.47 | 3.49 |
 | gibbs | 1.37 | 4.83 |
 | metropolis + SW cluster | 7.63 | 14.82 |

@@ -1,6 +1,6 @@
 [package]
 name = "spin-sim"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 description = "Ising and XY Monte Carlo: Metropolis, Gibbs, Swendsen-Wang, Wolff, parallel tempering, Houdayer/Jörg/CMR and replica Monte Carlo overlap moves"
 license = "MIT"

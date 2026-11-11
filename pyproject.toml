@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "peapods"
-version = "0.2.1"
+version = "0.3.0"
 description = "Ising and XY Monte Carlo with signed couplings, cluster updates, parallel tempering and physical statistics"
 readme = "README.md"
 license = {text = "MIT"}

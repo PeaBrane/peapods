@@ -58,8 +58,8 @@ println!("energies: {:?}", result.energies);
 
 ## Upgrading from 0.2.0
 
-The next release changes public struct literals and enums; no legacy wrapper types
-are provided. To keep 0.2.0's move schedule:
+0.3.0 changes public struct literals and enums; no legacy wrapper types are
+provided. To keep 0.2.0's move schedule:
 
 - `ClusterConfig` and `OverlapClusterConfig`: add `action: ClusterAction::Update`
   (cluster graphs can now also be observed without flipping spins).
@@ -72,7 +72,7 @@ are provided. To keep 0.2.0's move schedule:
 Realization seeds are now derived per system rather than `base_seed + i`, so a given
 seed produces different trajectories than in 0.2.0.
 
-Since 0.2.1:
+Also new in 0.3.0:
 
 - `SimConfig::validate` is an inherent method returning `Result<(), String>`; the
   `validator` dependency is gone. `SimConfig` has a new field
@@ -88,7 +88,7 @@ Since 0.2.1:
   fields (per-disorder samples, energy τ, FK visit counts, overlap and replica Monte
   Carlo counters, 3D wrapping and cluster moments).
 - Swendsen-Wang Houdayer, pair and Jörg moves now update single-site clusters, so
-  their trajectories differ from 0.2.1.
+  their trajectories differ from earlier builds.
 
 ## Python
 
