@@ -44,7 +44,10 @@ snapshot when requested:
 
 Use an empty destination outside the source checkout. The export keeps sources, PDFs, figures,
 and small text evidence, and omits bulk computational formats, environments, caches, symlinks,
-and files already tracked publicly. Other text-like files have a 1 MiB limit. Review exclusions
+and files already tracked publicly. Other text-like files have a 1 MiB limit. The research database
+`notes/ledger/research.sqlite` is the exception: it is always exported, copied with the SQLite
+backup API, while its WAL and journal files and the page-text cache `notes/ledger/pages.sqlite` are
+left out (rebuild that with `research.py pages --rebuild`). Review exclusions
 when important evidence uses an unusual format; these filters classify files by format and
 size, not scientific importance. Exporting does not commit or publish the snapshot.
 

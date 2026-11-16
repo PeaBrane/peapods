@@ -6,9 +6,11 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
+from contextlib import closing
 from pathlib import Path
 
 REPOSITORY = "PeaBrane/peapods-research"
@@ -84,6 +86,13 @@ SECRET_SUFFIXES = {".key", ".kdbx", ".p12", ".pem", ".pfx"}
 # Checkout-relative globs that the snapshot omits, one per line; "#" starts a comment. The file is not a dotfile,
 # so it travels in the snapshot itself.
 EXCLUDE_FILE = Path("notes/snapshot-exclude.txt")
+# Checkout-relative files snapshotted whatever their suffix, size or content. SQLite databases among them are copied
+# with the backup API, so the copy is consistent and includes committed WAL content.
+ALLOWLIST = (Path("notes/ledger/research.sqlite"),)
+# pages.sqlite is a page-text cache, rebuilt locally with `research.py pages --rebuild`.
+OMITTED_NAMES = {"pages.sqlite"}
+SQLITE_SIDE_SUFFIXES = ("-journal", "-shm", "-wal")
+SQLITE_HEADER = b"SQLite format 3\0"
 
 
 def glob_regex(pattern: str) -> re.Pattern[str]:
@@ -136,6 +145,8 @@ def tracked_paths(root: Path) -> set[Path]:
 
 def include_file(source: Path) -> bool:
     if source.name.startswith(".") and source.name != ".python-version":
+        return False
+    if source.name in OMITTED_NAMES or source.name.endswith(SQLITE_SIDE_SUFFIXES):
         return False
     suffix = source.suffix.lower()
     if suffix in SECRET_SUFFIXES:
@@ -190,6 +201,33 @@ def research_files(root: Path, *, snapshot: bool) -> list[Path]:
     return sorted(files)
 
 
+def allowlisted_files(root: Path) -> list[Path]:
+    files = []
+    for ref in ALLOWLIST:
+        if any((root / part).is_symlink() for part in [ref, *ref.parents[:-1]]):
+            continue
+        if (root / ref).is_file():
+            files.append(ref)
+    return files
+
+
+def is_sqlite(path: Path) -> bool:
+    with path.open("rb") as handle:
+        return handle.read(len(SQLITE_HEADER)) == SQLITE_HEADER
+
+
+def backup_sqlite(source: Path, target: Path) -> None:
+    try:
+        with (
+            closing(sqlite3.connect(source)) as src,
+            closing(sqlite3.connect(target)) as dst,
+        ):
+            src.backup(dst)
+            dst.execute("PRAGMA journal_mode=DELETE")
+    except sqlite3.Error as error:
+        raise ValueError(f"SQLite backup failed: {source}: {error}") from error
+
+
 def snapshot(
     root: Path, destination: Path, tracked: set[Path], commit: str
 ) -> tuple[int, int]:
@@ -203,9 +241,8 @@ def snapshot(
     ):
         raise ValueError(f"Snapshot destination must be empty: {destination}")
     patterns = exclude_patterns(root)
-    candidates = [
-        ref for ref in research_files(root, snapshot=True) if ref not in tracked
-    ]
+    found = {*research_files(root, snapshot=True), *allowlisted_files(root)}
+    candidates = [ref for ref in sorted(found) if ref not in tracked]
     selected = [
         ref
         for ref in candidates
@@ -216,7 +253,10 @@ def snapshot(
     for ref in selected:
         target = destination / ref
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(root / ref, target)
+        if ref in ALLOWLIST and is_sqlite(root / ref):
+            backup_sqlite(root / ref, target)
+        else:
+            shutil.copy2(root / ref, target)
         total += target.stat().st_size
     metadata = {
         "format": 1,
@@ -230,8 +270,8 @@ def snapshot(
     (destination / ".gitignore").write_text(".DS_Store\n.venv/\n__pycache__/\n")
     (destination / "README.md").write_text(
         "# Peapods private files\n\n"
-        "Lightweight notes, papers, references, ledger, source, figures, and small evidence files.\n"
-        "Bulk datasets, witnesses, dumps, archives, environments, and binaries are omitted.\n"
+        "Lightweight notes, papers, references, ledger and its research database, source, figures, and small evidence files.\n"
+        "Bulk datasets, witnesses, dumps, archives, environments, caches, and other binaries are omitted.\n"
         "Omitted artifacts remain on the source Mac; no retrieval manifest is required.\n\n"
         "Restore and snapshot instructions live in the public "
         "[restore-private-files skill](https://github.com/PeaBrane/peapods/tree/main/skills/restore-private-files).\n"

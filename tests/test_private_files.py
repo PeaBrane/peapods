@@ -2,8 +2,10 @@
 
 import json
 import shutil
+import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
@@ -33,6 +35,11 @@ def make_snapshot(root):
         json.dumps({"format": 1, "source_repository": "PeaBrane/peapods"}),
     )
     return root
+
+
+def query(database, sql):
+    with closing(sqlite3.connect(database)) as connection:
+        return connection.execute(sql).fetchall()
 
 
 def test_snapshot_preserves_core_and_small_evidence_but_omits_bulk(tmp_path):
@@ -104,6 +111,68 @@ def test_snapshot_omits_paths_listed_in_the_exclude_file(tmp_path):
     assert not (destination / "notes/campaign/round1/check.py").exists()
     assert not (destination / "notes/archived").exists()
     assert json.loads((destination / "snapshot.json").read_text())["excluded"] == 4
+
+
+def test_snapshot_includes_allowlisted_database_beyond_size_limit(tmp_path):
+    root = tmp_path / "project"
+    write(root, "notes/proof.md")
+    database = root / "notes/ledger/research.sqlite"
+    database.parent.mkdir(parents=True)
+    size = private_files.SMALL_FILE_LIMIT + 1
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE blobs (data BLOB)")
+        connection.execute("INSERT INTO blobs VALUES (randomblob(?))", (size,))
+        connection.commit()
+    destination = tmp_path / "snapshot"
+    count, total = private_files.snapshot(root, destination, set(), "test")
+    copy = destination / "notes/ledger/research.sqlite"
+    assert count == 2
+    assert copy.stat().st_size > private_files.SMALL_FILE_LIMIT
+    assert query(copy, "PRAGMA integrity_check") == [("ok",)]
+    assert query(copy, "SELECT length(data) FROM blobs") == [(size,)]
+    proof = destination / "notes/proof.md"
+    assert total == copy.stat().st_size + proof.stat().st_size
+    assert json.loads((destination / "snapshot.json").read_text())["bytes"] == total
+
+
+def test_snapshot_copies_committed_wal_rows_into_one_self_contained_file(tmp_path):
+    root = tmp_path / "project"
+    database = root / "notes/ledger/research.sqlite"
+    database.parent.mkdir(parents=True)
+    destination = tmp_path / "snapshot"
+    with closing(sqlite3.connect(database)) as writer:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE claims (name TEXT)")
+        writer.executemany("INSERT INTO claims VALUES (?)", [("a",), ("b",)])
+        writer.commit()
+        assert (root / "notes/ledger/research.sqlite-wal").stat().st_size > 0
+        private_files.snapshot(root, destination, set(), "test")
+    ledger = destination / "notes/ledger"
+    assert [path.name for path in ledger.iterdir()] == ["research.sqlite"]
+    copy = ledger / "research.sqlite"
+    assert query(copy, "PRAGMA journal_mode") == [("delete",)]
+    assert query(copy, "PRAGMA integrity_check") == [("ok",)]
+    assert query(copy, "SELECT name FROM claims ORDER BY name") == [("a",), ("b",)]
+
+
+def test_snapshot_omits_page_cache_and_sqlite_side_files(tmp_path):
+    root = tmp_path / "project"
+    write(root, "notes/ledger/ledger.toml")
+    # Empty files pass the text check, so only the name rules keep these out.
+    for name in [
+        "notes/ledger/pages.sqlite",
+        "notes/ledger/pages.sqlite-wal",
+        "notes/ledger/research.sqlite-wal",
+        "notes/ledger/research.sqlite-shm",
+        "notes/ledger/research.sqlite-journal",
+    ]:
+        write(root, name, "")
+    destination = tmp_path / "snapshot"
+    count, _ = private_files.snapshot(root, destination, set(), "test")
+    assert count == 1
+    ledger = destination / "notes/ledger"
+    assert [path.name for path in ledger.iterdir()] == ["ledger.toml"]
 
 
 def test_exclude_globs_keep_single_stars_within_one_directory():
